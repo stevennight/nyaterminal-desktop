@@ -1,4 +1,4 @@
-import { Receiver, ReceiverEvent, Sender, SenderEvent } from 'zmodem2'
+﻿import { Receiver, ReceiverEvent, Sender, SenderEvent } from 'zmodem2'
 import { api } from './bridge'
 
 type Callbacks = {
@@ -26,6 +26,7 @@ export class ZmodemAdapter {
   private receivedBytes = 0
   private receiveQueue = Promise.resolve()
   private receiverFlush = Promise.resolve()
+  private receiverInput = new Uint8Array()
   private sendFiles: File[] = []
   private sendIndex = 0
   private selectingFile = false
@@ -60,39 +61,73 @@ export class ZmodemAdapter {
 
   private consumeReceiver(data: Uint8Array) {
     if (!this.receiver) return
-    this.receiver.feedIncoming(data)
+    this.receiverInput = concatBytes(this.receiverInput, data)
     this.receiverFlush = this.receiverFlush
-      .then(() => this.flushReceiver())
+      .then(() => this.flushReceiverInput())
       .catch(error => this.failReceive(error))
   }
 
-  private async flushReceiver() {
-    const receiver = this.receiver
-    if (!receiver) return
-    const outgoing = receiver.drainOutgoing()
-    if (outgoing.length) this.callbacks.send(outgoing)
-    for (let event = receiver.pollEvent(); event; event = receiver.pollEvent()) {
-      if (event === ReceiverEvent.FileStart) {
-        this.receiveName = safeFilename(receiver.getFileName())
-        this.receiveSize = receiver.getFileSize()
-        this.receivedBytes = 0
-        this.receiveHandle = await api.BeginZmodemReceive(this.receiveName, this.receiveSize)
-        if (!this.receiveHandle) throw new Error('已取消 ZMODEM 接收')
-      } else if (event === ReceiverEvent.FileComplete) {
-        this.queueReceiveData(receiver.drainFile())
-        await this.receiveQueue
-        if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
-        this.receiveHandle = ''
-        this.callbacks.onStatus(`已接收 ${this.receiveName}`)
-      } else if (event === ReceiverEvent.SessionComplete) {
-        this.receiver = undefined
-        this.callbacks.onActive?.(false)
-        this.callbacks.onStatus('ZMODEM 接收完成')
+  private async flushReceiverInput() {
+    while (this.receiver && this.receiverInput.length) {
+      const receiver = this.receiver
+      const consumed = receiver.feedIncoming(this.receiverInput)
+      if (consumed > 0) {
+        this.receiverInput = this.receiverInput.slice(consumed)
       }
+      const progressed = await this.flushReceiverState()
+      if (consumed === 0 && !progressed) break
     }
-    this.queueReceiveData(receiver.drainFile())
-    const pending = receiver.drainOutgoing()
-    if (pending.length) this.callbacks.send(pending)
+    await this.flushReceiverState()
+  }
+
+  private async flushReceiverState() {
+    const receiver = this.receiver
+    if (!receiver) return false
+    let progress = false
+    while (true) {
+      let localProgress = false
+      let outgoing = receiver.drainOutgoing()
+      while (outgoing.length) {
+        progress = true
+        localProgress = true
+        this.callbacks.send(outgoing)
+        outgoing = receiver.drainOutgoing()
+      }
+      for (let event = receiver.pollEvent(); event; event = receiver.pollEvent()) {
+        progress = true
+        localProgress = true
+        if (event === ReceiverEvent.FileStart) {
+          this.receiveName = safeFilename(receiver.getFileName())
+          this.receiveSize = receiver.getFileSize()
+          this.receivedBytes = 0
+          this.receiveHandle = await api.BeginZmodemReceive(this.receiveName, this.receiveSize)
+          if (!this.receiveHandle) throw new Error('已取消 ZMODEM 接收')
+        } else if (event === ReceiverEvent.FileComplete) {
+          await this.receiveQueue
+          if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
+          this.receiveHandle = ''
+          this.callbacks.onStatus(`已接收 ${this.receiveName}`)
+        } else if (event === ReceiverEvent.SessionComplete) {
+          this.receiver = undefined
+          this.callbacks.onActive?.(false)
+          this.callbacks.onStatus('ZMODEM 接收完成')
+        }
+      }
+      for (let fileData = receiver.drainFile(); fileData.length; fileData = receiver.drainFile()) {
+        progress = true
+        localProgress = true
+        this.queueReceiveData(fileData)
+      }
+      outgoing = receiver.drainOutgoing()
+      while (outgoing.length) {
+        progress = true
+        localProgress = true
+        this.callbacks.send(outgoing)
+        outgoing = receiver.drainOutgoing()
+      }
+      if (!this.receiver || !localProgress) break
+    }
+    return progress
   }
 
   private queueReceiveData(data: Uint8Array) {
