@@ -15,11 +15,20 @@ describe('ZmodemHeaderDetector', () => {
       .toEqual(Array.from(encoder.encode('**\x18B00')))
   })
 
-  it('passes ordinary terminal data while retaining only a short prefix window', () => {
+  it('passes ordinary terminal data immediately', () => {
     const detector = new ZmodemHeaderDetector()
     const result = detector.consume(encoder.encode('ordinary terminal output'))
-    expect(new TextDecoder().decode(result.terminal)).toBe('ordinary terminal ')
+    expect(new TextDecoder().decode(result.terminal)).toBe('ordinary terminal output')
     expect(result.mode).toBeUndefined()
+  })
+
+  it('does not hold back normal chunks that do not match the header prefix', () => {
+    const detector = new ZmodemHeaderDetector()
+    const first = detector.consume(encoder.encode('ord'))
+    const second = detector.consume(encoder.encode('inary'))
+    expect(new TextDecoder().decode(concat(first.terminal, second.terminal))).toBe('ordinary')
+    expect(first.mode).toBeUndefined()
+    expect(second.mode).toBeUndefined()
   })
 
   it('detects the send direction', () => {

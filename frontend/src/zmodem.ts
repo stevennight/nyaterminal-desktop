@@ -9,6 +9,9 @@ type Callbacks = {
 }
 
 const decoder = new TextDecoder('latin1')
+const encoder = new TextEncoder()
+const receiveHeaderPrefix = encoder.encode('**\x18B00')
+const sendHeaderPrefix = encoder.encode('**\x18B01')
 
 // zmodem2 deliberately exposes protocol state machines rather than terminal
 // detection. This adapter keeps the protocol isolated from the terminal and
@@ -235,15 +238,26 @@ export class ZmodemHeaderDetector {
       this.buffer = new Uint8Array()
       return { terminal, mode: header.type, protocol }
     }
-    const retain = 6
+    const retain = longestHeaderPrefixSuffix(this.buffer)
+    if (retain === 0) {
+      const terminal = this.buffer
+      this.buffer = new Uint8Array()
+      return { terminal }
+    }
     if (this.buffer.length <= retain) return { terminal: new Uint8Array() }
-    const terminal = this.buffer.slice(0, -retain)
+    const terminal = this.buffer.slice(0, this.buffer.length - retain)
     this.buffer = this.buffer.slice(-retain)
     return { terminal }
   }
 
   reset() {
     this.buffer = new Uint8Array()
+  }
+
+  flush() {
+    const terminal = this.buffer
+    this.buffer = new Uint8Array()
+    return terminal
   }
 }
 
@@ -257,6 +271,24 @@ function concatBytes(left: Uint8Array, right: Uint8Array) {
   result.set(left)
   result.set(right, left.length)
   return result
+}
+
+function longestHeaderPrefixSuffix(buffer: Uint8Array) {
+  const patterns = [receiveHeaderPrefix, sendHeaderPrefix]
+  const maxLength = Math.min(buffer.length, receiveHeaderPrefix.length - 1)
+  for (let retain = maxLength; retain > 0; retain--) {
+    if (patterns.some(pattern => matchesPrefix(buffer, retain, pattern))) return retain
+  }
+  return 0
+}
+
+function matchesPrefix(buffer: Uint8Array, length: number, pattern: Uint8Array) {
+  if (length > pattern.length) return false
+  const offset = buffer.length - length
+  for (let index = 0; index < length; index++) {
+    if (buffer[offset + index] !== pattern[index]) return false
+  }
+  return true
 }
 
 function formatProgress(done: number, total: number) {
