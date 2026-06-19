@@ -12,11 +12,14 @@ export function clampTerminalMenuPosition(
   clientX: number,
   clientY: number,
   viewportWidth: number,
-  viewportHeight: number
+  viewportHeight: number,
+  menuWidth = 180,
+  menuHeight = 102
 ) {
-  const width = 180
-  const height = 124
-  const left = Math.min(clientX, Math.max(8, viewportWidth - width - 8))
-  const top = Math.min(clientY, Math.max(8, viewportHeight - height - 8))
+  const margin = 8
+  const left = Math.min(clientX, Math.max(margin, viewportWidth - menuWidth - margin))
+  const top = clientY + menuHeight + margin > viewportHeight
+    ? Math.max(margin, clientY - menuHeight)
+    : Math.max(margin, clientY)
   return { left, top }
 }

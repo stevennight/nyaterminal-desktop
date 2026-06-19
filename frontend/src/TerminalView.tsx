@@ -34,6 +34,7 @@ export function TerminalView({
   const [searchQuery, setSearchQuery] = useState('')
   const [selectionText, setSelectionText] = useState('')
   const [terminalMenu, setTerminalMenu] = useState<{ left: number; top: number } | null>(null)
+  const [terminalMenuReady, setTerminalMenuReady] = useState(false)
   const [suggestions, setSuggestions] = useState<CommandHistory[]>([])
   const suggestionsRef = useRef<CommandHistory[]>([])
   const lineRef = useRef('')
@@ -46,6 +47,9 @@ export function TerminalView({
   useEffect(() => {
     if (!active) setTerminalMenu(null)
   }, [active])
+  useEffect(() => {
+    setTerminalMenuReady(false)
+  }, [terminalMenu])
 
   const closeTerminalMenu = () => setTerminalMenu(null)
   const syncSelection = () => {
@@ -316,6 +320,7 @@ export function TerminalView({
     <section className={`terminal-pane ${active ? 'active' : ''}`}>
       <div ref={host} className="terminal-host" onContextMenu={event => {
         event.preventDefault()
+        setTerminalMenuReady(false)
         const { left, top } = clampTerminalMenuPosition(
           event.clientX, event.clientY, window.innerWidth, window.innerHeight
         )
@@ -323,7 +328,25 @@ export function TerminalView({
         setTerminalMenu({ left, top })
       }} />
       {terminalMenu && <div className="terminal-menu-backdrop" onMouseDown={closeTerminalMenu}>
-        <div className="terminal-menu" style={{ left: terminalMenu.left, top: terminalMenu.top }}
+        <div className="terminal-menu" data-ready={terminalMenuReady ? 'true' : 'false'}
+          ref={node => {
+            if (!node) return
+            const rect = node.getBoundingClientRect()
+            const { left, top } = clampTerminalMenuPosition(
+              terminalMenu.left,
+              terminalMenu.top,
+              window.innerWidth,
+              window.innerHeight,
+              rect.width,
+              rect.height
+            )
+            if (left !== terminalMenu.left || top !== terminalMenu.top) {
+              setTerminalMenu({ left, top })
+              return
+            }
+            if (!terminalMenuReady) window.requestAnimationFrame(() => setTerminalMenuReady(true))
+          }}
+          style={{ left: terminalMenu.left, top: terminalMenu.top, visibility: terminalMenuReady ? 'visible' : 'hidden' }}
           onMouseDown={event => event.stopPropagation()}>
           <button type="button" disabled={!selectionText} onClick={() => {
             closeTerminalMenu()

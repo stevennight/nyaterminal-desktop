@@ -15,7 +15,11 @@ describe('terminalClipboard', () => {
   })
 
   it('clamps the terminal menu inside the viewport', () => {
-    expect(clampTerminalMenuPosition(999, 999, 320, 240)).toEqual({ left: 132, top: 108 })
+    expect(clampTerminalMenuPosition(999, 999, 320, 240)).toEqual({ left: 132, top: 897 })
+  })
+
+  it('places the menu above the cursor when near the bottom edge', () => {
+    expect(clampTerminalMenuPosition(40, 230, 320, 240)).toEqual({ left: 40, top: 128 })
   })
 })
 
