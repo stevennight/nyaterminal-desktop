@@ -24,7 +24,7 @@ func TestDeleteCreatesEncryptedSynchronizationTombstone(t *testing.T) {
 	s := New(v)
 	connection, err := s.PutConnection(ctx, model.Connection{
 		Name: "server", Host: "example.test", Port: 22, Username: "root",
-		Authentication: "agent", Encoding: "utf-8",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -43,5 +43,45 @@ func TestDeleteCreatesEncryptedSynchronizationTombstone(t *testing.T) {
 		deletions[0].EntityID != connection.ID ||
 		deletions[0].EntityType != TypeConnection {
 		t.Fatalf("unexpected deletion journal: %#v", deletions)
+	}
+}
+
+func TestCommandSuggestionsIncludeGlobalHistory(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "server", Host: "example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, connection.ID, "ls -la", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, connection.ID, "ls -la", false); err != nil {
+		t.Fatal(err)
+	}
+	history, err := s.SuggestCommands(ctx, connection.ID, "ls", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Command != "ls -la" || history[0].UseCount != 2 {
+		t.Fatalf("unexpected connection history: %#v", history)
+	}
+	var global model.CommandHistory
+	if err := v.Get(ctx, TypeHistory, commandHistoryID("", "ls -la"), &global); err != nil {
+		t.Fatal(err)
+	}
+	if global.ConnectionID != "" || global.Command != "ls -la" || global.UseCount != 2 {
+		t.Fatalf("unexpected global history: %#v", global)
 	}
 }

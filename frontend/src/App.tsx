@@ -317,6 +317,7 @@ export function App() {
         onSaved={async () => { setTagEditor(false); await reload() }} />}
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
         onClose={() => setSettingsOpen(false)}
+        onReload={reload}
         onSaved={async () => { setSettingsOpen(false); await reload() }} />}
       {hostKey && (
         <HostKeyDialog value={hostKey.value} onCancel={() => {
@@ -604,10 +605,26 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }
       </select></label>
       <label className="check full"><input type="checkbox" checked={value.commandHistory}
         onChange={e => update('commandHistory', e.target.checked)} />记录并提示此连接的历史命令</label>
-      <label className="check full"><input type="checkbox" checked={value.syncSecrets ?? false}
-        onChange={e => update('syncSecrets', e.target.checked)} />同步此连接使用的密码或私钥</label>
+      <label className="full">密码/私钥同步策略<select
+        value={value.syncSecrets === undefined ? 'default' : value.syncSecrets ? 'yes' : 'no'}
+        onChange={event => setValue(current => {
+          const next = { ...current }
+          if (event.target.value === 'default') delete next.syncSecrets
+          else next.syncSecrets = event.target.value === 'yes'
+          return next
+        })}>
+        <option value="default">跟随全局设置</option>
+        <option value="yes">始终同步此连接的密码或私钥</option>
+        <option value="no">永不同步此连接的密码或私钥</option>
+      </select></label>
       <label className="check full"><input type="checkbox" checked={value.legacyAlgorithms}
-        onChange={e => update('legacyAlgorithms', e.target.checked)} />允许旧版弱算法（不推荐）</label>
+        onChange={e => {
+          const enabled = e.target.checked
+          if (enabled && !window.confirm(
+            '旧版兼容模式会允许已不推荐的 SSH 算法，仅应在无法升级的可信旧服务器上单独开启。确定启用吗？'
+          )) return
+          update('legacyAlgorithms', enabled)
+        }} />允许旧版弱算法（不推荐，仅当前连接生效）</label>
     </div>
     {error && <div className="form-error">{error}</div>}
     <footer className="modal-actions">
@@ -656,8 +673,9 @@ function TagEditor({ onClose, onSaved }: {
   </Modal>
 }
 
-function SettingsDialog({ value, vault, onClose, onSaved }: {
+function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
   value: Settings; vault: Bootstrap['vault']; onClose: () => void; onSaved: () => Promise<void>
+  onReload: () => Promise<void>
 }) {
   const [next, setNext] = useState(value)
   const [syncOpen, setSyncOpen] = useState(false)
@@ -752,11 +770,14 @@ function SettingsDialog({ value, vault, onClose, onSaved }: {
         : `${vault.quickUnlockMethod} 快速解锁未启用。`}
     </small>
     {systemUnlockStatus && <div className="form-error">{systemUnlockStatus}</div>}
-    {syncOpen && <SyncDialog settings={next} onClose={() => setSyncOpen(false)} />}
+    {syncOpen && <SyncDialog settings={next} onClose={() => setSyncOpen(false)}
+      onConfigured={onReload} />}
   </Modal>
 }
 
-function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => void }) {
+function SyncDialog({ settings, onClose, onConfigured }: {
+  settings: Settings; onClose: () => void; onConfigured: () => Promise<void>
+}) {
   const [serverUrl, setServerUrl] = useState('https://')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -784,6 +805,7 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
       const result = await api.InitializeSync(serverUrl, username, password, deviceName)
       setRecoveryCode(result.recoveryCode)
       setStatus('同步服务初始化完成。请立即离线保存恢复码。')
+      await onConfigured()
     } catch (error) { setStatus(String(error)) }
   }
   const sync = async () => {
@@ -801,6 +823,7 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
       )
       setStatus(`设备 ${result.deviceId} 已恢复，可以开始同步。`)
       setRecoveryInput('')
+      await onConfigured()
     } catch (error) { setStatus(String(error)) }
   }
   const rotateRecoveryCode = async () => {
@@ -851,6 +874,7 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
     try {
       const result = await api.ClaimDevicePairing(username, password, totpCode)
       setStatus(result.approved ? '设备配对完成，可以开始同步。' : '仍在等待已授权设备批准。')
+      if (result.approved) await onConfigured()
     } catch (error) { setStatus(String(error)) }
   }
   const loadDevices = async () => {
@@ -883,6 +907,10 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
     <label>账号密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
     <label>设备名称<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
     <div className="sync-button-grid">
+      <button className="secondary" onClick={() => {
+        if (recoveryCode && !window.confirm('已经生成过同步恢复码。重新初始化可能覆盖当前同步配置，确定继续吗？')) return
+        void initialize()
+      }}>初始化新同步保险库</button>
       <button className="secondary" onClick={() => void beginPairing()}>将本设备加入已有保险库</button>
       <button className="secondary" onClick={() => void sync()}>立即同步</button>
     </div>
@@ -923,8 +951,11 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
           <span><strong>{device.name}</strong><small>
             {device.revoked ? '已撤销' : device.approved ? '已授权' : '等待批准'}
           </small></span>
-          {!device.revoked && <button onClick={() => void api.RevokeSyncDevice(device.id)
-            .then(loadDevices).catch(error => setStatus(String(error)))}>撤销</button>}
+          {!device.revoked && <button onClick={() => {
+            if (!window.confirm(`确定撤销设备「${device.name}」？如果这是当前设备，之后需要重新配对或用恢复码恢复。`)) return
+            void api.RevokeSyncDevice(device.id)
+              .then(loadDevices).catch(error => setStatus(String(error)))
+          }}>撤销</button>}
         </div>)}
         {!devices.length && <small>同步尚未配置，或暂无设备。</small>}
       </div>
@@ -952,8 +983,6 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
       轮换同步恢复码
     </button>
     {status && <div className="sync-status">{status}</div>}
-    <footer className="modal-actions">
-      <button className="primary" onClick={() => void initialize()}>初始化服务</button></footer>
   </div>
 }
 

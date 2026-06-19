@@ -391,6 +391,18 @@ func (a *App) ListLocal(token, relativePath string) ([]sftpclient.Entry, error) 
 	return a.sftp.ListLocal(token, relativePath)
 }
 
+func (a *App) CreateLocalDirectory(token, relativePath string) error {
+	return a.sftp.CreateLocalDirectory(token, relativePath)
+}
+
+func (a *App) RenameLocal(token, oldRelativePath, newRelativePath string) error {
+	return a.sftp.RenameLocal(token, oldRelativePath, newRelativePath)
+}
+
+func (a *App) DeleteLocal(token, relativePath string, directory bool) error {
+	return a.sftp.DeleteLocal(token, relativePath, directory)
+}
+
 func (a *App) UploadGranted(
 	connectionID, token, localRelativePath, remotePath string,
 ) error {

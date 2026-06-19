@@ -11,15 +11,7 @@ import (
 )
 
 func TestLocalDirectoryGrantBlocksTraversal(t *testing.T) {
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := os.MkdirTemp(workingDirectory, "sftp-grant-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("ok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +28,21 @@ func TestLocalDirectoryGrantBlocksTraversal(t *testing.T) {
 	}
 	if _, err := service.ListLocal("invalid", "."); err == nil {
 		t.Fatal("invalid capability token was accepted")
+	}
+	if err := service.CreateLocalDirectory(location.Token, "nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RenameLocal(location.Token, "file.txt", "nested/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RenameLocal(location.Token, "nested/renamed.txt", "../escape.txt"); err == nil {
+		t.Fatal("local rename traversal was accepted")
+	}
+	if err := service.DeleteLocal(location.Token, ".", true); err == nil {
+		t.Fatal("local root deletion was accepted")
+	}
+	if err := service.DeleteLocal(location.Token, "nested", true); err != nil {
+		t.Fatal(err)
 	}
 }
 

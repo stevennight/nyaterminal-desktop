@@ -86,6 +86,12 @@ func (s *Store) Finish(id string) error {
 	if pending == nil {
 		return errors.New("ZMODEM receive handle not found")
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(pending.tempPath)
+		}
+	}()
 	if err := pending.file.Sync(); err != nil {
 		pending.file.Close()
 		return err
@@ -97,7 +103,11 @@ func (s *Store) Finish(id string) error {
 		return errors.New("ZMODEM file size does not match sender metadata")
 	}
 	_ = os.Remove(pending.finalPath)
-	return os.Rename(pending.tempPath, pending.finalPath)
+	if err := os.Rename(pending.tempPath, pending.finalPath); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *Store) Cancel(id string) error {

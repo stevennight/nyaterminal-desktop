@@ -86,6 +86,21 @@ func TestPasswordSSHRequiresHostTrustAndDetectsChangedKey(t *testing.T) {
 	}
 }
 
+func TestPortForwardingIsReserved(t *testing.T) {
+	manager := &Manager{}
+	_, err := manager.StartPortForward(context.Background(), PortForwardRequest{
+		ConnectionID: "connection-id", Mode: "local",
+		ListenHost: "127.0.0.1", ListenPort: 0,
+		TargetHost: "127.0.0.1", TargetPort: 22,
+	})
+	if !errors.Is(err, ErrPortForwardingReserved) {
+		t.Fatalf("expected reserved port forwarding error, got %v", err)
+	}
+	if err := manager.StopPortForward("forward-id"); !errors.Is(err, ErrPortForwardingReserved) {
+		t.Fatalf("expected reserved port forwarding stop error, got %v", err)
+	}
+}
+
 func startTestSSHServer(t *testing.T, password string) (string, ssh.Signer, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)

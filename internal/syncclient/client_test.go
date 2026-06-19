@@ -1,13 +1,21 @@
 package syncclient
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
 )
 
 func TestSyncCiphertextAuthenticatesMetadata(t *testing.T) {
@@ -126,6 +134,67 @@ func TestCredentialSyncPolicyUsesCredentialThenConnectionThenGlobal(t *testing.T
 	}
 	if !credentialPayloadAllowed("other", []byte(`{"name":"key"}`), true, nil) {
 		t.Fatal("global default was ignored")
+	}
+}
+
+func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
+	var sawNewAccess bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			_ = json.NewEncoder(w).Encode(tokenPair{
+				AccessToken: "new-access", RefreshToken: "new-refresh",
+				AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+				RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+			})
+		case "/ok":
+			if r.Header.Get("Authorization") != "Bearer new-access" {
+				http.Error(w, "wrong token", http.StatusUnauthorized)
+				return
+			}
+			sawNewAccess = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	profile := Profile{
+		ServerURL: server.URL, DeviceID: "device-a", DeviceName: "test",
+		SyncRootKey: make([]byte, 32), AccessToken: "old-access",
+		RefreshToken:     "old-refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(-time.Minute),
+		RefreshExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := client.saveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.authorizedRequest(ctx, &profile, http.MethodGet, "/ok", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sawNewAccess {
+		t.Fatal("authorized request did not use refreshed access token")
+	}
+	loaded, _, err := client.load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "new-refresh" {
+		t.Fatalf("refreshed tokens were not persisted: %#v", loaded)
 	}
 }
 

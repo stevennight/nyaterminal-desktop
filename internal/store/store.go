@@ -329,20 +329,11 @@ func (s *Store) AddCommand(ctx context.Context, connectionID, command string, pr
 			return nil
 		}
 	}
-	id := connectionID + ":" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(command)).String()
-	var history model.CommandHistory
-	err = s.vault.Get(ctx, TypeHistory, id, &history)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	now := time.Now().UTC()
+	if err := s.upsertCommandHistory(ctx, commandHistoryID(connectionID, command), connectionID, command, now); err != nil {
 		return err
 	}
-	if history.ID == "" {
-		history = model.CommandHistory{
-			ID: id, ConnectionID: connectionID, Command: command,
-		}
-	}
-	history.UseCount++
-	history.LastUsedAt = time.Now().UTC()
-	return s.vault.Put(ctx, TypeHistory, id, history)
+	return s.upsertCommandHistory(ctx, commandHistoryID("", command), "", command, now)
 }
 
 func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string, limit int) ([]model.CommandHistory, error) {
@@ -358,12 +349,19 @@ func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string
 		return nil, err
 	}
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
-	var result []model.CommandHistory
+	resultByCommand := make(map[string]model.CommandHistory)
 	for _, value := range valuesAs[model.CommandHistory](values) {
 		if (value.ConnectionID == connectionID || value.ConnectionID == "") &&
 			strings.HasPrefix(strings.ToLower(value.Command), prefix) {
-			result = append(result, value)
+			existing, ok := resultByCommand[value.Command]
+			if !ok || betterHistoryCandidate(value, existing, connectionID) {
+				resultByCommand[value.Command] = value
+			}
 		}
+	}
+	result := make([]model.CommandHistory, 0, len(resultByCommand))
+	for _, value := range resultByCommand {
+		result = append(result, value)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].UseCount != result[j].UseCount {
@@ -378,6 +376,41 @@ func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func (s *Store) upsertCommandHistory(
+	ctx context.Context, id, connectionID, command string, now time.Time,
+) error {
+	var history model.CommandHistory
+	err := s.vault.Get(ctx, TypeHistory, id, &history)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if history.ID == "" {
+		history = model.CommandHistory{
+			ID: id, ConnectionID: connectionID, Command: command,
+		}
+	}
+	history.UseCount++
+	history.LastUsedAt = now
+	return s.vault.Put(ctx, TypeHistory, id, history)
+}
+
+func commandHistoryID(connectionID, command string) string {
+	return connectionID + ":" + uuid.NewSHA1(uuid.NameSpaceURL, []byte(command)).String()
+}
+
+func betterHistoryCandidate(candidate, existing model.CommandHistory, connectionID string) bool {
+	if candidate.UseCount != existing.UseCount {
+		return candidate.UseCount > existing.UseCount
+	}
+	if candidate.LastUsedAt.Equal(existing.LastUsedAt) {
+		if candidate.ConnectionID == connectionID && existing.ConnectionID == "" {
+			return true
+		}
+		return false
+	}
+	return candidate.LastUsedAt.After(existing.LastUsedAt)
 }
 
 func synchronizableType(recordType string) bool {

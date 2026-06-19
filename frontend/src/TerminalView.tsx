@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
@@ -70,15 +71,19 @@ export function TerminalView({
         if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
           window.runtime?.BrowserOpenURL?.(parsed.toString())
         }
-      } catch {
-        // Ignore malformed or unsafe terminal links.
-      }
+    } catch {
+      // Ignore malformed or unsafe terminal links.
+    }
     }))
     terminal.open(host.current)
     try {
       terminal.loadAddon(new WebglAddon())
     } catch {
-      // xterm automatically keeps its DOM renderer when WebGL is unavailable.
+      try {
+        terminal.loadAddon(new CanvasAddon())
+      } catch {
+        // xterm automatically keeps its DOM renderer when Canvas is unavailable.
+      }
     }
     fit.fit()
 

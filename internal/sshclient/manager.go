@@ -27,6 +27,8 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 )
 
+var ErrPortForwardingReserved = errors.New("SSH port forwarding is reserved for a future release")
+
 type Manager struct {
 	mu                 sync.RWMutex
 	store              *store.Store
@@ -62,6 +64,21 @@ type StartRequest struct {
 type StartResult struct {
 	SessionID string `json:"sessionId"`
 	URL       string `json:"url"`
+}
+
+type PortForwardRequest struct {
+	ConnectionID string `json:"connectionId"`
+	Mode         string `json:"mode"`
+	ListenHost   string `json:"listenHost"`
+	ListenPort   int    `json:"listenPort"`
+	TargetHost   string `json:"targetHost"`
+	TargetPort   int    `json:"targetPort"`
+}
+
+type PortForwardHandle struct {
+	ID          string `json:"id"`
+	ListenAddr  string `json:"listenAddr"`
+	Description string `json:"description"`
 }
 
 type PendingHostKey struct {
@@ -236,6 +253,17 @@ func (m *Manager) DialConnection(ctx context.Context, connectionID string, respo
 	return m.dial(ctx, connection, credential, responses)
 }
 
+func (m *Manager) StartPortForward(
+	context.Context,
+	PortForwardRequest,
+) (PortForwardHandle, error) {
+	return PortForwardHandle{}, ErrPortForwardingReserved
+}
+
+func (m *Manager) StopPortForward(string) error {
+	return ErrPortForwardingReserved
+}
+
 func (m *Manager) Resize(sessionID string, columns, rows int) error {
 	m.mu.RLock()
 	session := m.sessions[sessionID]
@@ -293,23 +321,35 @@ func (m *Manager) dial(ctx context.Context, connection model.Connection, credent
 		defer agentConnection.Close()
 	}
 	timeout := time.Duration(connection.ConnectTimeoutSec) * time.Second
+	algorithms := ssh.SupportedAlgorithms()
 	config := &ssh.ClientConfig{
 		User: connection.Username, Auth: authMethods,
 		HostKeyCallback: m.hostKeyCallback(ctx),
-		Timeout:         timeout,
+		HostKeyAlgorithms: append(
+			[]string(nil), algorithms.HostKeys...,
+		),
+		Timeout: timeout,
 	}
+	config.Config.KeyExchanges = append([]string(nil), algorithms.KeyExchanges...)
+	config.Config.Ciphers = append([]string(nil), algorithms.Ciphers...)
+	config.Config.MACs = append([]string(nil), algorithms.MACs...)
 	if connection.LegacyAlgorithms {
+		insecureAlgorithms := ssh.InsecureAlgorithms()
 		config.HostKeyAlgorithms = append(
-			append([]string{}, ssh.SupportedAlgorithms().HostKeys...),
-			ssh.InsecureAlgorithms().HostKeys...,
+			config.HostKeyAlgorithms,
+			insecureAlgorithms.HostKeys...,
 		)
 		config.Config.KeyExchanges = append(
-			append([]string{}, ssh.SupportedAlgorithms().KeyExchanges...),
-			ssh.InsecureAlgorithms().KeyExchanges...,
+			config.Config.KeyExchanges,
+			insecureAlgorithms.KeyExchanges...,
 		)
 		config.Config.Ciphers = append(
-			append([]string{}, ssh.SupportedAlgorithms().Ciphers...),
-			ssh.InsecureAlgorithms().Ciphers...,
+			config.Config.Ciphers,
+			insecureAlgorithms.Ciphers...,
+		)
+		config.Config.MACs = append(
+			config.Config.MACs,
+			insecureAlgorithms.MACs...,
 		)
 	}
 	address := net.JoinHostPort(connection.Host, strconv.Itoa(connection.Port))

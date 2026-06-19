@@ -66,9 +66,12 @@ export function SftpWorkspace({ connection, onClose }: {
     return () => window.clearInterval(timer)
   }, [connection.id])
 
-  const transfer = async (direction: SFTPTransfer['direction']) => {
+  const transfer = async (
+    direction: SFTPTransfer['direction'],
+    explicitSources?: RemoteEntry[]
+  ) => {
     if (!token) return setError('请先选择本地工作目录')
-    const sources = (direction === 'upload' ? selectedLocal : selectedRemote)
+    const sources = (explicitSources ?? (direction === 'upload' ? selectedLocal : selectedRemote))
       .filter(item => !item.isDir)
     if (!sources.length) return setError('请选择要传输的文件')
     try {
@@ -93,6 +96,45 @@ export function SftpWorkspace({ connection, onClose }: {
     } catch (reason) {
       setError(String(reason))
     }
+  }
+
+  const dropTransfer = async (target: 'local' | 'remote', source: 'local' | 'remote', paths: string[]) => {
+    if (target === source) return
+    const sourceItems = source === 'local' ? localItems : remoteItems
+    const entries = sourceItems.filter(item => paths.includes(item.path))
+    await transfer(source === 'local' ? 'upload' : 'download', entries)
+  }
+
+  const createLocalDirectory = async () => {
+    if (!token) return setError('请先选择本地工作目录')
+    const name = window.prompt('新建本地目录名称')
+    if (!name?.trim()) return
+    try {
+      await api.CreateLocalDirectory(token, joinLocal(localPath, name.trim()))
+      await loadLocal()
+    } catch (reason) { setError(String(reason)) }
+  }
+
+  const renameLocal = async () => {
+    if (!token || selectedLocal.length !== 1) return
+    const selected = selectedLocal[0]
+    const name = window.prompt('新的名称', selected.name)
+    if (!name?.trim() || name.trim() === selected.name) return
+    try {
+      await api.RenameLocal(token, selected.path, joinLocal(localPath, name.trim()))
+      await loadLocal()
+    } catch (reason) { setError(String(reason)) }
+  }
+
+  const deleteLocal = async () => {
+    if (!token || !selectedLocal.length ||
+      !window.confirm(`确定删除选中的 ${selectedLocal.length} 个本地项目？`)) return
+    try {
+      for (const selected of selectedLocal) {
+        await api.DeleteLocal(token, selected.path, selected.isDir)
+      }
+      await loadLocal()
+    } catch (reason) { setError(String(reason)) }
   }
 
   const createRemoteDirectory = async () => {
@@ -139,6 +181,7 @@ export function SftpWorkspace({ connection, onClose }: {
       <div className="sftp-columns">
         <FileColumn title="本地" root={localRoot || '尚未选择目录'} path={localPath}
           items={localItems} selected={selectedLocal.map(item => item.path)}
+          side="local"
           onChooseRoot={() => void chooseLocal()}
           onRefresh={() => void loadLocal()}
           onParent={() => void loadLocal(parentLocal(localPath))}
@@ -146,7 +189,10 @@ export function SftpWorkspace({ connection, onClose }: {
             ? current.some(item => item.path === entry.path)
               ? current.filter(item => item.path !== entry.path) : [...current, entry]
             : [entry])}
-          onOpen={entry => entry.isDir && void loadLocal(entry.path)} />
+          onOpen={entry => entry.isDir && void loadLocal(entry.path)}
+          onDragEntries={entry => selectedLocal.some(item => item.path === entry.path)
+            ? selectedLocal : [entry]}
+          onDropFiles={(source, paths) => void dropTransfer('local', source, paths)} />
         <div className="transfer-actions">
           <button disabled={!selectedLocal.some(item => !item.isDir)}
             title="上传到远端" onClick={() => void transfer('upload')}><ArrowUp size={18} /></button>
@@ -155,23 +201,36 @@ export function SftpWorkspace({ connection, onClose }: {
         </div>
         <FileColumn title="远端" root={`${connection.username}@${connection.host}`} path={remotePath}
           items={remoteItems} selected={selectedRemote.map(item => item.path)}
+          side="remote"
           onRefresh={() => void loadRemote()}
           onParent={() => void loadRemote(parentRemote(remotePath))}
           onSelect={(entry, additive) => setSelectedRemote(current => additive
             ? current.some(item => item.path === entry.path)
               ? current.filter(item => item.path !== entry.path) : [...current, entry]
             : [entry])}
-          onOpen={entry => entry.isDir && void loadRemote(entry.path)} />
+          onOpen={entry => entry.isDir && void loadRemote(entry.path)}
+          onDragEntries={entry => selectedRemote.some(item => item.path === entry.path)
+            ? selectedRemote : [entry]}
+          onDropFiles={(source, paths) => void dropTransfer('remote', source, paths)} />
       </div>
       <div className="remote-file-actions">
+        <button disabled={!token} onClick={() => void createLocalDirectory()}>
+          <FolderPlus size={14} />新建本地目录
+        </button>
+        <button disabled={selectedLocal.length !== 1} onClick={() => void renameLocal()}>
+          <Pencil size={14} />重命名本地
+        </button>
+        <button disabled={!selectedLocal.length} onClick={() => void deleteLocal()}>
+          <Trash2 size={14} />删除本地
+        </button>
         <button onClick={() => void createRemoteDirectory()}>
-          <FolderPlus size={14} />新建目录
+          <FolderPlus size={14} />新建远端目录
         </button>
         <button disabled={selectedRemote.length !== 1} onClick={() => void renameRemote()}>
-          <Pencil size={14} />重命名
+          <Pencil size={14} />重命名远端
         </button>
         <button disabled={!selectedRemote.length} onClick={() => void deleteRemote()}>
-          <Trash2 size={14} />删除
+          <Trash2 size={14} />删除远端
         </button>
       </div>
       <div className="transfer-queue">
@@ -214,11 +273,14 @@ function transferStatus(item: SFTPTransfer) {
   return `${labels[item.status]} · ${progress}`
 }
 
-function FileColumn({ title, root, path, items, selected, onChooseRoot, onRefresh,
-  onParent, onSelect, onOpen }: {
+function FileColumn({ title, root, path, items, selected, side, onChooseRoot, onRefresh,
+  onParent, onSelect, onOpen, onDragEntries, onDropFiles }: {
   title: string; root: string; path: string; items: RemoteEntry[]; selected: string[]
+  side: 'local' | 'remote'
   onChooseRoot?: () => void; onRefresh: () => void; onParent: () => void
   onSelect: (entry: RemoteEntry, additive: boolean) => void; onOpen: (entry: RemoteEntry) => void
+  onDragEntries: (entry: RemoteEntry) => RemoteEntry[]
+  onDropFiles: (source: 'local' | 'remote', paths: string[]) => void
 }) {
   return <section className="file-column">
     <header><div><strong>{title}</strong><small>{root}</small></div>
@@ -227,9 +289,34 @@ function FileColumn({ title, root, path, items, selected, onChooseRoot, onRefres
         <button title="刷新" onClick={onRefresh}><RefreshCw size={15} /></button></div></header>
     <div className="column-path">{path}</div>
     <div className="column-head"><span>名称</span><span>大小</span><span>修改时间</span></div>
-    <div className="column-files">
+    <div className="column-files"
+      onDragOver={event => event.preventDefault()}
+      onDrop={event => {
+        event.preventDefault()
+        const source = event.dataTransfer.getData('application/x-nya-sftp-side') as 'local' | 'remote'
+        const rawPaths = event.dataTransfer.getData('application/x-nya-sftp-paths')
+        if (!source || !rawPaths) return
+        try {
+          const paths = JSON.parse(rawPaths)
+          if (Array.isArray(paths) && paths.every(item => typeof item === 'string')) {
+            onDropFiles(source, paths)
+          }
+        } catch {
+          return
+        }
+      }}>
       {items.map(entry => <button key={entry.path}
         className={selected.includes(entry.path) ? 'selected' : ''}
+        draggable
+        onDragStart={event => {
+          const entries = onDragEntries(entry)
+          event.dataTransfer.setData('application/x-nya-sftp-side', side)
+          event.dataTransfer.setData(
+            'application/x-nya-sftp-paths',
+            JSON.stringify(entries.map(item => item.path))
+          )
+          event.dataTransfer.effectAllowed = 'copyMove'
+        }}
         onClick={event => onSelect(entry, event.ctrlKey || event.metaKey)}
         onDoubleClick={() => onOpen(entry)}>
         {entry.isDir ? <Folder size={16} /> : <i className="file-dot" />}

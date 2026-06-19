@@ -112,6 +112,17 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .file-dot { width: 8px; height: 10px; border: 1px solid var(--muted); border-radius: 1px; }
 .inline-error, .form-error { margin: 8px 10px; padding: 9px; border-radius: 7px; background: #d33d5120; color: #ff8894; font-size: 11px; }
 .empty { color: var(--muted); text-align: center; padding: 25px; font-size: 11px; }
+.panel-transfer-queue { max-height: 210px; overflow: auto; border-top: 1px solid var(--line); padding: 9px; background: var(--bg); }
+.panel-transfer-queue > strong { display: block; margin-bottom: 6px; color: var(--muted); font-size: 10px; }
+.panel-transfer-queue > span { color: var(--muted); font-size: 10px; }
+.panel-transfer { display: grid; grid-template-columns: 16px minmax(0, 1fr) 72px 44px; gap: 5px; align-items: center; min-height: 28px; border-top: 1px solid var(--line); font-size: 9px; }
+.panel-transfer i { color: var(--accent); font-style: normal; }
+.panel-transfer span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-transfer small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-transfer.failed small { color: #ff7c88; }
+.panel-transfer.completed small { color: #70d6a1; }
+.panel-transfer div { display: flex; justify-content: flex-end; gap: 2px; }
+.panel-transfer button { width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: var(--panel2); color: var(--muted); cursor: pointer; }
 
 .sftp-workspace-backdrop { position: fixed; inset: 0; z-index: 45; padding: 26px; background: #02050bc9; backdrop-filter: blur(5px); }
 .sftp-workspace { height: 100%; display: grid; grid-template-rows: 52px auto minmax(0, 1fr) 145px; border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: var(--panel); box-shadow: 0 35px 100px #000c; }

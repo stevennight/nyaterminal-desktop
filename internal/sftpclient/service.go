@@ -67,11 +67,7 @@ func New(sshManager *sshclient.Manager) *Service {
 }
 
 func (s *Service) GrantLocalDirectory(root string) (LocalLocation, error) {
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return LocalLocation{}, err
-	}
-	resolved, err = filepath.Abs(resolved)
+	resolved, err := resolveExistingLocalPath(root)
 	if err != nil {
 		return LocalLocation{}, err
 	}
@@ -144,6 +140,50 @@ func (s *Service) DownloadGranted(
 		return err
 	}
 	return s.Download(ctx, connectionID, remotePath, localPath)
+}
+
+func (s *Service) CreateLocalDirectory(token, relativePath string) error {
+	localPath, err := s.resolveGrantedPath(token, relativePath)
+	if err != nil {
+		return err
+	}
+	return os.Mkdir(localPath, 0o700)
+}
+
+func (s *Service) RenameLocal(token, oldRelativePath, newRelativePath string) error {
+	oldPath, err := s.resolveGrantedPath(token, oldRelativePath)
+	if err != nil {
+		return err
+	}
+	newPath, err := s.resolveGrantedPath(token, newRelativePath)
+	if err != nil {
+		return err
+	}
+	return os.Rename(oldPath, newPath)
+}
+
+func (s *Service) DeleteLocal(token, relativePath string, directory bool) error {
+	if filepath.Clean(relativePath) == "." {
+		return errors.New("refusing to delete the granted local root")
+	}
+	localPath, err := s.resolveGrantedPath(token, relativePath)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(localPath)
+	if err != nil {
+		return err
+	}
+	if directory {
+		if !info.IsDir() {
+			return errors.New("selected local path is not a directory")
+		}
+		return os.RemoveAll(localPath)
+	}
+	if info.IsDir() {
+		return errors.New("selected local path is a directory")
+	}
+	return os.Remove(localPath)
 }
 
 func (s *Service) ListRemote(ctx context.Context, connectionID, remotePath string) ([]Entry, error) {
@@ -364,7 +404,7 @@ func (s *Service) resolveGrantedPath(token, relativePath string) (string, error)
 	} else if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(checkedPath)
+	resolved, err := resolveExistingLocalPath(checkedPath)
 	if err != nil {
 		return "", err
 	}
@@ -395,7 +435,7 @@ func cleanRemote(value string) (string, error) {
 }
 
 func validateLocalFile(value string) (string, error) {
-	absolute, err := filepath.Abs(value)
+	absolute, err := resolveExistingLocalPath(value)
 	if err != nil {
 		return "", err
 	}
@@ -407,6 +447,64 @@ func validateLocalFile(value string) (string, error) {
 		return "", errors.New("local source must be a regular file")
 	}
 	return absolute, nil
+}
+
+func resolveExistingLocalPath(value string) (string, error) {
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err == nil {
+		return filepath.Abs(resolved)
+	}
+	if symlink, walkErr := pathHasSymlinkComponent(absolute); walkErr != nil {
+		return "", err
+	} else if symlink {
+		return "", err
+	}
+	if _, statErr := os.Stat(absolute); statErr != nil {
+		return "", err
+	}
+	return absolute, nil
+}
+
+func pathHasSymlinkComponent(absolute string) (bool, error) {
+	cleaned := filepath.Clean(absolute)
+	volume := filepath.VolumeName(cleaned)
+	rest := strings.TrimPrefix(cleaned, volume)
+	rest = strings.Trim(rest, string(filepath.Separator))
+	current := volume
+	if strings.HasPrefix(cleaned, string(filepath.Separator)) ||
+		(volume != "" && strings.HasPrefix(strings.TrimPrefix(cleaned, volume), string(filepath.Separator))) {
+		current += string(filepath.Separator)
+	}
+	if rest == "" {
+		info, err := os.Lstat(cleaned)
+		if err != nil {
+			return false, err
+		}
+		return info.Mode()&os.ModeSymlink != 0, nil
+	}
+	for _, part := range strings.Split(rest, string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		if current == "" || current == string(filepath.Separator) ||
+			strings.HasSuffix(current, string(filepath.Separator)) {
+			current = current + part
+		} else {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func validateLocalDestination(value string) (string, error) {

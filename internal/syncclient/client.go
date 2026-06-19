@@ -1225,6 +1225,9 @@ func (c *Client) authorizedRequest(ctx context.Context, profile *Profile, method
 		profile.RefreshToken = tokens.RefreshToken
 		profile.AccessExpiresAt = tokens.AccessExpiresAt
 		profile.RefreshExpiresAt = tokens.RefreshExpiresAt
+		if err := c.saveProfile(ctx, *profile); err != nil {
+			return err
+		}
 	}
 	return c.request(ctx, method, profile.ServerURL+path, profile.AccessToken, request, response)
 }

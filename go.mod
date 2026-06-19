@@ -6,17 +6,20 @@ require (
 	github.com/coder/websocket v1.8.13
 	github.com/google/uuid v1.6.0
 	github.com/pkg/sftp v1.13.9
-	github.com/wailsapp/wails/v2 v2.10.2
+	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/xanzy/ssh-agent v0.3.3
 	github.com/zalando/go-keyring v0.2.6
 	github.com/zzl/go-com v1.5.0
 	github.com/zzl/go-winrtapi v1.0.0
 	golang.org/x/crypto v0.52.0
+	golang.org/x/sys v0.45.0
+	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.38.2
 )
 
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
+	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
@@ -43,15 +46,13 @@ require (
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
-	github.com/wailsapp/go-webview2 v1.0.19 // indirect
+	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/zzl/go-win32api/v2 v2.1.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	modernc.org/libc v1.66.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

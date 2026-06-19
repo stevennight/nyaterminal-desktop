@@ -50,3 +50,25 @@ func TestReceiveRejectsAnnouncedSizeOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReceiveCleansTemporaryFileOnSizeMismatch(t *testing.T) {
+	store := New()
+	defer store.Close()
+	target := filepath.Join(t.TempDir(), "received.bin")
+	id, err := store.Begin(target, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(id, []byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Finish(id); err == nil {
+		t.Fatal("size mismatch was accepted")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("mismatched receive was committed")
+	}
+	if _, err := os.Stat(target + ".nyapart"); !os.IsNotExist(err) {
+		t.Fatal("temporary receive file remains after mismatch")
+	}
+}

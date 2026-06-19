@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
   ArrowDownToLine, ArrowUpFromLine, Folder, FolderPlus, Maximize2,
-  Pencil, RefreshCw, Trash2, X
+  Pause, Pencil, Play, RefreshCw, Square, Trash2, X
 } from 'lucide-react'
 import { api } from './bridge'
-import type { Connection, RemoteEntry } from './types'
+import type { Connection, RemoteEntry, SFTPTransfer } from './types'
 
 export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   connection: Connection
@@ -16,6 +16,7 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<RemoteEntry>()
+  const [transfers, setTransfers] = useState<SFTPTransfer[]>([])
 
   const load = async (next = remotePath) => {
     setBusy(true)
@@ -32,6 +33,16 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   }
 
   useEffect(() => { void load('.') }, [connection.id])
+
+  useEffect(() => {
+    const update = () => void api.ListSFTPTransfers().then(values =>
+      setTransfers(values.filter(value => value.connectionId === connection.id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+    ).catch(value => setError(String(value)))
+    update()
+    const timer = window.setInterval(update, 700)
+    return () => window.clearInterval(timer)
+  }, [connection.id])
 
   const createDirectory = async () => {
     const name = window.prompt('新建远端目录名称')
@@ -91,15 +102,51 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
             <span className="file-name">{entry.name}</span>
             <span className="file-size">{entry.isDir ? '' : formatSize(entry.size)}</span>
             {!entry.isDir && (
-              <button title="下载" onClick={() => void api.DownloadFile(connection.id, entry.path, entry.name)}>
+              <button title="下载" onClick={() => void api.DownloadFile(connection.id, entry.path, entry.name)
+                .catch(value => setError(String(value)))}>
                 <ArrowDownToLine size={14} />
               </button>
             )}
           </div>
         ))}
       </div>
+      <div className="panel-transfer-queue">
+        <strong>传输队列</strong>
+        {!transfers.length && <span>暂无任务</span>}
+        {transfers.slice(0, 5).map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
+          <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
+          <span title={item.name}>{item.name}</span>
+          <small>{transferStatus(item)}</small>
+          <div>
+            {(item.status === 'running' || item.status === 'queued') &&
+              <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
+                <Pause size={12} />
+              </button>}
+            {(item.status === 'paused' || item.status === 'failed') &&
+              <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
+                <Play size={12} />
+              </button>}
+            {!['completed', 'cancelled'].includes(item.status) &&
+              <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
+                <Square size={11} />
+              </button>}
+          </div>
+        </div>)}
+      </div>
     </aside>
   )
+}
+
+function transferStatus(item: SFTPTransfer) {
+  if (item.status === 'failed') return item.error || '失败'
+  const progress = item.totalBytes > 0
+    ? `${Math.floor(item.bytesDone * 100 / item.totalBytes)}%`
+    : formatSize(item.bytesDone)
+  const labels: Record<SFTPTransfer['status'], string> = {
+    queued: '等待中', running: '传输中', paused: '已暂停',
+    completed: '已完成', failed: '失败', cancelled: '已取消'
+  }
+  return `${labels[item.status]} · ${progress}`
 }
 
 function joinRemote(parent: string, name: string) {

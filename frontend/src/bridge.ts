@@ -42,6 +42,9 @@ type Backend = {
   ListRemote(connectionId: string, remotePath: string): Promise<RemoteEntry[]>
   ChooseLocalDirectory(): Promise<{ token: string; path: string; items: RemoteEntry[] }>
   ListLocal(token: string, relativePath: string): Promise<RemoteEntry[]>
+  CreateLocalDirectory(token: string, relativePath: string): Promise<void>
+  RenameLocal(token: string, oldRelativePath: string, newRelativePath: string): Promise<void>
+  DeleteLocal(token: string, relativePath: string, directory: boolean): Promise<void>
   UploadGranted(connectionId: string, token: string, localRelativePath: string, remotePath: string): Promise<void>
   DownloadGranted(connectionId: string, remotePath: string, token: string, localRelativePath: string): Promise<void>
   StartSFTPUpload(

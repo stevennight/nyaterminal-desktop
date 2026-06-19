@@ -19,6 +19,18 @@ cd ..
 wails dev
 ```
 
+Or use the helper script from `desktop/`:
+
+```powershell
+.\build.ps1
+```
+
+For a dev loop:
+
+```powershell
+.\build.ps1 -Mode dev
+```
+
 The frontend never receives stored credentials directly. SSH and SFTP operations
 resolve encrypted credentials inside the Go process.
 
@@ -26,11 +38,21 @@ The Windows agent integration supports both the native OpenSSH agent and
 Pageant. Keyboard-interactive authentication is presented as a live challenge;
 one-time codes are never saved.
 
+The terminal prefers WebGL rendering and falls back to a 2D canvas renderer
+before using xterm's default DOM renderer.
+
+SSH port forwarding/tunnels are intentionally not exposed in the first release.
+The Go SSH session layer contains a reserved port-forwarding interface so a
+future implementation can be added without changing connection storage or UI
+contracts.
+
 ## Security behavior
 
 - Windows quick unlock is gated by Windows Hello user verification.
 - macOS CGO builds use LocalAuthentication; Linux uses the current Secret
   Service session and falls back to the master password when unavailable.
+- Default SSH negotiation is pinned to `ssh.SupportedAlgorithms()`; weak legacy
+  algorithms are only appended per connection after an explicit risk prompt.
 - The vault database is encrypted record-by-record with XChaCha20-Poly1305 and
   the Windows data directory receives a protected user/SYSTEM/Administrators ACL.
 - SFTP uses a bounded backend queue with progress, pause, cancellation and
