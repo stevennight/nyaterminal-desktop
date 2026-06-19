@@ -93,6 +93,7 @@ type Backend = {
   BeginSyncTOTPSetup(): Promise<{ secret: string; setupToken: string; uri: string }>
   ConfirmSyncTOTPSetup(setupToken: string, code: string): Promise<string[]>
   DisableSyncTOTP(password: string, code: string): Promise<void>
+  SetSyncAutoEnabled(enabled: boolean): Promise<void>
 }
 
 declare global {

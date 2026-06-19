@@ -11,7 +11,7 @@ import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
 import type {
   Bootstrap, Connection, Credential, Group, InteractiveChallenge,
-  PendingHostKey, Settings, Tag
+  PendingHostKey, Settings, SyncSummary, Tag
 } from './types'
 
 type SessionTab = {
@@ -45,6 +45,7 @@ export function App() {
   const [interactiveChallenge, setInteractiveChallenge] = useState<InteractiveChallenge>()
   const [query, setQuery] = useState('')
   const [activeTag, setActiveTag] = useState('')
+  const [syncBusy, setSyncBusy] = useState(false)
   const activityTimer = useRef<number | undefined>(undefined)
   const searchInput = useRef<HTMLInputElement>(null)
 
@@ -139,21 +140,6 @@ export function App() {
       document.removeEventListener('visibilitychange', visibility)
     }
   }, [bootstrap?.vault.locked, bootstrap?.settings?.disconnectOnLock])
-
-  useEffect(() => {
-    if (!bootstrap?.syncConfigured || bootstrap.vault.locked || !bootstrap.settings) return
-    const run = () => void api.SyncNow(
-      bootstrap.settings!.syncSecretsByDefault,
-      bootstrap.settings!.syncCommandHistory
-    ).catch(() => undefined)
-    const initial = window.setTimeout(run, 10_000)
-    const timer = window.setInterval(run, 5 * 60_000)
-    return () => {
-      window.clearTimeout(initial)
-      window.clearInterval(timer)
-    }
-  }, [bootstrap?.syncConfigured, bootstrap?.vault.locked,
-    bootstrap?.settings?.syncSecretsByDefault, bootstrap?.settings?.syncCommandHistory])
 
   const openConnection = (connection: Connection, privateSession = false) => {
     const id = crypto.randomUUID()
@@ -316,6 +302,9 @@ export function App() {
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
+        syncSummary={bootstrap.syncSummary}
+        syncBusy={syncBusy}
+        onSyncBusyChange={setSyncBusy}
         onClose={() => setSettingsOpen(false)}
         onReload={reload}
         onSaved={async () => { setSettingsOpen(false); await reload() }} />}
@@ -673,12 +662,14 @@ function TagEditor({ onClose, onSaved }: {
   </Modal>
 }
 
-function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
-  value: Settings; vault: Bootstrap['vault']; onClose: () => void; onSaved: () => Promise<void>
-  onReload: () => Promise<void>
+function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange, onClose, onSaved, onReload }: {
+  value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary
+  syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
+  onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
   const [next, setNext] = useState(value)
   const [syncOpen, setSyncOpen] = useState(false)
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(syncSummary?.autoSyncEnabled ?? true)
   const [lockPassword, setLockPassword] = useState('')
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
   const [systemUnlockStatus, setSystemUnlockStatus] = useState('')
@@ -686,6 +677,10 @@ function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
   const [newMasterPassword, setNewMasterPassword] = useState('')
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
   const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
+
+  useEffect(() => {
+    setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
+  }, [syncSummary?.autoSyncEnabled])
 
   const sections = [
     { id: 'appearance', label: '外观', icon: Paintbrush },
@@ -719,6 +714,30 @@ function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
       await onSaved()
     } catch (error) {
       setSystemUnlockStatus(String(error))
+    }
+  }
+
+  const syncNow = async () => {
+    onSyncBusyChange(true)
+    try {
+      const result = await api.SyncNow(next.syncSecretsByDefault, next.syncCommandHistory)
+      setSystemUnlockStatus(`完成：上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}`)
+      await onReload()
+    } catch (error) {
+      setSystemUnlockStatus(String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const setAutoSync = async (enabled: boolean) => {
+    setAutoSyncEnabled(enabled)
+    try {
+      await api.SetSyncAutoEnabled(enabled)
+      await onReload()
+    } catch (error) {
+      setSystemUnlockStatus(String(error))
+      setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
     }
   }
 
@@ -785,13 +804,33 @@ function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
   } else {
     content = <div className="settings-page">
       <h3>同步</h3>
+      <div className="sync-summary">
+        <div>
+          <strong>{syncSummary?.configured ? '已配置' : '未配置'}</strong>
+          <span>{syncSummary?.serverUrl ? `${syncSummary.serverUrl} · ${syncSummary.username}` : '尚未初始化同步保险库'}</span>
+        </div>
+        <div>
+          <strong>{syncSummary?.running ? '同步中' : syncSummary?.autoSyncEnabled === false ? '自动同步已关闭' : '自动同步已开启'}</strong>
+          <span>{syncSummary?.lastSyncedAt ? `上次同步：${new Date(syncSummary.lastSyncedAt).toLocaleString()}` : '还没有同步记录'}</span>
+        </div>
+        <div>
+          <strong>{syncSummary?.lastError ? '最近失败' : '最近结果'}</strong>
+          <span>{syncSummary?.lastError ?? (syncSummary?.lastAttemptAt ? `上次尝试：${new Date(syncSummary.lastAttemptAt).toLocaleString()}` : '暂无')}</span>
+        </div>
+      </div>
       <div className="form-grid">
         <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
           onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />允许同步命令历史</label>
         <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
           onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
-        <button className="secondary full" type="button" onClick={() => setSyncOpen(true)}>配置端到端加密同步</button>
+        <label className="check full"><input type="checkbox" checked={autoSyncEnabled}
+          onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
+        <button className="secondary full" type="button" disabled={syncBusy || !syncSummary?.configured}
+          onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
       </div>
+      <button className="secondary" type="button" onClick={() => setSyncOpen(true)}>
+        打开同步管理
+      </button>
     </div>
   }
 
@@ -814,20 +853,25 @@ function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
     </div>
     <footer className="modal-actions"><button onClick={onClose}>取消</button>
       <button className="primary" onClick={() => void persist()}>保存</button></footer>
-    {syncOpen && <SyncDialog settings={next} onClose={() => setSyncOpen(false)}
-      onConfigured={onReload} />}
+    {syncOpen && <SyncDialog
+      value={syncSummary}
+      settings={next}
+      onClose={() => setSyncOpen(false)}
+      onConfigured={onReload}
+    />}
   </Modal>
 }
 
-function SyncDialog({ settings, onClose, onConfigured }: {
-  settings: Settings; onClose: () => void; onConfigured: () => Promise<void>
+function SyncDialog({ value, settings, onClose, onConfigured }: {
+  value?: SyncSummary; settings: Settings; onClose: () => void; onConfigured: () => Promise<void>
 }) {
-  const [serverUrl, setServerUrl] = useState('https://')
-  const [username, setUsername] = useState('')
+  const [serverUrl, setServerUrl] = useState(value?.serverUrl ?? 'https://')
+  const [username, setUsername] = useState(value?.username ?? '')
   const [password, setPassword] = useState('')
   const [deviceName, setDeviceName] = useState('My device')
-  const [recoveryCode, setRecoveryCode] = useState('')
   const [recoveryInput, setRecoveryInput] = useState('')
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(value?.autoSyncEnabled ?? true)
+  const [currentRecoveryCode, setCurrentRecoveryCode] = useState('')
   const [status, setStatus] = useState('')
   const [pairing, setPairing] = useState<{
     shortCode: string; qrPayload: string; expiresAt: string
@@ -843,11 +887,19 @@ function SyncDialog({ settings, onClose, onConfigured }: {
   const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
   const qrCanvas = useRef<HTMLCanvasElement>(null)
   const qrFile = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (value?.serverUrl) setServerUrl(value.serverUrl)
+    if (value?.username) setUsername(value.username)
+    if (typeof value?.autoSyncEnabled === 'boolean') setAutoSyncEnabled(value.autoSyncEnabled)
+  }, [value?.serverUrl, value?.username])
+  useEffect(() => {
+    if (value?.lastError) setStatus(value.lastError)
+  }, [value?.lastError])
   const initialize = async () => {
     setStatus('正在初始化…')
     try {
       const result = await api.InitializeSync(serverUrl, username, password, deviceName)
-      setRecoveryCode(result.recoveryCode)
+      setCurrentRecoveryCode(result.recoveryCode)
       setStatus('同步服务初始化完成。请立即离线保存恢复码。')
       await onConfigured()
     } catch (error) { setStatus(String(error)) }
@@ -873,7 +925,7 @@ function SyncDialog({ settings, onClose, onConfigured }: {
   const rotateRecoveryCode = async () => {
     setStatus('正在轮换恢复码…')
     try {
-      setRecoveryCode(await api.RotateSyncRecoveryCode())
+      setCurrentRecoveryCode(await api.RotateSyncRecoveryCode())
       setStatus('恢复码已轮换。旧恢复码已失效，请立即保存新恢复码。')
     } catch (error) { setStatus(String(error)) }
   }
@@ -945,18 +997,28 @@ function SyncDialog({ settings, onClose, onConfigured }: {
     }
   }, [pairing])
   return <div className="nested-modal">
-    <header><strong>端到端加密同步</strong><button onClick={onClose}><X size={16} /></button></header>
-    <label>服务地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
-    <label>用户名<input value={username} onChange={e => setUsername(e.target.value)} /></label>
-    <label>账号密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-    <label>设备名称<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
+    <header><strong>同步管理</strong><button onClick={onClose}><X size={16} /></button></header>
+    <div className="sync-banner">
+      <strong>{value?.configured ? '已配置同步' : '尚未配置同步'}</strong>
+      <span>{value?.serverUrl ? `${value.serverUrl} · ${value.username}` : '先初始化或恢复一次同步保险库'}</span>
+    </div>
+    <div className="form-grid sync-edit-grid">
+      <label className="wide">服务端地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
+      <label className="wide">用户名<input value={username} onChange={e => setUsername(e.target.value)} /></label>
+      <label className="wide">设备名<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
+      <label className="full">密码
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+          placeholder={value?.configured ? '仅在初始化、恢复或加入设备时使用' : ''} />
+      </label>
+    </div>
     <div className="sync-button-grid">
+      <button className="secondary" onClick={() => void sync()}>立即同步</button>
       <button className="secondary" onClick={() => {
-        if (recoveryCode && !window.confirm('已经生成过同步恢复码。重新初始化可能覆盖当前同步配置，确定继续吗？')) return
+        if (currentRecoveryCode && !window.confirm('已经生成过同步恢复码。重新初始化可能覆盖当前同步配置，确定继续吗？')) return
         void initialize()
       }}>初始化新同步保险库</button>
       <button className="secondary" onClick={() => void beginPairing()}>将本设备加入已有保险库</button>
-      <button className="secondary" onClick={() => void sync()}>立即同步</button>
+      <button className="secondary" onClick={() => void rotateRecoveryCode()}>轮换恢复码</button>
     </div>
     <details className="pairing-approval">
       <summary>使用恢复码恢复设备</summary>
@@ -966,6 +1028,8 @@ function SyncDialog({ settings, onClose, onConfigured }: {
       <button className="secondary wide" disabled={!recoveryInput.trim()}
         onClick={() => void recover()}>恢复同步保险库</button>
     </details>
+    <div className="sync-banner">
+    </div>
     {pairing && <div className="pairing-card">
       <canvas ref={qrCanvas} />
       <div><small>设备配对短码</small><strong>{pairing.shortCode.slice(0, 3)} {pairing.shortCode.slice(3)}</strong>
@@ -1022,10 +1086,7 @@ function SyncDialog({ settings, onClose, onConfigured }: {
       {!!accountRecoveryCodes.length && <label>账号恢复码<textarea readOnly rows={6}
         value={accountRecoveryCodes.join('\n')} /></label>}
     </details>
-    {recoveryCode && <label>恢复码<textarea readOnly rows={3} value={recoveryCode} /></label>}
-    <button className="secondary wide" onClick={() => void rotateRecoveryCode()}>
-      轮换同步恢复码
-    </button>
+    {currentRecoveryCode && <label>恢复码<textarea readOnly rows={3} value={currentRecoveryCode} /></label>}
     {status && <div className="sync-status">{status}</div>}
   </div>
 }

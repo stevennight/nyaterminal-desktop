@@ -160,21 +160,37 @@ export class ZmodemAdapter {
     input.multiple = true
     input.hidden = true
     document.body.appendChild(input)
-    input.onchange = () => {
+    let settled = false
+    const settle = (handler: () => void) => {
+      if (settled) return
+      settled = true
+      window.removeEventListener('focus', onFocus)
       this.selectingFile = false
-      this.sendFiles = Array.from(input.files ?? [])
       input.remove()
-      if (!this.sendFiles.length) {
-        this.callbacks.onStatus('已取消 ZMODEM 发送')
-        this.callbacks.toTerminal(initialData)
+      handler()
+    }
+    const cancelSelection = () => settle(() => { void this.cancel() })
+    const onFocus = () => {
+      window.removeEventListener('focus', onFocus)
+      if (!settled && !(input.files?.length ?? 0)) cancelSelection()
+    }
+    input.onchange = () => {
+      const files = Array.from(input.files ?? [])
+      if (!files.length) {
+        cancelSelection()
         return
       }
-      this.sender = new Sender(false)
-      this.callbacks.onActive?.(true)
-      this.sender.feedIncoming(initialData)
-      this.startCurrentFile()
-      this.queueSenderFlush()
+      settle(() => {
+        this.sendFiles = files
+        this.sender = new Sender(false)
+        this.callbacks.onActive?.(true)
+        this.sender.feedIncoming(initialData)
+        this.startCurrentFile()
+        this.queueSenderFlush()
+      })
     }
+    input.oncancel = cancelSelection
+    window.addEventListener('focus', onFocus)
     input.click()
   }
 
@@ -233,6 +249,7 @@ export class ZmodemAdapter {
   }
 
   async cancel() {
+    this.selectingFile = false
     this.callbacks.send(new Uint8Array(8).fill(0x18))
     if (this.receiveHandle) await api.CancelZmodemReceive(this.receiveHandle).catch(() => undefined)
     this.receiver = undefined

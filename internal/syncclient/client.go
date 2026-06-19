@@ -41,6 +41,7 @@ type Profile struct {
 	Username           string    `json:"username"`
 	DeviceID           string    `json:"deviceId"`
 	DeviceName         string    `json:"deviceName"`
+	AutoSyncEnabled    *bool     `json:"autoSyncEnabled,omitempty"`
 	ExchangePrivateKey []byte    `json:"exchangePrivateKey"`
 	ExchangePublicKey  []byte    `json:"exchangePublicKey"`
 	SigningPrivateKey  []byte    `json:"signingPrivateKey"`
@@ -57,6 +58,7 @@ type State struct {
 	Records      map[string]RecordState  `json:"records"`
 	Deferred     map[string]serverRecord `json:"deferred,omitempty"`
 	LastSyncedAt time.Time               `json:"lastSyncedAt,omitempty"`
+	Sync         SyncStatus              `json:"sync,omitempty"`
 }
 
 type RecordState struct {
@@ -99,6 +101,33 @@ type SyncResult struct {
 	Pulled    int   `json:"pulled"`
 	Conflicts int   `json:"conflicts"`
 	Cursor    int64 `json:"cursor"`
+}
+
+type SyncStatus struct {
+	LastAttemptAt time.Time `json:"lastAttemptAt,omitempty"`
+	LastSuccessAt time.Time `json:"lastSuccessAt,omitempty"`
+	LastPushed    int       `json:"lastPushed,omitempty"`
+	LastPulled    int       `json:"lastPulled,omitempty"`
+	LastConflicts int       `json:"lastConflicts,omitempty"`
+	LastError     string    `json:"lastError,omitempty"`
+	Running       bool      `json:"running"`
+}
+
+type Summary struct {
+	Configured      bool      `json:"configured"`
+	ServerURL       string    `json:"serverUrl,omitempty"`
+	Username        string    `json:"username,omitempty"`
+	DeviceName      string    `json:"deviceName,omitempty"`
+	DeviceID        string    `json:"deviceId,omitempty"`
+	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
+	LastSyncedAt    time.Time `json:"lastSyncedAt,omitempty"`
+	LastAttemptAt   time.Time `json:"lastAttemptAt,omitempty"`
+	LastSuccessAt   time.Time `json:"lastSuccessAt,omitempty"`
+	LastPushed      int       `json:"lastPushed,omitempty"`
+	LastPulled      int       `json:"lastPulled,omitempty"`
+	LastConflicts   int       `json:"lastConflicts,omitempty"`
+	LastError       string    `json:"lastError,omitempty"`
+	Running         bool      `json:"running"`
 }
 
 type PairingStart struct {
@@ -211,9 +240,10 @@ func (c *Client) Initialize(ctx context.Context, serverURL, username, password, 
 	}
 	profile := Profile{
 		ServerURL: serverURL, Username: username, DeviceID: response.DeviceID,
-		DeviceName: deviceName, ExchangePrivateKey: exchangePrivate.Bytes(),
-		ExchangePublicKey: exchangePrivate.PublicKey().Bytes(),
-		SigningPrivateKey: signingPrivate, SigningPublicKey: signingPublic,
+		DeviceName: deviceName, AutoSyncEnabled: boolPtr(true),
+		ExchangePrivateKey: exchangePrivate.Bytes(),
+		ExchangePublicKey:  exchangePrivate.PublicKey().Bytes(),
+		SigningPrivateKey:  signingPrivate, SigningPublicKey: signingPublic,
 		SyncRootKey: syncRootKey, AccessToken: response.Tokens.AccessToken,
 		RefreshToken:     response.Tokens.RefreshToken,
 		AccessExpiresAt:  response.Tokens.AccessExpiresAt,
@@ -306,9 +336,10 @@ func (c *Client) Recover(
 	defer wipe(syncRootKey)
 	profile := Profile{
 		ServerURL: serverURL, Username: username, DeviceID: response.DeviceID,
-		DeviceName: deviceName, ExchangePrivateKey: exchangePrivate.Bytes(),
-		ExchangePublicKey: exchangePrivate.PublicKey().Bytes(),
-		SigningPrivateKey: signingPrivate, SigningPublicKey: signingPublic,
+		DeviceName: deviceName, AutoSyncEnabled: boolPtr(true),
+		ExchangePrivateKey: exchangePrivate.Bytes(),
+		ExchangePublicKey:  exchangePrivate.PublicKey().Bytes(),
+		SigningPrivateKey:  signingPrivate, SigningPublicKey: signingPublic,
 		SyncRootKey: append([]byte(nil), syncRootKey...),
 		AccessToken: response.Tokens.AccessToken, RefreshToken: response.Tokens.RefreshToken,
 		AccessExpiresAt:  response.Tokens.AccessExpiresAt,
@@ -693,11 +724,35 @@ func (c *Client) DisableTOTP(ctx context.Context, password, code string) error {
 	return c.saveProfile(ctx, profile)
 }
 
-func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncResult, error) {
+func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (result SyncResult, err error) {
 	profile, state, err := c.load(ctx)
 	if err != nil {
 		return SyncResult{}, err
 	}
+	state.Sync.Running = true
+	state.Sync.LastAttemptAt = time.Now().UTC()
+	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, state); err != nil {
+		return SyncResult{}, err
+	}
+	defer func() {
+		state.Sync.Running = false
+		if err != nil {
+			state.Sync.LastError = err.Error()
+		} else {
+			state.Sync.LastError = ""
+			state.Sync.LastSuccessAt = time.Now().UTC()
+			state.Sync.LastPushed = result.Pushed
+			state.Sync.LastPulled = result.Pulled
+			state.Sync.LastConflicts = result.Conflicts
+			state.LastSyncedAt = state.Sync.LastSuccessAt
+		}
+		if putErr := c.vault.Put(ctx, store.TypeSyncState, stateID, state); putErr != nil && err == nil {
+			err = putErr
+		}
+		if saveErr := c.saveProfile(ctx, profile); saveErr != nil && err == nil {
+			err = saveErr
+		}
+	}()
 	allowed := map[string]bool{
 		store.TypeGroup: true, store.TypeConnection: true, store.TypeTag: true,
 		store.TypeSettings: true, store.TypeCredential: true,
@@ -812,16 +867,10 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncR
 		return SyncResult{}, err
 	}
 	state.Cursor = next
-	state.LastSyncedAt = time.Now().UTC()
-	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, state); err != nil {
-		return SyncResult{}, err
-	}
-	if err := c.saveProfile(ctx, profile); err != nil {
-		return SyncResult{}, err
-	}
-	return SyncResult{
+	result = SyncResult{
 		Pushed: len(outgoing), Pulled: pulled, Conflicts: conflicts, Cursor: next,
-	}, nil
+	}
+	return result, nil
 }
 
 func (c *Client) Configured(ctx context.Context) bool {
@@ -829,6 +878,53 @@ func (c *Client) Configured(ctx context.Context) bool {
 	return c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile) == nil &&
 		profile.ServerURL != "" && profile.DeviceID != "" &&
 		len(profile.SyncRootKey) == chacha20poly1305.KeySize
+}
+
+func (c *Client) AutoSyncEnabled(ctx context.Context) bool {
+	var profile Profile
+	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err != nil {
+		return false
+	}
+	if profile.AutoSyncEnabled == nil {
+		return true
+	}
+	return *profile.AutoSyncEnabled
+}
+
+func (c *Client) Summary(ctx context.Context) (Summary, error) {
+	profile, state, err := c.load(ctx)
+	if err != nil {
+		return Summary{}, err
+	}
+	autoSyncEnabled := true
+	if profile.AutoSyncEnabled != nil {
+		autoSyncEnabled = *profile.AutoSyncEnabled
+	}
+	return Summary{
+		Configured:      true,
+		ServerURL:       profile.ServerURL,
+		Username:        profile.Username,
+		DeviceName:      profile.DeviceName,
+		DeviceID:        profile.DeviceID,
+		AutoSyncEnabled: autoSyncEnabled,
+		LastSyncedAt:    state.LastSyncedAt,
+		LastAttemptAt:   state.Sync.LastAttemptAt,
+		LastSuccessAt:   state.Sync.LastSuccessAt,
+		LastPushed:      state.Sync.LastPushed,
+		LastPulled:      state.Sync.LastPulled,
+		LastConflicts:   state.Sync.LastConflicts,
+		LastError:       state.Sync.LastError,
+		Running:         state.Sync.Running,
+	}, nil
+}
+
+func (c *Client) SetAutoSyncEnabled(ctx context.Context, enabled bool) error {
+	profile, _, err := c.load(ctx)
+	if err != nil {
+		return err
+	}
+	profile.AutoSyncEnabled = boolPtr(enabled)
+	return c.saveProfile(ctx, profile)
 }
 
 func (c *Client) pull(
@@ -1377,6 +1473,10 @@ func validateServerURL(value string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func syncAAD(recordType, id string, version int64) []byte {

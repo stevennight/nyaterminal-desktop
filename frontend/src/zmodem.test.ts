@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { ZmodemHeaderDetector } from './zmodem'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ZmodemAdapter, ZmodemHeaderDetector } from './zmodem'
 
 const encoder = new TextEncoder()
 
@@ -38,9 +38,74 @@ describe('ZmodemHeaderDetector', () => {
   })
 })
 
+describe('ZmodemAdapter', () => {
+  beforeEach(() => {
+    installFakeDom()
+  })
+
+  it('cancels a pending send session when file selection is canceled', async () => {
+    const send = vi.fn()
+    const toTerminal = vi.fn()
+    const onStatus = vi.fn()
+    const onActive = vi.fn()
+    const adapter = new ZmodemAdapter({ send, toTerminal, onStatus, onActive })
+
+    adapter.consume(encoder.encode('**\x18B01payload'))
+    const input = getCreatedInput()
+    input.oncancel?.(new Event('cancel'))
+    await Promise.resolve()
+
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(Array.from(send.mock.calls[0][0] as Uint8Array)).toEqual(new Array(8).fill(0x18))
+    expect(onStatus).toHaveBeenLastCalledWith('ZMODEM 传输已取消')
+    expect(onActive).toHaveBeenLastCalledWith(false)
+    expect(toTerminal).not.toHaveBeenCalled()
+  })
+})
+
 function concat(left: Uint8Array, right: Uint8Array) {
   const value = new Uint8Array(left.length + right.length)
   value.set(left)
   value.set(right, left.length)
   return value
+}
+
+type FakeInput = {
+  type: string
+  multiple: boolean
+  hidden: boolean
+  files?: FileList | null
+  onchange?: ((event: Event) => void) | null
+  oncancel?: ((event: Event) => void) | null
+  click: () => void
+  remove: () => void
+}
+
+let createdInput: FakeInput
+
+function installFakeDom() {
+  createdInput = {
+    type: '',
+    multiple: false,
+    hidden: false,
+    files: null,
+    onchange: null,
+    oncancel: null,
+    click: () => undefined,
+    remove: () => undefined
+  }
+  Object.assign(globalThis, {
+    document: {
+      body: { appendChild: vi.fn() },
+      createElement: vi.fn(() => createdInput)
+    },
+    window: {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn()
+    }
+  })
+}
+
+function getCreatedInput() {
+  return createdInput
 }

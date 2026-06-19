@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowDown, ArrowLeft, ArrowUp, Folder, FolderOpen, FolderPlus, Pause,
   Pencil, Play, RefreshCw, Square, Trash2, X
@@ -31,7 +31,9 @@ export function SftpWorkspace({ connection, onClose }: {
       setLocalPath('.')
       setLocalItems(location.items)
       setSelectedLocal([])
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const loadLocal = async (next = localPath) => {
@@ -40,7 +42,9 @@ export function SftpWorkspace({ connection, onClose }: {
       setLocalItems(await api.ListLocal(token, next))
       setLocalPath(next)
       setSelectedLocal([])
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const loadRemote = async (next = remotePath) => {
@@ -48,7 +52,9 @@ export function SftpWorkspace({ connection, onClose }: {
       setRemoteItems(await api.ListRemote(connection.id, next))
       setRemotePath(next)
       setSelectedRemote([])
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   useEffect(() => {
@@ -70,17 +76,17 @@ export function SftpWorkspace({ connection, onClose }: {
     direction: SFTPTransfer['direction'],
     explicitSources?: RemoteEntry[]
   ) => {
-    if (!token) return setError('请先选择本地工作目录')
+    if (!token) return setError('请选择本地工作目录')
     const sources = (explicitSources ?? (direction === 'upload' ? selectedLocal : selectedRemote))
       .filter(item => !item.isDir)
-    if (!sources.length) return setError('请选择要传输的文件')
+    if (!sources.length) return setError('请选择至少一个文件')
     try {
       for (const source of sources) {
         const destinationExists = direction === 'upload'
           ? remoteItems.some(item => item.name === source.name)
           : localItems.some(item => item.name === source.name)
         const overwrite = destinationExists
-          ? window.confirm(`${source.name} 已存在，是否覆盖？`)
+          ? window.confirm(`${source.name} 已存在，覆盖吗？`)
           : false
         if (destinationExists && !overwrite) continue
         if (direction === 'upload') {
@@ -106,71 +112,80 @@ export function SftpWorkspace({ connection, onClose }: {
   }
 
   const createLocalDirectory = async () => {
-    if (!token) return setError('请先选择本地工作目录')
-    const name = window.prompt('新建本地目录名称')
+    if (!token) return setError('请选择本地工作目录')
+    const name = window.prompt('请输入本地目录名')
     if (!name?.trim()) return
     try {
       await api.CreateLocalDirectory(token, joinLocal(localPath, name.trim()))
       await loadLocal()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const renameLocal = async () => {
     if (!token || selectedLocal.length !== 1) return
     const selected = selectedLocal[0]
-    const name = window.prompt('新的名称', selected.name)
+    const name = window.prompt('请输入新名称', selected.name)
     if (!name?.trim() || name.trim() === selected.name) return
     try {
       await api.RenameLocal(token, selected.path, joinLocal(localPath, name.trim()))
       await loadLocal()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const deleteLocal = async () => {
-    if (!token || !selectedLocal.length ||
-      !window.confirm(`确定删除选中的 ${selectedLocal.length} 个本地项目？`)) return
+    if (!token || !selectedLocal.length || !window.confirm(`确定删除这 ${selectedLocal.length} 个本地项目吗？`)) return
     try {
       for (const selected of selectedLocal) {
         await api.DeleteLocal(token, selected.path, selected.isDir)
       }
       await loadLocal()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const createRemoteDirectory = async () => {
-    const name = window.prompt('新建远端目录名称')
+    const name = window.prompt('请输入远端目录名')
     if (!name?.trim()) return
     try {
       await api.CreateRemoteDirectory(connection.id, joinRemote(remotePath, name.trim()))
       await loadRemote()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const renameRemote = async () => {
     if (selectedRemote.length !== 1) return
     const selected = selectedRemote[0]
-    const name = window.prompt('新的名称', selected.name)
+    const name = window.prompt('请输入新名称', selected.name)
     if (!name?.trim() || name.trim() === selected.name) return
     try {
-      await api.RenameRemote(
-        connection.id, selected.path, joinRemote(remotePath, name.trim())
-      )
+      await api.RenameRemote(connection.id, selected.path, joinRemote(remotePath, name.trim()))
       await loadRemote()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const deleteRemote = async () => {
-    if (!selectedRemote.length ||
-      !window.confirm(`确定删除选中的 ${selectedRemote.length} 个项目？`)) return
+    if (!selectedRemote.length || !window.confirm(`确定删除这 ${selectedRemote.length} 个远端项目吗？`)) return
     try {
       for (const selected of selectedRemote) {
         await api.DeleteRemote(connection.id, selected.path, selected.isDir)
       }
       await loadRemote()
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) {
+      setError(String(reason))
+    }
   }
 
   const title = useMemo(() => `${connection.name} · SFTP`, [connection.name])
+
   return <div className="sftp-workspace-backdrop">
     <section className="sftp-workspace">
       <header className="sftp-workspace-header">
@@ -179,9 +194,24 @@ export function SftpWorkspace({ connection, onClose }: {
       </header>
       {error && <div className="workspace-error">{error}</div>}
       <div className="sftp-columns">
-        <FileColumn title="本地" root={localRoot || '尚未选择目录'} path={localPath}
-          items={localItems} selected={selectedLocal.map(item => item.path)}
+        <FileColumn
+          title="本地"
+          root={localRoot || '尚未选择目录'}
+          path={localPath}
+          items={localItems}
+          selected={selectedLocal.map(item => item.path)}
           side="local"
+          actions={<>
+            <button disabled={!token} onClick={() => void createLocalDirectory()}>
+              <FolderPlus size={14} />新建本地目录
+            </button>
+            <button disabled={selectedLocal.length !== 1} onClick={() => void renameLocal()}>
+              <Pencil size={14} />重命名本地
+            </button>
+            <button disabled={!selectedLocal.length} onClick={() => void deleteLocal()}>
+              <Trash2 size={14} />删除本地
+            </button>
+          </>}
           onChooseRoot={() => void chooseLocal()}
           onRefresh={() => void loadLocal()}
           onParent={() => void loadLocal(parentLocal(localPath))}
@@ -192,16 +222,42 @@ export function SftpWorkspace({ connection, onClose }: {
           onOpen={entry => entry.isDir && void loadLocal(entry.path)}
           onDragEntries={entry => selectedLocal.some(item => item.path === entry.path)
             ? selectedLocal : [entry]}
-          onDropFiles={(source, paths) => void dropTransfer('local', source, paths)} />
+          onDropFiles={(source, paths) => void dropTransfer('local', source, paths)}
+        />
         <div className="transfer-actions">
-          <button disabled={!selectedLocal.some(item => !item.isDir)}
-            title="上传到远端" onClick={() => void transfer('upload')}><ArrowUp size={18} /></button>
-          <button disabled={!selectedRemote.some(item => !item.isDir)}
-            title="下载到本地" onClick={() => void transfer('download')}><ArrowDown size={18} /></button>
+          <button
+            disabled={!selectedLocal.some(item => !item.isDir)}
+            title="上传到远端"
+            onClick={() => void transfer('upload')}
+          >
+            <ArrowUp size={18} />
+          </button>
+          <button
+            disabled={!selectedRemote.some(item => !item.isDir)}
+            title="下载到本地"
+            onClick={() => void transfer('download')}
+          >
+            <ArrowDown size={18} />
+          </button>
         </div>
-        <FileColumn title="远端" root={`${connection.username}@${connection.host}`} path={remotePath}
-          items={remoteItems} selected={selectedRemote.map(item => item.path)}
+        <FileColumn
+          title="远端"
+          root={`${connection.username}@${connection.host}`}
+          path={remotePath}
+          items={remoteItems}
+          selected={selectedRemote.map(item => item.path)}
           side="remote"
+          actions={<>
+            <button onClick={() => void createRemoteDirectory()}>
+              <FolderPlus size={14} />新建远端目录
+            </button>
+            <button disabled={selectedRemote.length !== 1} onClick={() => void renameRemote()}>
+              <Pencil size={14} />重命名远端
+            </button>
+            <button disabled={!selectedRemote.length} onClick={() => void deleteRemote()}>
+              <Trash2 size={14} />删除远端
+            </button>
+          </>}
           onRefresh={() => void loadRemote()}
           onParent={() => void loadRemote(parentRemote(remotePath))}
           onSelect={(entry, additive) => setSelectedRemote(current => additive
@@ -211,35 +267,15 @@ export function SftpWorkspace({ connection, onClose }: {
           onOpen={entry => entry.isDir && void loadRemote(entry.path)}
           onDragEntries={entry => selectedRemote.some(item => item.path === entry.path)
             ? selectedRemote : [entry]}
-          onDropFiles={(source, paths) => void dropTransfer('remote', source, paths)} />
-      </div>
-      <div className="remote-file-actions">
-        <button disabled={!token} onClick={() => void createLocalDirectory()}>
-          <FolderPlus size={14} />新建本地目录
-        </button>
-        <button disabled={selectedLocal.length !== 1} onClick={() => void renameLocal()}>
-          <Pencil size={14} />重命名本地
-        </button>
-        <button disabled={!selectedLocal.length} onClick={() => void deleteLocal()}>
-          <Trash2 size={14} />删除本地
-        </button>
-        <button onClick={() => void createRemoteDirectory()}>
-          <FolderPlus size={14} />新建远端目录
-        </button>
-        <button disabled={selectedRemote.length !== 1} onClick={() => void renameRemote()}>
-          <Pencil size={14} />重命名远端
-        </button>
-        <button disabled={!selectedRemote.length} onClick={() => void deleteRemote()}>
-          <Trash2 size={14} />删除远端
-        </button>
+          onDropFiles={(source, paths) => void dropTransfer('remote', source, paths)}
+        />
       </div>
       <div className="transfer-queue">
         <strong>传输队列</strong>
-        {!transfers.length && <span>暂无传输任务</span>}
+        {!transfers.length && <span>当前没有传输任务</span>}
         {transfers.map(item => <div key={item.id} className={`transfer-item ${item.status}`}>
           <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
-          <span>{item.name}<progress max={Math.max(1, item.totalBytes)}
-            value={item.bytesDone} /></span>
+          <span>{item.name}<progress max={Math.max(1, item.totalBytes)} value={item.bytesDone} /></span>
           <small>{transferStatus(item)}</small>
           <div className="transfer-controls">
             {(item.status === 'running' || item.status === 'queued') &&
@@ -267,29 +303,43 @@ function transferStatus(item: SFTPTransfer) {
     ? `${Math.floor(item.bytesDone * 100 / item.totalBytes)}%`
     : formatSize(item.bytesDone)
   const labels: Record<SFTPTransfer['status'], string> = {
-    queued: '等待中', running: '传输中', paused: '已暂停',
-    completed: '已完成', failed: '失败', cancelled: '已取消'
+    queued: '排队中',
+    running: '传输中',
+    paused: '已暂停',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消'
   }
   return `${labels[item.status]} · ${progress}`
 }
 
 function FileColumn({ title, root, path, items, selected, side, onChooseRoot, onRefresh,
-  onParent, onSelect, onOpen, onDragEntries, onDropFiles }: {
+  onParent, onSelect, onOpen, onDragEntries, onDropFiles, actions }: {
   title: string; root: string; path: string; items: RemoteEntry[]; selected: string[]
   side: 'local' | 'remote'
   onChooseRoot?: () => void; onRefresh: () => void; onParent: () => void
   onSelect: (entry: RemoteEntry, additive: boolean) => void; onOpen: (entry: RemoteEntry) => void
   onDragEntries: (entry: RemoteEntry) => RemoteEntry[]
   onDropFiles: (source: 'local' | 'remote', paths: string[]) => void
+  actions: ReactNode
 }) {
   return <section className="file-column">
-    <header><div><strong>{title}</strong><small>{root}</small></div>
-      <div>{onChooseRoot && <button title="选择目录" onClick={onChooseRoot}><FolderOpen size={15} /></button>}
-        <button title="上级目录" onClick={onParent}><ArrowLeft size={15} /></button>
-        <button title="刷新" onClick={onRefresh}><RefreshCw size={15} /></button></div></header>
+    <header>
+      <div>
+        <strong>{title}</strong>
+        <small>{root}</small>
+      </div>
+      <div>
+        {onChooseRoot && <button title="选择目录" onClick={onChooseRoot}><FolderOpen size={15} /></button>}
+        <button title="返回上级" onClick={onParent}><ArrowLeft size={15} /></button>
+        <button title="刷新" onClick={onRefresh}><RefreshCw size={15} /></button>
+      </div>
+    </header>
     <div className="column-path">{path}</div>
+    <div className="column-actions">{actions}</div>
     <div className="column-head"><span>名称</span><span>大小</span><span>修改时间</span></div>
-    <div className="column-files"
+    <div
+      className="column-files"
       onDragOver={event => event.preventDefault()}
       onDrop={event => {
         event.preventDefault()
@@ -304,8 +354,10 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
         } catch {
           return
         }
-      }}>
-      {items.map(entry => <button key={entry.path}
+      }}
+    >
+      {items.map(entry => <button
+        key={entry.path}
         className={selected.includes(entry.path) ? 'selected' : ''}
         draggable
         onDragStart={event => {
@@ -318,9 +370,11 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
           event.dataTransfer.effectAllowed = 'copyMove'
         }}
         onClick={event => onSelect(entry, event.ctrlKey || event.metaKey)}
-        onDoubleClick={() => onOpen(entry)}>
+        onDoubleClick={() => onOpen(entry)}
+      >
         {entry.isDir ? <Folder size={16} /> : <i className="file-dot" />}
-        <span>{entry.name}</span><small>{entry.isDir ? '—' : formatSize(entry.size)}</small>
+        <span>{entry.name}</span>
+        <small>{entry.isDir ? '目录' : formatSize(entry.size)}</small>
         <time>{formatDate(entry.modTime)}</time>
       </button>)}
     </div>
@@ -328,14 +382,14 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
 }
 
 function parentRemote(value: string) {
-  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '')
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
   const index = normalized.lastIndexOf('/')
   if (index < 0) return '.'
   return normalized.slice(0, index) || '/'
 }
 
 function parentLocal(value: string) {
-  const normalized = value.replaceAll('\\', '/').replace(/\/+$/, '')
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
   const index = normalized.lastIndexOf('/')
   return index < 0 ? '.' : normalized.slice(0, index) || '.'
 }

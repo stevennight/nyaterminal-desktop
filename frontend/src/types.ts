@@ -63,6 +63,23 @@ export type Settings = {
   sensitiveCommandRules: string[]
 }
 
+export type SyncSummary = {
+  configured: boolean
+  serverUrl?: string
+  username?: string
+  deviceName?: string
+  deviceId?: string
+  autoSyncEnabled: boolean
+  lastSyncedAt?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  lastPushed?: number
+  lastPulled?: number
+  lastConflicts?: number
+  lastError?: string
+  running: boolean
+}
+
 export type Bootstrap = {
   vault: VaultStatus
   groups?: Group[]
@@ -70,6 +87,7 @@ export type Bootstrap = {
   connections?: Connection[]
   settings?: Settings
   syncConfigured: boolean
+  syncSummary?: SyncSummary
 }
 
 export type PendingHostKey = {

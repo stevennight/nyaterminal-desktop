@@ -29,6 +29,12 @@ type App struct {
 	sftp               *sftpclient.Service
 	sync               *syncclient.Client
 	zmodem             *zmodemstore.Store
+	syncMu             sync.Mutex
+	syncCloseOnce      sync.Once
+	syncRunning        bool
+	syncPending        bool
+	syncLastTrigger    time.Time
+	syncStop           chan struct{}
 	challengeMu        sync.Mutex
 	challenges         map[string]chan challengeResponse
 	unlockMu           sync.Mutex
@@ -42,12 +48,13 @@ type challengeResponse struct {
 }
 
 type Bootstrap struct {
-	Vault          vault.Status       `json:"vault"`
-	Groups         []model.Group      `json:"groups,omitempty"`
-	Tags           []model.Tag        `json:"tags,omitempty"`
-	Connections    []model.Connection `json:"connections,omitempty"`
-	Settings       *model.Settings    `json:"settings,omitempty"`
-	SyncConfigured bool               `json:"syncConfigured"`
+	Vault          vault.Status        `json:"vault"`
+	Groups         []model.Group       `json:"groups,omitempty"`
+	Tags           []model.Tag         `json:"tags,omitempty"`
+	Connections    []model.Connection  `json:"connections,omitempty"`
+	Settings       *model.Settings     `json:"settings,omitempty"`
+	SyncConfigured bool                `json:"syncConfigured"`
+	SyncSummary    *syncclient.Summary `json:"syncSummary,omitempty"`
 }
 
 type TerminalStart struct {
@@ -90,6 +97,7 @@ func (a *App) initialize() error {
 	a.sftp = sftpclient.New(sshManager)
 	a.sync = syncclient.New(v)
 	a.zmodem = zmodemstore.New()
+	a.syncStop = make(chan struct{})
 	sshManager.SetInteractiveHandler(a.handleInteractiveChallenge)
 	return nil
 }
@@ -100,7 +108,9 @@ func (a *App) Startup(ctx context.Context) {
 	a.mu.Unlock()
 	if err := a.initialize(); err != nil {
 		runtime.LogErrorf(ctx, "cannot initialize application: %v", err)
+		return
 	}
+	go a.syncLoop()
 }
 
 func (a *App) Shutdown(context.Context) {
@@ -108,6 +118,14 @@ func (a *App) Shutdown(context.Context) {
 }
 
 func (a *App) Close() error {
+	a.syncCloseOnce.Do(func() {
+		a.syncMu.Lock()
+		if a.syncStop != nil {
+			close(a.syncStop)
+			a.syncStop = nil
+		}
+		a.syncMu.Unlock()
+	})
 	if a.zmodem != nil {
 		a.zmodem.Close()
 	}
@@ -181,6 +199,11 @@ func (a *App) Bootstrap() (Bootstrap, error) {
 	}
 	result.Settings = &settings
 	result.SyncConfigured = a.sync.Configured(a.context())
+	if result.SyncConfigured {
+		if summary, err := a.sync.Summary(a.context()); err == nil {
+			result.SyncSummary = &summary
+		}
+	}
 	return result, nil
 }
 
@@ -278,7 +301,11 @@ func (a *App) ListGroups() ([]model.Group, error) {
 }
 
 func (a *App) SaveGroup(value model.Group) (model.Group, error) {
-	return a.store.PutGroup(a.context(), value)
+	result, err := a.store.PutGroup(a.context(), value)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) DeleteGroup(id string) error {
@@ -290,7 +317,11 @@ func (a *App) ListTags() ([]model.Tag, error) {
 }
 
 func (a *App) SaveTag(value model.Tag) (model.Tag, error) {
-	return a.store.PutTag(a.context(), value)
+	result, err := a.store.PutTag(a.context(), value)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) DeleteTag(id string) error {
@@ -302,7 +333,11 @@ func (a *App) ListConnections() ([]model.Connection, error) {
 }
 
 func (a *App) SaveConnection(value model.Connection) (model.Connection, error) {
-	return a.store.PutConnection(a.context(), value)
+	result, err := a.store.PutConnection(a.context(), value)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) DeleteConnection(id string) error {
@@ -310,11 +345,19 @@ func (a *App) DeleteConnection(id string) error {
 }
 
 func (a *App) SaveCredential(value model.Credential) (model.Credential, error) {
-	return a.store.PutCredential(a.context(), value)
+	result, err := a.store.PutCredential(a.context(), value)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) DeleteRecord(id string) error {
-	return a.store.Delete(a.context(), id)
+	if err := a.store.Delete(a.context(), id); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
 }
 
 func (a *App) GetSettings() (model.Settings, error) {
@@ -322,11 +365,19 @@ func (a *App) GetSettings() (model.Settings, error) {
 }
 
 func (a *App) SaveSettings(value model.Settings) error {
-	return a.store.PutSettings(a.context(), value)
+	if err := a.store.PutSettings(a.context(), value); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
 }
 
 func (a *App) AddCommandHistory(connectionID, command string, private bool) error {
-	return a.store.AddCommand(a.context(), connectionID, command, private)
+	if err := a.store.AddCommand(a.context(), connectionID, command, private); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
 }
 
 func (a *App) SuggestCommands(connectionID, prefix string) ([]model.CommandHistory, error) {
@@ -546,6 +597,10 @@ func (a *App) DisableSyncTOTP(password, code string) error {
 	return a.sync.DisableTOTP(a.context(), password, code)
 }
 
+func (a *App) SetSyncAutoEnabled(enabled bool) error {
+	return a.sync.SetAutoSyncEnabled(a.context(), enabled)
+}
+
 func (a *App) context() context.Context {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -592,4 +647,66 @@ func (a *App) handleInteractiveChallenge(
 	case <-time.After(2 * time.Minute):
 		return nil, errors.New("interactive authentication timed out")
 	}
+}
+
+func (a *App) syncLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.syncStop:
+			return
+		case <-ticker.C:
+			a.triggerSyncSoon()
+		}
+	}
+}
+
+func (a *App) triggerSyncSoon() {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+	if a.syncStop == nil || a.syncRunning {
+		a.syncPending = true
+		return
+	}
+	if time.Since(a.syncLastTrigger) < 20*time.Second {
+		a.syncPending = true
+		return
+	}
+	a.syncLastTrigger = time.Now()
+	go a.runSyncOnce()
+}
+
+func (a *App) runSyncOnce() {
+	a.syncMu.Lock()
+	if a.syncRunning || a.syncStop == nil {
+		a.syncMu.Unlock()
+		return
+	}
+	a.syncRunning = true
+	a.syncMu.Unlock()
+
+	defer func() {
+		a.syncMu.Lock()
+		a.syncRunning = false
+		pending := a.syncPending
+		a.syncPending = false
+		a.syncMu.Unlock()
+		if pending {
+			a.triggerSyncSoon()
+		}
+	}()
+
+	if a.vault == nil || !a.sync.AutoSyncEnabled(a.context()) {
+		return
+	}
+	status, err := a.vault.Status(a.context())
+	if err != nil || status.Locked {
+		return
+	}
+	settings, err := a.store.Settings(a.context())
+	if err != nil {
+		return
+	}
+	_, _ = a.sync.Sync(a.context(), settings.SyncSecretsByDefault, settings.SyncCommandHistory)
 }
