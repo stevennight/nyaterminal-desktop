@@ -25,10 +25,15 @@ export function TerminalView({
 }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState('正在连接…')
+  const [zmodemActive, setZmodemActive] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [suggestions, setSuggestions] = useState<CommandHistory[]>([])
   const suggestionsRef = useRef<CommandHistory[]>([])
   const lineRef = useRef('')
   const socketRef = useRef<WebSocket | undefined>(undefined)
+  const zmodemRef = useRef<ZmodemAdapter | undefined>(undefined)
+  const searchRef = useRef<SearchAddon | undefined>(undefined)
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
 
   useEffect(() => { suggestionsRef.current = suggestions }, [suggestions])
@@ -56,8 +61,19 @@ export function TerminalView({
     })
     const fit = new FitAddon()
     terminal.loadAddon(fit)
-    terminal.loadAddon(new SearchAddon())
-    terminal.loadAddon(new WebLinksAddon())
+    const search = new SearchAddon()
+    searchRef.current = search
+    terminal.loadAddon(search)
+    terminal.loadAddon(new WebLinksAddon((_, uri) => {
+      try {
+        const parsed = new URL(uri)
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+          window.runtime?.BrowserOpenURL?.(parsed.toString())
+        }
+      } catch {
+        // Ignore malformed or unsafe terminal links.
+      }
+    }))
     terminal.open(host.current)
     try {
       terminal.loadAddon(new WebglAddon())
@@ -69,8 +85,12 @@ export function TerminalView({
     let socket: WebSocket | undefined
     let sessionId = ''
     let line = ''
+    let lineReliable = true
     let suggestionTimer = 0
     let disposed = false
+    const outputDecoder = connection.encoding && connection.encoding.toLowerCase() !== 'utf-8'
+      ? new TextDecoder(connection.encoding)
+      : undefined
 
     const connect = async () => {
       const result = await api.StartSSH({
@@ -92,10 +112,14 @@ export function TerminalView({
       socketRef.current = socket
       socket.binaryType = 'arraybuffer'
       const zmodem = new ZmodemAdapter({
-        toTerminal: data => terminal.write(data),
+        toTerminal: data => terminal.write(outputDecoder
+          ? outputDecoder.decode(data, { stream: true })
+          : data),
         send: data => socket?.send(data),
-        onStatus: setStatus
+        onStatus: setStatus,
+        onActive: setZmodemActive
       })
+      zmodemRef.current = zmodem
       socket.onopen = () => setStatus('已连接')
       socket.onmessage = event => zmodem.consume(new Uint8Array(event.data as ArrayBuffer))
       socket.onerror = () => setStatus('连接发生错误')
@@ -105,29 +129,40 @@ export function TerminalView({
       }
       applySuggestionRef.current = command => {
         const suffix = command.slice(line.length)
-        if (suffix) socket?.send(new TextEncoder().encode(suffix))
+        if (suffix) socket?.send(suffix)
         line = command
         lineRef.current = command
         setSuggestions([])
       }
       terminal.onData(data => {
-        socket?.send(new TextEncoder().encode(data))
+        socket?.send(data)
         for (const char of data) {
           if (char === '\r') {
-            if (line.trim()) void api.AddCommandHistory(connection.id, line, privateSession)
+            if (lineReliable && line.trim()) {
+              void api.AddCommandHistory(connection.id, line, privateSession)
+            }
             line = ''
+            lineReliable = true
             lineRef.current = ''
             setSuggestions([])
           } else if (char === '\x7f') {
             line = line.slice(0, -1)
             lineRef.current = line
+          } else if (char === '\t') {
+            // Tab completion changes the remote shell buffer in a way the
+            // terminal cannot reconstruct reliably.
+            lineReliable = false
+            setSuggestions([])
+          } else if (char < ' ' || char === '\x1b') {
+            lineReliable = false
+            setSuggestions([])
           } else if (char >= ' ') {
             line += char
             lineRef.current = line
           }
         }
         window.clearTimeout(suggestionTimer)
-        if (line.trim().length >= 2) {
+        if (lineReliable && line.trim().length >= 2) {
           suggestionTimer = window.setTimeout(() => {
             void api.SuggestCommands(connection.id, line).then(values => setSuggestions(values.slice(0, 5)))
           }, 90)
@@ -160,6 +195,8 @@ export function TerminalView({
       observer.disconnect()
       socket?.close()
       socketRef.current = undefined
+      zmodemRef.current = undefined
+      searchRef.current = undefined
       applySuggestionRef.current = () => undefined
       window.clearTimeout(suggestionTimer)
       if (sessionId) void api.CloseSSH(sessionId)
@@ -172,9 +209,39 @@ export function TerminalView({
     if (active) window.setTimeout(() => window.dispatchEvent(new Event('resize')), 0)
   }, [active])
 
+  useEffect(() => {
+    if (!active) return
+    const shortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        setSearchOpen(true)
+      } else if (event.key === 'Escape') {
+        setSearchOpen(false)
+      }
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [active])
+
   return (
     <section className={`terminal-pane ${active ? 'active' : ''}`}>
       <div ref={host} className="terminal-host" />
+      {searchOpen && <div className="terminal-search">
+        <input autoFocus value={searchQuery} placeholder="搜索终端内容"
+          onChange={event => {
+            setSearchQuery(event.target.value)
+            searchRef.current?.findNext(event.target.value, { incremental: true })
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              if (event.shiftKey) searchRef.current?.findPrevious(searchQuery)
+              else searchRef.current?.findNext(searchQuery)
+            }
+          }} />
+        <button onClick={() => searchRef.current?.findPrevious(searchQuery)}>上一个</button>
+        <button onClick={() => searchRef.current?.findNext(searchQuery)}>下一个</button>
+        <button onClick={() => setSearchOpen(false)}>关闭</button>
+      </div>}
       {!!suggestions.length && <div className="command-suggestions">
         {suggestions.map((suggestion, index) => <button key={suggestion.id}
           onMouseDown={event => {
@@ -185,7 +252,9 @@ export function TerminalView({
           <small>{suggestion.useCount} 次</small>
         </button>)}
       </div>}
-      <div className="terminal-status">{status}{privateSession ? ' · 隐私会话（不记录命令）' : ''}</div>
+      <div className="terminal-status">{status}{privateSession ? ' · 隐私会话（不记录命令）' : ''}
+        {zmodemActive && <button onClick={() => void zmodemRef.current?.cancel()}>取消传输</button>}
+      </div>
     </section>
   )
 }

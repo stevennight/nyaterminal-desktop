@@ -25,6 +25,7 @@ const (
 	TypeSyncProfile = "sync_profile"
 	TypeSyncState   = "sync_state"
 	TypePairing     = "sync_pairing"
+	TypeDeletion    = "sync_deletion"
 )
 
 type Store struct {
@@ -38,6 +39,13 @@ type HostTrust struct {
 	Fingerprint string    `json:"fingerprint"`
 	PublicKey   []byte    `json:"publicKey"`
 	AcceptedAt  time.Time `json:"acceptedAt"`
+}
+
+type Deletion struct {
+	ID         string    `json:"id"`
+	EntityID   string    `json:"entityId"`
+	EntityType string    `json:"entityType"`
+	DeletedAt  time.Time `json:"deletedAt"`
 }
 
 func New(v *vault.Vault) *Store {
@@ -72,6 +80,28 @@ func (s *Store) PutGroup(ctx context.Context, value model.Group) (model.Group, e
 	return value, s.vault.Put(ctx, TypeGroup, value.ID, value)
 }
 
+func (s *Store) DeleteGroup(ctx context.Context, id string) error {
+	groups, err := s.ListGroups(ctx)
+	if err != nil {
+		return err
+	}
+	for _, group := range groups {
+		if group.ParentID == id {
+			return errors.New("group contains child groups")
+		}
+	}
+	connections, err := s.ListConnections(ctx)
+	if err != nil {
+		return err
+	}
+	for _, connection := range connections {
+		if connection.GroupID == id {
+			return errors.New("group contains connections")
+		}
+	}
+	return s.Delete(ctx, id)
+}
+
 func (s *Store) ListTags(ctx context.Context) ([]model.Tag, error) {
 	values, err := s.vault.List(ctx, TypeTag, func() any { return &model.Tag{} })
 	return valuesAs[model.Tag](values), err
@@ -94,9 +124,38 @@ func (s *Store) PutTag(ctx context.Context, value model.Tag) (model.Tag, error) 
 	return value, s.vault.Put(ctx, TypeTag, value.ID, value)
 }
 
+func (s *Store) DeleteTag(ctx context.Context, id string) error {
+	connections, err := s.ListConnections(ctx)
+	if err != nil {
+		return err
+	}
+	for _, connection := range connections {
+		next := connection.Tags[:0]
+		for _, tagID := range connection.Tags {
+			if tagID != id {
+				next = append(next, tagID)
+			}
+		}
+		if len(next) != len(connection.Tags) {
+			connection.Tags = append([]string(nil), next...)
+			if _, err := s.PutConnection(ctx, connection); err != nil {
+				return err
+			}
+		}
+	}
+	return s.Delete(ctx, id)
+}
+
 func (s *Store) ListConnections(ctx context.Context) ([]model.Connection, error) {
 	values, err := s.vault.List(ctx, TypeConnection, func() any { return &model.Connection{} })
-	return valuesAs[model.Connection](values), err
+	result := valuesAs[model.Connection](values)
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].SortOrder != result[j].SortOrder {
+			return result[i].SortOrder < result[j].SortOrder
+		}
+		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+	})
+	return result, err
 }
 
 func (s *Store) GetConnection(ctx context.Context, id string) (model.Connection, error) {
@@ -110,6 +169,17 @@ func (s *Store) PutConnection(ctx context.Context, value model.Connection) (mode
 	if value.ID == "" {
 		value.ID = uuid.NewString()
 		value.CreatedAt = now
+		connections, err := s.ListConnections(ctx)
+		if err != nil {
+			return model.Connection{}, err
+		}
+		maxOrder := -1
+		for _, existing := range connections {
+			if existing.GroupID == value.GroupID && existing.SortOrder > maxOrder {
+				maxOrder = existing.SortOrder
+			}
+		}
+		value.SortOrder = maxOrder + 1
 	}
 	value.Name = strings.TrimSpace(value.Name)
 	value.Host = strings.TrimSpace(value.Host)
@@ -129,6 +199,21 @@ func (s *Store) PutConnection(ctx context.Context, value model.Connection) (mode
 	}
 	value.UpdatedAt = now
 	return value, s.vault.Put(ctx, TypeConnection, value.ID, value)
+}
+
+func (s *Store) DeleteConnection(ctx context.Context, id string) error {
+	history, err := s.vault.List(ctx, TypeHistory, func() any { return &model.CommandHistory{} })
+	if err != nil {
+		return err
+	}
+	for _, value := range valuesAs[model.CommandHistory](history) {
+		if value.ConnectionID == id {
+			if err := s.Delete(ctx, value.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return s.Delete(ctx, id)
 }
 
 func (s *Store) GetCredential(ctx context.Context, id string) (model.Credential, error) {
@@ -170,6 +255,26 @@ func (s *Store) PutCredential(ctx context.Context, value model.Credential) (mode
 }
 
 func (s *Store) Delete(ctx context.Context, id string) error {
+	recordType, err := s.vault.RecordType(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !synchronizableType(recordType) {
+		return s.vault.Delete(ctx, id)
+	}
+	deletion := Deletion{
+		ID: "deletion:" + id, EntityID: id, EntityType: recordType,
+		DeletedAt: time.Now().UTC(),
+	}
+	return s.vault.DeleteAndPut(ctx, id, TypeDeletion, deletion.ID, deletion)
+}
+
+func (s *Store) ListDeletions(ctx context.Context) ([]Deletion, error) {
+	values, err := s.vault.List(ctx, TypeDeletion, func() any { return &Deletion{} })
+	return valuesAs[Deletion](values), err
+}
+
+func (s *Store) RemoveDeletion(ctx context.Context, id string) error {
 	return s.vault.Delete(ctx, id)
 }
 
@@ -200,6 +305,13 @@ func (s *Store) PutSettings(ctx context.Context, value model.Settings) error {
 }
 
 func (s *Store) AddCommand(ctx context.Context, connectionID, command string, private bool) error {
+	connection, err := s.GetConnection(ctx, connectionID)
+	if err != nil {
+		return err
+	}
+	if !connection.CommandHistory {
+		return nil
+	}
 	if strings.HasPrefix(command, " ") {
 		return nil
 	}
@@ -234,6 +346,13 @@ func (s *Store) AddCommand(ctx context.Context, connectionID, command string, pr
 }
 
 func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string, limit int) ([]model.CommandHistory, error) {
+	connection, err := s.GetConnection(ctx, connectionID)
+	if err != nil {
+		return nil, err
+	}
+	if !connection.CommandHistory {
+		return nil, nil
+	}
 	values, err := s.vault.List(ctx, TypeHistory, func() any { return &model.CommandHistory{} })
 	if err != nil {
 		return nil, err
@@ -259,6 +378,15 @@ func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string
 		result = result[:limit]
 	}
 	return result, nil
+}
+
+func synchronizableType(recordType string) bool {
+	switch recordType {
+	case TypeGroup, TypeConnection, TypeCredential, TypeTag, TypeHistory:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) GetHostTrust(ctx context.Context, hostPort string) (HostTrust, error) {

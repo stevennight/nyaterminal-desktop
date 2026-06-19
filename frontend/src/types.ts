@@ -2,6 +2,7 @@ export type VaultStatus = {
   initialized: boolean
   locked: boolean
   quickUnlock: boolean
+  quickUnlockMethod: string
   customLockPassword: boolean
 }
 
@@ -32,10 +33,12 @@ export type Connection = {
   credentialId?: string
   authentication: 'password' | 'private_key' | 'agent' | 'interactive'
   tags: string[]
+  sortOrder: number
   encoding: string
   keepAliveSeconds: number
   connectTimeoutSeconds: number
   legacyAlgorithms: boolean
+  syncSecrets?: boolean
   commandHistory: boolean
 }
 
@@ -66,6 +69,7 @@ export type Bootstrap = {
   tags?: Tag[]
   connections?: Connection[]
   settings?: Settings
+  syncConfigured: boolean
 }
 
 export type PendingHostKey = {
@@ -88,6 +92,19 @@ export type RemoteEntry = {
   mode: string
   isDir: boolean
   modTime: string
+}
+
+export type SFTPTransfer = {
+  id: string
+  connectionId: string
+  name: string
+  direction: 'upload' | 'download'
+  status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
+  bytesDone: number
+  totalBytes: number
+  error?: string
+  createdAt: string
+  updatedAt: string
 }
 
 export type CommandHistory = {

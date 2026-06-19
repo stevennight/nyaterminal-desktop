@@ -42,6 +42,7 @@ type Connection struct {
 	CredentialID      string    `json:"credentialId,omitempty"`
 	Authentication    string    `json:"authentication"`
 	Tags              []string  `json:"tags"`
+	SortOrder         int       `json:"sortOrder"`
 	Encoding          string    `json:"encoding"`
 	KeepAliveSeconds  int       `json:"keepAliveSeconds"`
 	ConnectTimeoutSec int       `json:"connectTimeoutSeconds"`

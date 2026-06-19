@@ -26,6 +26,7 @@ type SessionTab = {
 const emptyConnection: Connection = {
   id: '', name: '', host: '', port: 22, username: 'root',
   authentication: 'password', tags: [], encoding: 'utf-8',
+  sortOrder: 0,
   keepAliveSeconds: 30, connectTimeoutSeconds: 15,
   legacyAlgorithms: false, commandHistory: true
 }
@@ -45,6 +46,7 @@ export function App() {
   const [query, setQuery] = useState('')
   const [activeTag, setActiveTag] = useState('')
   const activityTimer = useRef<number | undefined>(undefined)
+  const searchInput = useRef<HTMLInputElement>(null)
 
   const reload = useCallback(async () => {
     try {
@@ -81,12 +83,77 @@ export function App() {
     }
   }, [resetActivity])
 
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return
+      const key = event.key.toLowerCase()
+      if (key === 'k') {
+        event.preventDefault()
+        searchInput.current?.focus()
+      } else if (key === 'l') {
+        event.preventDefault()
+        void lock()
+      } else if (key === 'n') {
+        event.preventDefault()
+        setConnectionEditor({ ...emptyConnection })
+      }
+    }
+    window.addEventListener('keydown', shortcut)
+    return () => window.removeEventListener('keydown', shortcut)
+  }, [bootstrap?.settings?.disconnectOnLock])
+
   const lock = async () => {
+    const disconnect = bootstrap?.settings?.disconnectOnLock ?? true
     await api.Lock()
-    setSessions([])
-    setActiveSession('')
-    await reload()
+    void navigator.clipboard?.writeText('').catch(() => undefined)
+    if (disconnect) {
+      setSessions([])
+      setActiveSession('')
+    }
+    setBootstrap(current => current ? {
+      ...current,
+      vault: { ...current.vault, locked: true }
+    } : current)
   }
+
+  useEffect(() => {
+    if (bootstrap?.vault.locked) return
+    let lastTick = Date.now()
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      if (now - lastTick > 30_000) void lock()
+      lastTick = now
+    }, 5_000)
+    let hiddenTimer = 0
+    const visibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenTimer = window.setTimeout(() => void lock(), 30_000)
+      } else if (hiddenTimer) {
+        window.clearTimeout(hiddenTimer)
+      }
+    }
+    document.addEventListener('visibilitychange', visibility)
+    return () => {
+      window.clearInterval(timer)
+      if (hiddenTimer) window.clearTimeout(hiddenTimer)
+      document.removeEventListener('visibilitychange', visibility)
+    }
+  }, [bootstrap?.vault.locked, bootstrap?.settings?.disconnectOnLock])
+
+  useEffect(() => {
+    if (!bootstrap?.syncConfigured || bootstrap.vault.locked || !bootstrap.settings) return
+    const run = () => void api.SyncNow(
+      bootstrap.settings!.syncSecretsByDefault,
+      bootstrap.settings!.syncCommandHistory
+    ).catch(() => undefined)
+    const initial = window.setTimeout(run, 10_000)
+    const timer = window.setInterval(run, 5 * 60_000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(timer)
+    }
+  }, [bootstrap?.syncConfigured, bootstrap?.vault.locked,
+    bootstrap?.settings?.syncSecretsByDefault, bootstrap?.settings?.syncCommandHistory])
 
   const openConnection = (connection: Connection, privateSession = false) => {
     const id = crypto.randomUUID()
@@ -122,7 +189,7 @@ export function App() {
     return <VaultSetup onComplete={reload} />
   }
 
-  if (bootstrap.vault.locked) {
+  if (bootstrap.vault.locked && (!bootstrap.settings || sessions.length === 0)) {
     return <Unlock quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
   }
 
@@ -138,7 +205,8 @@ export function App() {
           <button className="icon-button" onClick={() => void lock()} title="锁屏"><LockKeyhole size={17} /></button>
         </div>
         <div className="search-box"><Search size={16} />
-          <input placeholder="搜索连接" value={query} onChange={event => setQuery(event.target.value)} />
+          <input ref={searchInput} placeholder="搜索连接" value={query}
+            onChange={event => setQuery(event.target.value)} />
           <kbd>⌘K</kbd>
         </div>
         <div className="section-heading">
@@ -150,7 +218,7 @@ export function App() {
         </div>
         <nav className="connection-tree">
           <GroupTree groups={bootstrap.groups ?? []} connections={filteredConnections}
-            onOpen={openConnection} onEdit={setConnectionEditor} />
+            onOpen={openConnection} onEdit={setConnectionEditor} onChanged={reload} />
           {!filteredConnections.length && <div className="empty-tree">还没有连接</div>}
         </nav>
         <div className="tag-section">
@@ -159,7 +227,20 @@ export function App() {
           <div className="tag-list">
             {(bootstrap.tags ?? []).map(tag => <button key={tag.id}
               className={activeTag === tag.id ? 'active' : ''}
-              onClick={() => setActiveTag(current => current === tag.id ? '' : tag.id)}>
+              onClick={() => setActiveTag(current => current === tag.id ? '' : tag.id)}
+              onContextMenu={event => {
+                event.preventDefault()
+                const name = window.prompt('修改标签名称；留空将删除标签', tag.name)
+                if (name === null) return
+                if (!name.trim()) {
+                  if (window.confirm(`确定删除标签 ${tag.name}？`)) {
+                    void api.DeleteTag(tag.id).then(reload).catch(reason => setError(String(reason)))
+                  }
+                } else {
+                  void api.SaveTag({ ...tag, name: name.trim() }).then(reload)
+                    .catch(reason => setError(String(reason)))
+                }
+              }}>
               <i style={{ background: tag.color }} /><span>{tag.name}</span>
             </button>)}
           </div>
@@ -219,6 +300,11 @@ export function App() {
         <ConnectionEditor initial={connectionEditor} groups={bootstrap.groups ?? []}
           tags={bootstrap.tags ?? []}
           onClose={() => setConnectionEditor(undefined)}
+          onDeleted={async id => {
+            await api.DeleteConnection(id)
+            setConnectionEditor(undefined)
+            await reload()
+          }}
           onSaved={async connection => {
             setConnectionEditor(undefined)
             await reload()
@@ -229,7 +315,8 @@ export function App() {
         onSaved={async () => { setGroupEditor(false); await reload() }} />}
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
-      {settingsOpen && <SettingsDialog value={settings} onClose={() => setSettingsOpen(false)}
+      {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
+        onClose={() => setSettingsOpen(false)}
         onSaved={async () => { setSettingsOpen(false); await reload() }} />}
       {hostKey && (
         <HostKeyDialog value={hostKey.value} onCancel={() => {
@@ -255,42 +342,94 @@ export function App() {
           }} />
       )}
       {error && <div className="toast-error" onClick={() => setError('')}>{error}</div>}
+      {bootstrap.vault.locked && (
+        <div className="lock-overlay">
+          <Unlock quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
+        </div>
+      )}
     </div>
   )
 }
 
-function GroupTree({ groups, connections, onOpen, onEdit }: {
+function GroupTree({ groups, connections, onOpen, onEdit, onChanged }: {
   groups: Group[]
   connections: Connection[]
   onOpen: (connection: Connection, privateSession?: boolean) => void
   onEdit: (connection: Connection) => void
+  onChanged: () => Promise<void>
 }) {
-  const roots = groups.filter(group => !group.parentId)
+  const orderedGroups = [...groups].sort((a, b) =>
+    a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+  const roots = orderedGroups.filter(group => !group.parentId)
   const ungrouped = connections.filter(connection => !connection.groupId)
+  const dropInto = async (event: React.DragEvent, parentId: string) => {
+    event.preventDefault()
+    const connectionId = event.dataTransfer.getData('application/x-nya-connection')
+    const groupId = event.dataTransfer.getData('application/x-nya-group')
+    if (connectionId) {
+      const connection = connections.find(value => value.id === connectionId)
+      const nextOrder = connections.filter(value => (value.groupId ?? '') === parentId)
+        .reduce((maximum, value) => Math.max(maximum, value.sortOrder), -1) + 1
+      if (connection) await api.SaveConnection({
+        ...connection, groupId: parentId, sortOrder: nextOrder
+      })
+    } else if (groupId && groupId !== parentId) {
+      const group = groups.find(value => value.id === groupId)
+      const nextOrder = groups.filter(value => (value.parentId ?? '') === parentId)
+        .reduce((maximum, value) => Math.max(maximum, value.sortOrder), -1) + 1
+      if (group) await api.SaveGroup({ ...group, parentId, sortOrder: nextOrder })
+    }
+    await onChanged()
+  }
   return <>
     {roots.map(group => <GroupNode key={group.id} group={group} groups={groups}
-      connections={connections} onOpen={onOpen} onEdit={onEdit} />)}
+      connections={connections} onOpen={onOpen} onEdit={onEdit}
+      onChanged={onChanged} onDropInto={dropInto} />)}
+    <div className="ungrouped-drop" onDragOver={event => event.preventDefault()}
+      onDrop={event => void dropInto(event, '')}>
     {ungrouped.map(connection => <ConnectionRow key={connection.id} value={connection}
       onOpen={onOpen} onEdit={onEdit} />)}
+    </div>
   </>
 }
 
-function GroupNode({ group, groups, connections, onOpen, onEdit }: {
+function GroupNode({ group, groups, connections, onOpen, onEdit, onChanged, onDropInto }: {
   group: Group; groups: Group[]; connections: Connection[]
   onOpen: (connection: Connection, privateSession?: boolean) => void; onEdit: (connection: Connection) => void
+  onChanged: () => Promise<void>
+  onDropInto: (event: React.DragEvent, parentId: string) => Promise<void>
 }) {
   const [open, setOpen] = useState(true)
   const children = groups.filter(value => value.parentId === group.id)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
   const items = connections.filter(value => value.groupId === group.id)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
   return <div className="group-node">
-    <button className="group-row" onClick={() => setOpen(value => !value)}>
+    <button className="group-row" draggable
+      onDragStart={event => event.dataTransfer.setData('application/x-nya-group', group.id)}
+      onDragOver={event => event.preventDefault()}
+      onDrop={event => { event.stopPropagation(); void onDropInto(event, group.id) }}
+      onClick={() => setOpen(value => !value)}
+      onContextMenu={event => {
+        event.preventDefault()
+        const name = window.prompt('修改分组名称；留空将删除分组', group.name)
+        if (name === null) return
+        if (!name.trim()) {
+          if (window.confirm(`确定删除空分组 ${group.name}？`)) {
+            void api.DeleteGroup(group.id).then(onChanged)
+          }
+        } else {
+          void api.SaveGroup({ ...group, name: name.trim() }).then(onChanged)
+        }
+      }}>
       {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       <Folder size={15} /><span>{group.name}</span>
       <small>{items.length}</small>
     </button>
     {open && <div className="group-children">
       {children.map(child => <GroupNode key={child.id} group={child} groups={groups}
-        connections={connections} onOpen={onOpen} onEdit={onEdit} />)}
+        connections={connections} onOpen={onOpen} onEdit={onEdit}
+        onChanged={onChanged} onDropInto={onDropInto} />)}
       {items.map(connection => <ConnectionRow key={connection.id} value={connection}
         onOpen={onOpen} onEdit={onEdit} />)}
     </div>}
@@ -300,7 +439,9 @@ function GroupNode({ group, groups, connections, onOpen, onEdit }: {
 function ConnectionRow({ value, onOpen, onEdit }: {
   value: Connection; onOpen: (value: Connection, privateSession?: boolean) => void; onEdit: (value: Connection) => void
 }) {
-  return <button className="connection-row" title="双击连接；右键打开不记录历史的隐私会话"
+  return <button className="connection-row" draggable
+    onDragStart={event => event.dataTransfer.setData('application/x-nya-connection', value.id)}
+    title="双击连接；右键打开不记录历史的隐私会话"
     onDoubleClick={() => onOpen(value)}
     onContextMenu={event => { event.preventDefault(); onOpen(value, true) }}>
     <span className="status-dot" /><span className="connection-copy">
@@ -388,9 +529,10 @@ function Modal({ title, children, onClose, width = '520px' }: {
   </div>
 }
 
-function ConnectionEditor({ initial, groups, tags, onClose, onSaved }: {
+function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }: {
   initial: Connection; groups: Group[]; tags: Tag[]; onClose: () => void
   onSaved: (value: Connection) => Promise<void>
+  onDeleted: (id: string) => Promise<void>
 }) {
   const [value, setValue] = useState(initial)
   const [secret, setSecret] = useState('')
@@ -452,11 +594,27 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved }: {
         onChange={e => update('keepAliveSeconds', Number(e.target.value))} /></label>
       <label>连接超时（秒）<input type="number" value={value.connectTimeoutSeconds}
         onChange={e => update('connectTimeoutSeconds', Number(e.target.value))} /></label>
+      <label className="full">终端编码<select value={value.encoding}
+        onChange={e => update('encoding', e.target.value)}>
+        <option value="utf-8">UTF-8</option>
+        <option value="gbk">GBK</option>
+        <option value="big5">Big5</option>
+        <option value="shift_jis">Shift-JIS</option>
+        <option value="euc-kr">EUC-KR</option>
+      </select></label>
+      <label className="check full"><input type="checkbox" checked={value.commandHistory}
+        onChange={e => update('commandHistory', e.target.checked)} />记录并提示此连接的历史命令</label>
+      <label className="check full"><input type="checkbox" checked={value.syncSecrets ?? false}
+        onChange={e => update('syncSecrets', e.target.checked)} />同步此连接使用的密码或私钥</label>
       <label className="check full"><input type="checkbox" checked={value.legacyAlgorithms}
         onChange={e => update('legacyAlgorithms', e.target.checked)} />允许旧版弱算法（不推荐）</label>
     </div>
     {error && <div className="form-error">{error}</div>}
-    <footer className="modal-actions"><button onClick={onClose}>取消</button>
+    <footer className="modal-actions">
+      {value.id && <button className="danger-button" onClick={() => {
+        if (window.confirm(`确定删除连接 ${value.name}？`)) void onDeleted(value.id)
+      }}>删除</button>}
+      <button onClick={onClose}>取消</button>
       <button className="primary" onClick={() => void save()}>保存并连接</button></footer>
   </Modal>
 }
@@ -498,12 +656,33 @@ function TagEditor({ onClose, onSaved }: {
   </Modal>
 }
 
-function SettingsDialog({ value, onClose, onSaved }: {
-  value: Settings; onClose: () => void; onSaved: () => Promise<void>
+function SettingsDialog({ value, vault, onClose, onSaved }: {
+  value: Settings; vault: Bootstrap['vault']; onClose: () => void; onSaved: () => Promise<void>
 }) {
   const [next, setNext] = useState(value)
   const [syncOpen, setSyncOpen] = useState(false)
   const [lockPassword, setLockPassword] = useState('')
+  const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
+  const [systemUnlockStatus, setSystemUnlockStatus] = useState('')
+  const [oldMasterPassword, setOldMasterPassword] = useState('')
+  const [newMasterPassword, setNewMasterPassword] = useState('')
+  const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
+  const updateSystemUnlock = async () => {
+    setSystemUnlockStatus('')
+    try {
+      if (quickUnlock) {
+        await api.DisableSystemUnlock()
+        setQuickUnlock(false)
+        setSystemUnlockStatus('系统快速解锁已关闭')
+      } else {
+        await api.EnableSystemUnlock()
+        setQuickUnlock(true)
+        setSystemUnlockStatus('系统快速解锁已启用')
+      }
+    } catch (error) {
+      setSystemUnlockStatus(String(error))
+    }
+  }
   return <Modal title="设置" onClose={onClose}>
     <div className="form-grid">
       <label className="full">外观<div className="theme-picker">
@@ -514,27 +693,65 @@ function SettingsDialog({ value, onClose, onSaved }: {
       </div></label>
       <label>终端字号<input type="number" value={next.fontSize}
         onChange={e => setNext({ ...next, fontSize: Number(e.target.value) })} /></label>
+      <label className="full">终端字体<input value={next.fontFamily}
+        onChange={e => setNext({ ...next, fontFamily: e.target.value })} /></label>
       <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
         onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
       <label className="check full"><input type="checkbox" checked={next.disconnectOnLock}
         onChange={e => setNext({ ...next, disconnectOnLock: e.target.checked })} />锁屏时断开 SSH 会话</label>
       <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
         onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />允许同步命令历史</label>
-      <button className="secondary full" onClick={() => void api.EnableSystemUnlock()}>
-        启用系统凭据快捷解锁
+      <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
+        onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />
+        默认同步密码和私钥</label>
+      <button className="secondary full" title={quickUnlock ? '关闭系统快速解锁' : '启用系统快速解锁'}
+        onClick={() => void updateSystemUnlock()}>
+        {quickUnlock ? '关闭系统快速解锁' : '启用系统快速解锁'}
       </button>
       <label className="full">独立锁屏密码（可选）
         <input type="password" value={lockPassword} placeholder="至少 8 个字符；留空不修改"
           onChange={event => setLockPassword(event.target.value)} /></label>
+      {vault.customLockPassword && <button className="secondary full"
+        onClick={() => void api.ClearLockPassword()
+          .then(() => setSystemUnlockStatus('独立锁屏密码已清除'))
+          .catch(error => setSystemUnlockStatus(String(error)))}>
+        清除独立锁屏密码
+      </button>}
+      <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
+        onChange={event => setOldMasterPassword(event.target.value)} /></label>
+      <label>新主密码<input type="password" value={newMasterPassword}
+        placeholder="至少 12 个字符"
+        onChange={event => setNewMasterPassword(event.target.value)} /></label>
+      <label className="full">敏感命令过滤规则（每行一个正则）
+        <textarea rows={4} value={sensitiveRules}
+          onChange={event => setSensitiveRules(event.target.value)} />
+      </label>
       <div className="full settings-divider" />
       <button className="secondary full" onClick={() => setSyncOpen(true)}>配置端到端加密同步</button>
     </div>
     <footer className="modal-actions"><button onClick={onClose}>取消</button>
       <button className="primary" onClick={() => void (async () => {
-        if (lockPassword) await api.SetLockPassword(lockPassword)
-        await api.SaveSettings(next)
-        await onSaved()
+        try {
+          if (lockPassword) await api.SetLockPassword(lockPassword)
+          if (oldMasterPassword || newMasterPassword) {
+            await api.ChangeMasterPassword(oldMasterPassword, newMasterPassword)
+          }
+          await api.SaveSettings({
+            ...next,
+            sensitiveCommandRules: sensitiveRules.split('\n')
+              .map(rule => rule.trim()).filter(Boolean)
+          })
+          await onSaved()
+        } catch (error) {
+          setSystemUnlockStatus(String(error))
+        }
       })()}>保存</button></footer>
+    <small className="hint">
+      {quickUnlock
+        ? `${vault.quickUnlockMethod} 快速解锁已启用；解锁时需要操作系统用户验证。`
+        : `${vault.quickUnlockMethod} 快速解锁未启用。`}
+    </small>
+    {systemUnlockStatus && <div className="form-error">{systemUnlockStatus}</div>}
     {syncOpen && <SyncDialog settings={next} onClose={() => setSyncOpen(false)} />}
   </Modal>
 }
@@ -545,6 +762,7 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
   const [password, setPassword] = useState('')
   const [deviceName, setDeviceName] = useState('My device')
   const [recoveryCode, setRecoveryCode] = useState('')
+  const [recoveryInput, setRecoveryInput] = useState('')
   const [status, setStatus] = useState('')
   const [pairing, setPairing] = useState<{
     shortCode: string; qrPayload: string; expiresAt: string
@@ -559,6 +777,7 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
   const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
   const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
   const qrCanvas = useRef<HTMLCanvasElement>(null)
+  const qrFile = useRef<HTMLInputElement>(null)
   const initialize = async () => {
     setStatus('正在初始化…')
     try {
@@ -572,6 +791,23 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
     try {
       const result = await api.SyncNow(settings.syncSecretsByDefault, settings.syncCommandHistory)
       setStatus(`完成：上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}`)
+    } catch (error) { setStatus(String(error)) }
+  }
+  const recover = async () => {
+    setStatus('正在使用恢复码恢复同步保险库…')
+    try {
+      const result = await api.RecoverSync(
+        serverUrl, username, password, totpCode, deviceName, recoveryInput
+      )
+      setStatus(`设备 ${result.deviceId} 已恢复，可以开始同步。`)
+      setRecoveryInput('')
+    } catch (error) { setStatus(String(error)) }
+  }
+  const rotateRecoveryCode = async () => {
+    setStatus('正在轮换恢复码…')
+    try {
+      setRecoveryCode(await api.RotateSyncRecoveryCode())
+      setStatus('恢复码已轮换。旧恢复码已失效，请立即保存新恢复码。')
     } catch (error) { setStatus(String(error)) }
   }
   const beginPairing = async () => {
@@ -590,6 +826,25 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
       }
       await api.ApproveDevicePairing(approvalPayload)
       setStatus('新设备已批准并收到加密密钥包。')
+    } catch (error) { setStatus(String(error)) }
+  }
+  const scanPairingQR = async (file?: File) => {
+    if (!file) return
+    try {
+      const Detector = (window as typeof window & {
+        BarcodeDetector?: new (options: { formats: string[] }) => {
+          detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>>
+        }
+      }).BarcodeDetector
+      if (!Detector) return setStatus('当前 WebView 不支持二维码识别，请粘贴二维码内容。')
+      const bitmap = await createImageBitmap(file)
+      const results = await new Detector({ formats: ['qr_code'] }).detect(bitmap)
+      bitmap.close()
+      if (!results[0]?.rawValue) return setStatus('图片中没有识别到配对二维码。')
+      setApprovalPayload(results[0].rawValue)
+      const parsed = JSON.parse(results[0].rawValue) as { shortCode?: string }
+      if (parsed.shortCode) setApprovalCode(parsed.shortCode)
+      setStatus('已识别配对二维码，请核对短码后批准。')
     } catch (error) { setStatus(String(error)) }
   }
   const claimPairing = async () => {
@@ -631,6 +886,14 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
       <button className="secondary" onClick={() => void beginPairing()}>将本设备加入已有保险库</button>
       <button className="secondary" onClick={() => void sync()}>立即同步</button>
     </div>
+    <details className="pairing-approval">
+      <summary>使用恢复码恢复设备</summary>
+      <label>同步恢复码<textarea rows={3} value={recoveryInput}
+        onChange={e => setRecoveryInput(e.target.value)}
+        placeholder="输入初始化或轮换时生成的高熵恢复码" /></label>
+      <button className="secondary wide" disabled={!recoveryInput.trim()}
+        onClick={() => void recover()}>恢复同步保险库</button>
+    </details>
     {pairing && <div className="pairing-card">
       <canvas ref={qrCanvas} />
       <div><small>设备配对短码</small><strong>{pairing.shortCode.slice(0, 3)} {pairing.shortCode.slice(3)}</strong>
@@ -639,6 +902,11 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
     </div>}
     <details className="pairing-approval">
       <summary>批准另一台设备</summary>
+      <input ref={qrFile} hidden type="file" accept="image/*"
+        onChange={event => void scanPairingQR(event.target.files?.[0])} />
+      <button className="secondary wide" onClick={() => qrFile.current?.click()}>
+        从图片扫描配对二维码
+      </button>
       <label>二维码载荷<textarea rows={4} value={approvalPayload}
         onChange={e => setApprovalPayload(e.target.value)}
         placeholder="扫描二维码后粘贴配对载荷" /></label>
@@ -664,6 +932,12 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
     <details className="pairing-approval">
       <summary>账号二次验证</summary>
       {!totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}
+      {!totpSetup && <button className="secondary wide" onClick={() => {
+        if (!window.confirm('确定关闭账户 TOTP？现有账户恢复码也会失效。')) return
+        void api.DisableSyncTOTP(password, totpCode)
+          .then(() => setStatus('账户 TOTP 已关闭。'))
+          .catch(error => setStatus(String(error)))
+      }}>关闭 TOTP</button>}
       {totpSetup && <>
         <label>验证器密钥<input readOnly value={totpSetup.secret} /></label>
         <label>六位验证码<input inputMode="numeric" value={totpCode}
@@ -674,6 +948,9 @@ function SyncDialog({ settings, onClose }: { settings: Settings; onClose: () => 
         value={accountRecoveryCodes.join('\n')} /></label>}
     </details>
     {recoveryCode && <label>恢复码<textarea readOnly rows={3} value={recoveryCode} /></label>}
+    <button className="secondary wide" onClick={() => void rotateRecoveryCode()}>
+      轮换同步恢复码
+    </button>
     {status && <div className="sync-status">{status}</div>}
     <footer className="modal-actions">
       <button className="primary" onClick={() => void initialize()}>初始化服务</button></footer>

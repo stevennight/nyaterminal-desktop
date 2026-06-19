@@ -20,6 +20,11 @@ import (
 	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
 	sshagent "github.com/xanzy/ssh-agent"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
 )
 
 type Manager struct {
@@ -34,15 +39,17 @@ type Manager struct {
 }
 
 type terminalSession struct {
-	id        string
-	token     string
-	attached  bool
-	client    *ssh.Client
-	session   *ssh.Session
-	stdin     io.WriteCloser
-	output    chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
+	id           string
+	connectionID string
+	token        string
+	attached     bool
+	client       *ssh.Client
+	session      *ssh.Session
+	stdin        io.WriteCloser
+	encoding     encoding.Encoding
+	output       chan []byte
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
 type StartRequest struct {
@@ -171,8 +178,10 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 		return StartResult{}, err
 	}
 	entry := &terminalSession{
-		id: id, token: token, client: client, session: sshSession, stdin: stdin,
-		output: make(chan []byte, 256), done: make(chan struct{}),
+		id: id, connectionID: connection.ID,
+		token: token, client: client, session: sshSession, stdin: stdin,
+		encoding: terminalEncoding(connection.Encoding),
+		output:   make(chan []byte, 256), done: make(chan struct{}),
 	}
 	sshSession.Stdout = channelWriter{session: entry}
 	sshSession.Stderr = channelWriter{session: entry}
@@ -195,6 +204,21 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 		SessionID: id,
 		URL:       "ws://" + m.address + "/session/" + id + "?token=" + token,
 	}, nil
+}
+
+func (m *Manager) BorrowConnection(connectionID string) *ssh.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, session := range m.sessions {
+		if session.connectionID == connectionID {
+			select {
+			case <-session.done:
+			default:
+				return session.client
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) DialConnection(ctx context.Context, connectionID string, responses []string) (*ssh.Client, error) {
@@ -456,6 +480,13 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if messageType != websocket.MessageBinary && messageType != websocket.MessageText {
 				continue
 			}
+			if messageType == websocket.MessageText && session.encoding != nil {
+				data, err = session.encoding.NewEncoder().Bytes(data)
+				if err != nil {
+					readDone <- errors.New("terminal input cannot be represented in selected encoding")
+					return
+				}
+			}
 			if _, err := session.stdin.Write(data); err != nil {
 				readDone <- err
 				return
@@ -479,6 +510,21 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+}
+
+func terminalEncoding(label string) encoding.Encoding {
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "gbk":
+		return simplifiedchinese.GBK
+	case "big5":
+		return traditionalchinese.Big5
+	case "shift_jis", "shift-jis", "sjis":
+		return japanese.ShiftJIS
+	case "euc-kr", "euckr":
+		return korean.EUCKR
+	default:
+		return nil
 	}
 }
 

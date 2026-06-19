@@ -1,9 +1,11 @@
 import { Receiver, ReceiverEvent, Sender, SenderEvent } from 'zmodem2'
+import { api } from './bridge'
 
 type Callbacks = {
   toTerminal: (data: Uint8Array) => void
   send: (data: Uint8Array) => void
   onStatus: (message: string) => void
+  onActive?: (active: boolean) => void
 }
 
 const decoder = new TextDecoder('latin1')
@@ -14,11 +16,17 @@ const decoder = new TextDecoder('latin1')
 export class ZmodemAdapter {
   private receiver?: Receiver
   private sender?: Sender
-  private receiveChunks: Uint8Array[] = []
+  private detector = new ZmodemHeaderDetector()
   private receiveName = ''
+  private receiveHandle = ''
+  private receiveSize = 0
+  private receivedBytes = 0
+  private receiveQueue = Promise.resolve()
+  private receiverFlush = Promise.resolve()
   private sendFiles: File[] = []
   private sendIndex = 0
   private selectingFile = false
+  private senderFlush = Promise.resolve()
 
   constructor(private callbacks: Callbacks) {}
 
@@ -31,16 +39,15 @@ export class ZmodemAdapter {
       this.consumeSender(data)
       return
     }
-    const mode = detectHeader(data)
-    if (!mode) {
-      this.callbacks.toTerminal(data)
+    const detection = this.detector.consume(data)
+    if (detection.terminal.length) this.callbacks.toTerminal(detection.terminal)
+    if (!detection.mode || !detection.protocol) {
       return
     }
-    const before = data.slice(0, mode.offset)
-    if (before.length) this.callbacks.toTerminal(before)
-    const protocolData = data.slice(mode.offset)
-    if (mode.type === 'receive') {
+    const protocolData = detection.protocol
+    if (detection.mode === 'receive') {
       this.callbacks.onStatus('检测到远端 sz，正在接收文件')
+      this.callbacks.onActive?.(true)
       this.receiver = new Receiver()
       this.consumeReceiver(protocolData)
     } else {
@@ -51,35 +58,59 @@ export class ZmodemAdapter {
   private consumeReceiver(data: Uint8Array) {
     if (!this.receiver) return
     this.receiver.feedIncoming(data)
-    this.flushReceiver()
+    this.receiverFlush = this.receiverFlush
+      .then(() => this.flushReceiver())
+      .catch(error => this.failReceive(error))
   }
 
-  private flushReceiver() {
+  private async flushReceiver() {
     const receiver = this.receiver
     if (!receiver) return
     const outgoing = receiver.drainOutgoing()
     if (outgoing.length) this.callbacks.send(outgoing)
-    const fileData = receiver.drainFile()
-    if (fileData.length) this.receiveChunks.push(fileData.slice())
     for (let event = receiver.pollEvent(); event; event = receiver.pollEvent()) {
       if (event === ReceiverEvent.FileStart) {
         this.receiveName = safeFilename(receiver.getFileName())
-        this.receiveChunks = []
+        this.receiveSize = receiver.getFileSize()
+        this.receivedBytes = 0
+        this.receiveHandle = await api.BeginZmodemReceive(this.receiveName, this.receiveSize)
+        if (!this.receiveHandle) throw new Error('已取消 ZMODEM 接收')
       } else if (event === ReceiverEvent.FileComplete) {
-        const blob = new Blob(this.receiveChunks, { type: 'application/octet-stream' })
-        const url = URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = this.receiveName || 'download.bin'
-        anchor.click()
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+        this.queueReceiveData(receiver.drainFile())
+        await this.receiveQueue
+        if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
+        this.receiveHandle = ''
         this.callbacks.onStatus(`已接收 ${this.receiveName}`)
       } else if (event === ReceiverEvent.SessionComplete) {
         this.receiver = undefined
-        this.receiveChunks = []
+        this.callbacks.onActive?.(false)
         this.callbacks.onStatus('ZMODEM 接收完成')
       }
     }
+    this.queueReceiveData(receiver.drainFile())
+    const pending = receiver.drainOutgoing()
+    if (pending.length) this.callbacks.send(pending)
+  }
+
+  private queueReceiveData(data: Uint8Array) {
+    if (!data.length || !this.receiveHandle) return
+    const chunk = data.slice()
+    const handle = this.receiveHandle
+    this.receivedBytes += chunk.length
+    this.callbacks.onStatus(
+      `正在接收 ${this.receiveName} · ${formatProgress(this.receivedBytes, this.receiveSize)}`
+    )
+    this.receiveQueue = this.receiveQueue.then(() =>
+      api.WriteZmodemReceive(handle, Array.from(chunk))
+    )
+  }
+
+  private async failReceive(error: unknown) {
+    if (this.receiveHandle) await api.CancelZmodemReceive(this.receiveHandle).catch(() => undefined)
+    this.receiveHandle = ''
+    this.receiver = undefined
+    this.callbacks.onActive?.(false)
+    this.callbacks.onStatus(String(error))
   }
 
   private selectFiles(initialData: Uint8Array) {
@@ -101,9 +132,10 @@ export class ZmodemAdapter {
         return
       }
       this.sender = new Sender(false)
+      this.callbacks.onActive?.(true)
       this.sender.feedIncoming(initialData)
       this.startCurrentFile()
-      void this.flushSender()
+      this.queueSenderFlush()
     }
     input.click()
   }
@@ -111,7 +143,17 @@ export class ZmodemAdapter {
   private consumeSender(data: Uint8Array) {
     if (!this.sender) return
     this.sender.feedIncoming(data)
-    void this.flushSender()
+    this.queueSenderFlush()
+  }
+
+  private queueSenderFlush() {
+    this.senderFlush = this.senderFlush
+      .then(() => this.flushSender())
+      .catch(error => {
+        this.sender = undefined
+        this.callbacks.onActive?.(false)
+        this.callbacks.onStatus(String(error))
+      })
   }
 
   private async flushSender() {
@@ -123,6 +165,9 @@ export class ZmodemAdapter {
       const file = this.sendFiles[this.sendIndex]
       const chunk = new Uint8Array(await file.slice(request.offset, request.offset + request.len).arrayBuffer())
       sender.feedFile(chunk)
+      this.callbacks.onStatus(
+        `正在发送 ${file.name} · ${formatProgress(request.offset + chunk.length, file.size)}`
+      )
       outgoing = sender.drainOutgoing()
       if (outgoing.length) this.callbacks.send(outgoing)
     }
@@ -136,6 +181,7 @@ export class ZmodemAdapter {
         this.sender = undefined
         this.sendFiles = []
         this.sendIndex = 0
+        this.callbacks.onActive?.(false)
         this.callbacks.onStatus('ZMODEM 发送完成')
       }
     }
@@ -146,6 +192,19 @@ export class ZmodemAdapter {
   private startCurrentFile() {
     const file = this.sendFiles[this.sendIndex]
     this.sender?.startFile(safeFilename(file.name), file.size)
+  }
+
+  async cancel() {
+    this.callbacks.send(new Uint8Array(8).fill(0x18))
+    if (this.receiveHandle) await api.CancelZmodemReceive(this.receiveHandle).catch(() => undefined)
+    this.receiver = undefined
+    this.sender = undefined
+    this.receiveHandle = ''
+    this.sendFiles = []
+    this.sendIndex = 0
+    this.detector.reset()
+    this.callbacks.onActive?.(false)
+    this.callbacks.onStatus('ZMODEM 传输已取消')
   }
 }
 
@@ -160,8 +219,54 @@ function detectHeader(data: Uint8Array): { type: 'receive' | 'send'; offset: num
   return undefined
 }
 
+export class ZmodemHeaderDetector {
+  private buffer = new Uint8Array()
+
+  consume(data: Uint8Array): {
+    terminal: Uint8Array
+    mode?: 'receive' | 'send'
+    protocol?: Uint8Array
+  } {
+    this.buffer = concatBytes(this.buffer, data)
+    const header = detectHeader(this.buffer)
+    if (header) {
+      const terminal = this.buffer.slice(0, header.offset)
+      const protocol = this.buffer.slice(header.offset)
+      this.buffer = new Uint8Array()
+      return { terminal, mode: header.type, protocol }
+    }
+    const retain = 6
+    if (this.buffer.length <= retain) return { terminal: new Uint8Array() }
+    const terminal = this.buffer.slice(0, -retain)
+    this.buffer = this.buffer.slice(-retain)
+    return { terminal }
+  }
+
+  reset() {
+    this.buffer = new Uint8Array()
+  }
+}
+
 function safeFilename(value: string) {
   const name = value.replaceAll('\\', '/').split('/').at(-1)?.replaceAll('\0', '') ?? ''
   return name === '.' || name === '..' || name === '' ? 'transfer.bin' : name
 }
 
+function concatBytes(left: Uint8Array, right: Uint8Array) {
+  const result = new Uint8Array(left.length + right.length)
+  result.set(left)
+  result.set(right, left.length)
+  return result
+}
+
+function formatProgress(done: number, total: number) {
+  if (total <= 0) return `${formatSize(done)}`
+  return `${Math.min(100, Math.floor(done * 100 / total))}% · ${formatSize(done)} / ${formatSize(total)}`
+}
+
+function formatSize(value: number) {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
+  return `${(value / 1024 ** 3).toFixed(1)} GB`
+}

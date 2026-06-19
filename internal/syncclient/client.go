@@ -53,18 +53,45 @@ type Profile struct {
 }
 
 type State struct {
-	Cursor  int64                  `json:"cursor"`
-	Records map[string]RecordState `json:"records"`
+	Cursor       int64                   `json:"cursor"`
+	Records      map[string]RecordState  `json:"records"`
+	Deferred     map[string]serverRecord `json:"deferred,omitempty"`
+	LastSyncedAt time.Time               `json:"lastSyncedAt,omitempty"`
 }
 
 type RecordState struct {
-	Version int64  `json:"version"`
-	Hash    []byte `json:"hash"`
+	Version   int64                 `json:"version"`
+	Vector    map[string]int64      `json:"vector,omitempty"`
+	Hash      []byte                `json:"hash"`
+	Fields    map[string]FieldState `json:"fields,omitempty"`
+	Tombstone bool                  `json:"tombstone,omitempty"`
+}
+
+type FieldState struct {
+	Vector map[string]int64 `json:"vector"`
+	Writer string           `json:"writer"`
+	Hash   []byte           `json:"hash"`
+}
+
+type syncEnvelope struct {
+	Format int                   `json:"_nyaSync"`
+	Data   json.RawMessage       `json:"data"`
+	Fields map[string]FieldState `json:"fields,omitempty"`
 }
 
 type SetupResult struct {
 	DeviceID     string `json:"deviceId"`
 	RecoveryCode string `json:"recoveryCode"`
+}
+
+type recoveryBundle struct {
+	ID         string    `json:"id"`
+	Generation int64     `json:"generation"`
+	Salt       []byte    `json:"salt"`
+	Nonce      []byte    `json:"nonce"`
+	Ciphertext []byte    `json:"ciphertext"`
+	Verifier   []byte    `json:"verifier"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type SyncResult struct {
@@ -129,17 +156,18 @@ type pairingQR struct {
 }
 
 type serverRecord struct {
-	ID          string    `json:"id"`
-	EntityType  string    `json:"entityType"`
-	EntityID    string    `json:"entityId"`
-	DeviceID    string    `json:"deviceId,omitempty"`
-	Version     int64     `json:"version"`
-	LogicalTime int64     `json:"logicalTime,omitempty"`
-	Tombstone   bool      `json:"tombstone"`
-	Nonce       []byte    `json:"nonce"`
-	Ciphertext  []byte    `json:"ciphertext"`
-	ContentHash []byte    `json:"contentHash"`
-	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
+	ID            string           `json:"id"`
+	EntityType    string           `json:"entityType"`
+	EntityID      string           `json:"entityId"`
+	DeviceID      string           `json:"deviceId,omitempty"`
+	Version       int64            `json:"version"`
+	VersionVector map[string]int64 `json:"versionVector,omitempty"`
+	LogicalTime   int64            `json:"logicalTime,omitempty"`
+	Tombstone     bool             `json:"tombstone"`
+	Nonce         []byte           `json:"nonce"`
+	Ciphertext    []byte           `json:"ciphertext"`
+	ContentHash   []byte           `json:"contentHash"`
+	UpdatedAt     time.Time        `json:"updatedAt,omitempty"`
 }
 
 func New(v *vault.Vault) *Client {
@@ -197,7 +225,7 @@ func (c *Client) Initialize(ctx context.Context, serverURL, username, password, 
 	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
 		return SetupResult{}, err
 	}
-	recoveryCode, bundle, err := createRecoveryBundle(syncRootKey)
+	recoveryCode, bundle, err := createRecoveryBundle(syncRootKey, 1)
 	if err != nil {
 		return SetupResult{}, err
 	}
@@ -208,6 +236,119 @@ func (c *Client) Initialize(ctx context.Context, serverURL, username, password, 
 		return SetupResult{}, err
 	}
 	return SetupResult{DeviceID: profile.DeviceID, RecoveryCode: recoveryCode}, nil
+}
+
+func (c *Client) Recover(
+	ctx context.Context,
+	serverURL, username, password, totpCode, deviceName, recoveryCode string,
+) (SetupResult, error) {
+	serverURL, err := validateServerURL(serverURL)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	if strings.TrimSpace(deviceName) == "" {
+		return SetupResult{}, errors.New("device name is required")
+	}
+	var challenge struct {
+		Generation int64  `json:"generation"`
+		Salt       []byte `json:"salt"`
+	}
+	if err := c.request(
+		ctx, http.MethodGet, serverURL+"/api/v1/recovery/challenge", "",
+		nil, &challenge,
+	); err != nil {
+		return SetupResult{}, err
+	}
+	wrappingKey, verifier, err := recoveryMaterial(recoveryCode, challenge.Salt)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	defer wipe(wrappingKey)
+
+	exchangePrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	signingPublic, signingPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	var response struct {
+		DeviceID string         `json:"deviceId"`
+		Tokens   tokenPair      `json:"tokens"`
+		Bundle   recoveryBundle `json:"bundle"`
+	}
+	if err := c.request(
+		ctx, http.MethodPost, serverURL+"/api/v1/recovery/restore", "",
+		map[string]any{
+			"username": username, "password": password, "totpCode": totpCode,
+			"deviceName":        deviceName,
+			"exchangePublicKey": exchangePrivate.PublicKey().Bytes(),
+			"signingPublicKey":  signingPublic,
+			"generation":        challenge.Generation, "verifier": verifier,
+		}, &response,
+	); err != nil {
+		return SetupResult{}, err
+	}
+	if response.Bundle.Generation != challenge.Generation ||
+		!bytes.Equal(response.Bundle.Salt, challenge.Salt) ||
+		!bytes.Equal(response.Bundle.Verifier, verifier) {
+		return SetupResult{}, errors.New("recovery bundle changed during recovery")
+	}
+	syncRootKey, err := open(
+		wrappingKey, response.Bundle.Nonce, response.Bundle.Ciphertext,
+		[]byte("nyaterminal:recovery:v1"),
+	)
+	if err != nil || len(syncRootKey) != chacha20poly1305.KeySize {
+		wipe(syncRootKey)
+		return SetupResult{}, errors.New("recovery code is invalid")
+	}
+	defer wipe(syncRootKey)
+	profile := Profile{
+		ServerURL: serverURL, Username: username, DeviceID: response.DeviceID,
+		DeviceName: deviceName, ExchangePrivateKey: exchangePrivate.Bytes(),
+		ExchangePublicKey: exchangePrivate.PublicKey().Bytes(),
+		SigningPrivateKey: signingPrivate, SigningPublicKey: signingPublic,
+		SyncRootKey: append([]byte(nil), syncRootKey...),
+		AccessToken: response.Tokens.AccessToken, RefreshToken: response.Tokens.RefreshToken,
+		AccessExpiresAt:  response.Tokens.AccessExpiresAt,
+		RefreshExpiresAt: response.Tokens.RefreshExpiresAt,
+	}
+	if err := c.saveProfile(ctx, profile); err != nil {
+		return SetupResult{}, err
+	}
+	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{
+		Records: map[string]RecordState{}, Deferred: map[string]serverRecord{},
+	}); err != nil {
+		return SetupResult{}, err
+	}
+	return SetupResult{DeviceID: response.DeviceID}, nil
+}
+
+func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
+	profile, _, err := c.load(ctx)
+	if err != nil {
+		return "", err
+	}
+	var current recoveryBundle
+	if err := c.authorizedRequest(
+		ctx, &profile, http.MethodGet, "/api/v1/recovery", nil, &current,
+	); err != nil {
+		return "", err
+	}
+	code, bundle, err := createRecoveryBundle(profile.SyncRootKey, current.Generation+1)
+	if err != nil {
+		return "", err
+	}
+	if err := c.authorizedRequest(
+		ctx, &profile, http.MethodPut, "/api/v1/recovery", bundle, nil,
+	); err != nil {
+		return "", err
+	}
+	if err := c.saveProfile(ctx, profile); err != nil {
+		return "", err
+	}
+	return code, nil
 }
 
 func (c *Client) Login(ctx context.Context, serverURL, username, password, deviceID string) error {
@@ -538,6 +679,20 @@ func (c *Client) ConfirmTOTPSetup(
 	return response.RecoveryCodes, nil
 }
 
+func (c *Client) DisableTOTP(ctx context.Context, password, code string) error {
+	profile, _, err := c.load(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.authorizedRequest(
+		ctx, &profile, http.MethodDelete, "/api/v1/auth/totp",
+		map[string]string{"password": password, "code": code}, nil,
+	); err != nil {
+		return err
+	}
+	return c.saveProfile(ctx, profile)
+}
+
 func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncResult, error) {
 	profile, state, err := c.load(ctx)
 	if err != nil {
@@ -545,13 +700,14 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncR
 	}
 	allowed := map[string]bool{
 		store.TypeGroup: true, store.TypeConnection: true, store.TypeTag: true,
-		store.TypeSettings: true,
-	}
-	if syncSecrets {
-		allowed[store.TypeCredential] = true
+		store.TypeSettings: true, store.TypeCredential: true,
 	}
 	if syncHistory {
 		allowed[store.TypeHistory] = true
+	}
+	credentialOverrides, err := c.credentialSyncOverrides(ctx)
+	if err != nil {
+		return SyncResult{}, err
 	}
 	records, err := c.vault.ExportRecords(ctx, allowed)
 	if err != nil {
@@ -563,35 +719,100 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncR
 		}
 	}()
 	var outgoing []serverRecord
+	var pushedDeletions []string
 	for _, record := range records {
+		if record.Type == store.TypeCredential &&
+			!credentialPayloadAllowed(record.ID, record.Data, syncSecrets, credentialOverrides) {
+			continue
+		}
 		plainHash := sha256.Sum256(record.Data)
 		previous := state.Records[record.ID]
 		if bytes.Equal(previous.Hash, plainHash[:]) {
 			continue
 		}
-		version := previous.Version + 1
-		nonce, ciphertext, err := seal(profile.SyncRootKey, record.Data, syncAAD(record.Type, record.ID, version))
+		vector := incrementVector(previous.Vector, profile.DeviceID, previous.Version)
+		version := vector[profile.DeviceID]
+		payload, fields, err := makeSyncEnvelope(record.Data, previous.Fields, vector, profile.DeviceID)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		nonce, ciphertext, err := seal(
+			profile.SyncRootKey, payload,
+			syncRecordAAD(record.Type, record.ID, version, vector),
+		)
+		wipe(payload)
 		if err != nil {
 			return SyncResult{}, err
 		}
 		contentHash := sha256.Sum256(ciphertext)
 		outgoing = append(outgoing, serverRecord{
 			ID: uuid.NewString(), EntityType: record.Type, EntityID: record.ID,
-			Version: version, Nonce: nonce, Ciphertext: ciphertext, ContentHash: contentHash[:],
+			Version: version, VersionVector: vector,
+			Nonce: nonce, Ciphertext: ciphertext, ContentHash: contentHash[:],
 		})
-		state.Records[record.ID] = RecordState{Version: version, Hash: plainHash[:]}
+		state.Records[record.ID] = RecordState{
+			Version: version, Vector: vector, Hash: plainHash[:], Fields: fields,
+		}
+	}
+	deletions, err := store.New(c.vault).ListDeletions(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	for _, deletion := range deletions {
+		previous, wasSynced := state.Records[deletion.EntityID]
+		if !wasSynced || previous.Version == 0 {
+			if err := c.vault.Delete(ctx, deletion.ID); err != nil {
+				return SyncResult{}, err
+			}
+			continue
+		}
+		plain, err := json.Marshal(deletion)
+		if err != nil {
+			return SyncResult{}, err
+		}
+		vector := incrementVector(previous.Vector, profile.DeviceID, previous.Version)
+		version := vector[profile.DeviceID]
+		nonce, ciphertext, err := seal(
+			profile.SyncRootKey, plain,
+			syncRecordAAD(deletion.EntityType, deletion.EntityID, version, vector),
+		)
+		if err != nil {
+			wipe(plain)
+			return SyncResult{}, err
+		}
+		plainHash := sha256.Sum256(plain)
+		wipe(plain)
+		contentHash := sha256.Sum256(ciphertext)
+		outgoing = append(outgoing, serverRecord{
+			ID: uuid.NewString(), EntityType: deletion.EntityType,
+			EntityID: deletion.EntityID, Version: version, Tombstone: true,
+			VersionVector: vector,
+			Nonce:         nonce, Ciphertext: ciphertext, ContentHash: contentHash[:],
+		})
+		state.Records[deletion.EntityID] = RecordState{
+			Version: version, Vector: vector, Hash: plainHash[:], Tombstone: true,
+		}
+		pushedDeletions = append(pushedDeletions, deletion.ID)
 	}
 	if len(outgoing) > 0 {
 		if err := c.authorizedRequest(ctx, &profile, http.MethodPost, "/api/v1/sync/push",
 			map[string]any{"records": outgoing}, nil); err != nil {
 			return SyncResult{}, err
 		}
+		for _, id := range pushedDeletions {
+			if err := c.vault.Delete(ctx, id); err != nil {
+				return SyncResult{}, err
+			}
+		}
 	}
-	pulled, next, conflicts, err := c.pull(ctx, &profile, &state, allowed)
+	pulled, next, conflicts, err := c.pull(
+		ctx, &profile, &state, allowed, syncSecrets, credentialOverrides,
+	)
 	if err != nil {
 		return SyncResult{}, err
 	}
 	state.Cursor = next
+	state.LastSyncedAt = time.Now().UTC()
 	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, state); err != nil {
 		return SyncResult{}, err
 	}
@@ -603,7 +824,21 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (SyncR
 	}, nil
 }
 
-func (c *Client) pull(ctx context.Context, profile *Profile, state *State, allowed map[string]bool) (int, int64, int, error) {
+func (c *Client) Configured(ctx context.Context) bool {
+	var profile Profile
+	return c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile) == nil &&
+		profile.ServerURL != "" && profile.DeviceID != "" &&
+		len(profile.SyncRootKey) == chacha20poly1305.KeySize
+}
+
+func (c *Client) pull(
+	ctx context.Context,
+	profile *Profile,
+	state *State,
+	allowed map[string]bool,
+	syncSecrets bool,
+	credentialOverrides map[string]bool,
+) (int, int64, int, error) {
 	var response struct {
 		Records []serverRecord `json:"records"`
 		Next    int64          `json:"next"`
@@ -616,54 +851,360 @@ func (c *Client) pull(ctx context.Context, profile *Profile, state *State, allow
 	if err != nil {
 		return 0, state.Cursor, 0, err
 	}
-	localHash := make(map[string][]byte, len(local))
+	localData := make(map[string][]byte, len(local))
 	for _, record := range local {
-		sum := sha256.Sum256(record.Data)
-		localHash[record.ID] = sum[:]
+		localData[record.ID] = append([]byte(nil), record.Data...)
 		wipe(record.Data)
 	}
+	defer func() {
+		for _, data := range localData {
+			wipe(data)
+		}
+	}()
+	if state.Deferred == nil {
+		state.Deferred = make(map[string]serverRecord)
+	}
+	pending := make([]serverRecord, 0, len(state.Deferred)+len(response.Records))
+	for _, record := range state.Deferred {
+		pending = append(pending, record)
+	}
+	pending = append(pending, response.Records...)
 	applied, conflicts := 0, 0
-	for _, record := range response.Records {
+	for _, record := range pending {
 		if !allowed[record.EntityType] {
+			state.Deferred[record.ID] = record
 			continue
 		}
+		delete(state.Deferred, record.ID)
 		previous := state.Records[record.EntityID]
-		if record.Version <= previous.Version {
+		remoteVector := normalizedRecordVector(record)
+		relation := compareVectors(previous.Vector, remoteVector)
+		if relation == vectorEqual || relation == vectorAfter {
 			continue
 		}
 		plain, err := open(profile.SyncRootKey, record.Nonce, record.Ciphertext,
-			syncAAD(record.EntityType, record.EntityID, record.Version))
+			syncRecordAAD(
+				record.EntityType, record.EntityID, record.Version, record.VersionVector,
+			))
 		if err != nil {
 			return applied, state.Cursor, conflicts, errors.New("synchronization ciphertext authentication failed")
 		}
-		sum := sha256.Sum256(plain)
-		locallyChanged := previous.Version > 0 && !bytes.Equal(localHash[record.EntityID], previous.Hash)
+		remoteData, remoteFields, err := parseSyncEnvelope(
+			plain, remoteVector, record.DeviceID,
+		)
+		wipe(plain)
+		if err != nil {
+			return applied, state.Cursor, conflicts, errors.New("synchronization payload is invalid")
+		}
+		if record.EntityType == store.TypeCredential &&
+			!credentialPayloadAllowed(record.EntityID, remoteData, syncSecrets, credentialOverrides) {
+			state.Deferred[record.ID] = record
+			wipe(remoteData)
+			continue
+		}
+		sum := sha256.Sum256(remoteData)
+		localRecord := localData[record.EntityID]
+		localSum := sha256.Sum256(localRecord)
+		locallyChanged := previous.Version > 0 &&
+			!previous.Tombstone &&
+			!bytes.Equal(localSum[:], previous.Hash)
+		concurrent := relation == vectorConcurrent || locallyChanged
 		targetID := record.EntityID
-		if locallyChanged && record.EntityType == store.TypeCredential {
+		if !record.Tombstone && record.EntityType == store.TypeCredential &&
+			concurrent {
 			targetID = uuid.NewString()
-			plain, err = makeCredentialConflict(plain, targetID)
+			remoteData, err = makeCredentialConflict(remoteData, targetID)
 			if err != nil {
-				wipe(plain)
+				wipe(remoteData)
 				return applied, state.Cursor, conflicts, err
 			}
 			conflicts++
 		}
-		if !record.Tombstone {
-			if err := c.vault.PutJSON(ctx, record.EntityType, targetID, plain); err != nil {
-				wipe(plain)
-				return applied, state.Cursor, conflicts, err
-			}
-		} else {
-			if err := c.vault.Delete(ctx, targetID); err != nil {
-				wipe(plain)
+		finalData := remoteData
+		finalFields := remoteFields
+		finalVector := mergeVectors(previous.Vector, remoteVector)
+		if concurrent && !record.Tombstone && record.EntityType != store.TypeCredential &&
+			len(localRecord) > 0 {
+			finalData, finalFields, err = mergeJSONFields(
+				localRecord, remoteData, previous.Fields, remoteFields,
+			)
+			wipe(remoteData)
+			if err != nil {
 				return applied, state.Cursor, conflicts, err
 			}
 		}
-		wipe(plain)
-		state.Records[targetID] = RecordState{Version: record.Version, Hash: sum[:]}
+		if !record.Tombstone {
+			if err := c.vault.PutJSON(ctx, record.EntityType, targetID, finalData); err != nil {
+				wipe(finalData)
+				return applied, state.Cursor, conflicts, err
+			}
+			sum = sha256.Sum256(finalData)
+			localData[targetID] = append([]byte(nil), finalData...)
+		} else {
+			if concurrent && len(localRecord) > 0 {
+				// Preserve the local edit and force a causally newer resurrection
+				// on the next push instead of silently accepting a concurrent delete.
+				state.Records[targetID] = RecordState{
+					Vector: finalVector, Version: maxVector(finalVector),
+					Hash: nil, Fields: previous.Fields,
+				}
+				conflicts++
+				wipe(finalData)
+				applied++
+				continue
+			}
+			if err := c.vault.Delete(ctx, targetID); err != nil {
+				wipe(finalData)
+				return applied, state.Cursor, conflicts, err
+			}
+			delete(localData, targetID)
+		}
+		wipe(finalData)
+		state.Records[targetID] = RecordState{
+			Version: maxVector(finalVector), Vector: finalVector,
+			Hash: sum[:], Fields: finalFields, Tombstone: record.Tombstone,
+		}
 		applied++
 	}
 	return applied, response.Next, conflicts, nil
+}
+
+func (c *Client) credentialSyncOverrides(ctx context.Context) (map[string]bool, error) {
+	connections, err := store.New(c.vault).ListConnections(ctx)
+	if err != nil {
+		return nil, err
+	}
+	overrides := make(map[string]bool)
+	for _, connection := range connections {
+		if connection.CredentialID != "" && connection.SyncSecrets != nil {
+			overrides[connection.CredentialID] = *connection.SyncSecrets
+		}
+	}
+	return overrides, nil
+}
+
+func credentialPayloadAllowed(
+	credentialID string,
+	data []byte,
+	defaultValue bool,
+	connectionOverrides map[string]bool,
+) bool {
+	var policy struct {
+		SyncOverride *bool `json:"syncOverride"`
+	}
+	if json.Unmarshal(data, &policy) == nil && policy.SyncOverride != nil {
+		return *policy.SyncOverride
+	}
+	if value, ok := connectionOverrides[credentialID]; ok {
+		return value
+	}
+	return defaultValue
+}
+
+type vectorRelation int
+
+const (
+	vectorEqual vectorRelation = iota
+	vectorBefore
+	vectorAfter
+	vectorConcurrent
+)
+
+func normalizedRecordVector(record serverRecord) map[string]int64 {
+	if len(record.VersionVector) > 0 {
+		return cloneVector(record.VersionVector)
+	}
+	if record.DeviceID != "" && record.Version > 0 {
+		return map[string]int64{record.DeviceID: record.Version}
+	}
+	return map[string]int64{}
+}
+
+func incrementVector(previous map[string]int64, deviceID string, legacyVersion int64) map[string]int64 {
+	vector := cloneVector(previous)
+	if len(vector) == 0 && legacyVersion > 0 {
+		vector[deviceID] = legacyVersion
+	}
+	vector[deviceID]++
+	return vector
+}
+
+func cloneVector(source map[string]int64) map[string]int64 {
+	result := make(map[string]int64, len(source)+1)
+	for id, counter := range source {
+		if counter > 0 {
+			result[id] = counter
+		}
+	}
+	return result
+}
+
+func mergeVectors(left, right map[string]int64) map[string]int64 {
+	result := cloneVector(left)
+	for id, counter := range right {
+		if counter > result[id] {
+			result[id] = counter
+		}
+	}
+	return result
+}
+
+func compareVectors(left, right map[string]int64) vectorRelation {
+	leftGreater, rightGreater := false, false
+	for id, value := range left {
+		if value > right[id] {
+			leftGreater = true
+		} else if value < right[id] {
+			rightGreater = true
+		}
+	}
+	for id, value := range right {
+		if _, ok := left[id]; ok {
+			continue
+		}
+		if value > 0 {
+			rightGreater = true
+		}
+	}
+	switch {
+	case leftGreater && rightGreater:
+		return vectorConcurrent
+	case leftGreater:
+		return vectorAfter
+	case rightGreater:
+		return vectorBefore
+	default:
+		return vectorEqual
+	}
+}
+
+func maxVector(vector map[string]int64) int64 {
+	var maximum int64
+	for _, counter := range vector {
+		if counter > maximum {
+			maximum = counter
+		}
+	}
+	return maximum
+}
+
+func makeSyncEnvelope(
+	data []byte,
+	previous map[string]FieldState,
+	vector map[string]int64,
+	writer string,
+) ([]byte, map[string]FieldState, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, nil, err
+	}
+	fields := make(map[string]FieldState, len(object)+len(previous))
+	for name, value := range object {
+		hash := sha256.Sum256(value)
+		old, exists := previous[name]
+		if exists && bytes.Equal(old.Hash, hash[:]) {
+			fields[name] = old
+			continue
+		}
+		fields[name] = FieldState{
+			Vector: cloneVector(vector), Writer: writer, Hash: hash[:],
+		}
+	}
+	for name := range previous {
+		if _, exists := object[name]; !exists {
+			fields[name] = FieldState{
+				Vector: cloneVector(vector), Writer: writer, Hash: nil,
+			}
+		}
+	}
+	envelope := syncEnvelope{
+		Format: 2, Data: append(json.RawMessage(nil), data...), Fields: fields,
+	}
+	payload, err := json.Marshal(envelope)
+	wipe(envelope.Data)
+	return payload, fields, err
+}
+
+func parseSyncEnvelope(
+	payload []byte,
+	fallbackVector map[string]int64,
+	writer string,
+) ([]byte, map[string]FieldState, error) {
+	var envelope syncEnvelope
+	if json.Unmarshal(payload, &envelope) == nil && envelope.Format == 2 &&
+		json.Valid(envelope.Data) {
+		return append([]byte(nil), envelope.Data...), envelope.Fields, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, nil, err
+	}
+	fields := make(map[string]FieldState, len(object))
+	for name, value := range object {
+		hash := sha256.Sum256(value)
+		fields[name] = FieldState{
+			Vector: cloneVector(fallbackVector), Writer: writer, Hash: hash[:],
+		}
+	}
+	return append([]byte(nil), payload...), fields, nil
+}
+
+func mergeJSONFields(
+	localData, remoteData []byte,
+	localFields, remoteFields map[string]FieldState,
+) ([]byte, map[string]FieldState, error) {
+	var localObject, remoteObject map[string]json.RawMessage
+	if err := json.Unmarshal(localData, &localObject); err != nil {
+		return nil, nil, err
+	}
+	if err := json.Unmarshal(remoteData, &remoteObject); err != nil {
+		return nil, nil, err
+	}
+	result := make(map[string]json.RawMessage, len(localObject)+len(remoteObject))
+	fields := make(map[string]FieldState, len(localFields)+len(remoteFields))
+	names := make(map[string]bool, len(localFields)+len(remoteFields))
+	for name := range localFields {
+		names[name] = true
+	}
+	for name := range remoteFields {
+		names[name] = true
+	}
+	for name := range localObject {
+		names[name] = true
+	}
+	for name := range remoteObject {
+		names[name] = true
+	}
+	for name := range names {
+		localClock, hasLocalClock := localFields[name]
+		remoteClock, hasRemoteClock := remoteFields[name]
+		useRemote := !hasLocalClock
+		if hasLocalClock && hasRemoteClock {
+			switch compareVectors(localClock.Vector, remoteClock.Vector) {
+			case vectorBefore:
+				useRemote = true
+			case vectorConcurrent, vectorEqual:
+				useRemote = remoteClock.Writer > localClock.Writer
+			}
+		}
+		if useRemote {
+			if value, exists := remoteObject[name]; exists && len(remoteClock.Hash) > 0 {
+				result[name] = value
+			}
+			if hasRemoteClock {
+				fields[name] = remoteClock
+			}
+		} else {
+			if value, exists := localObject[name]; exists && len(localClock.Hash) > 0 {
+				result[name] = value
+			}
+			if hasLocalClock {
+				fields[name] = localClock
+			}
+		}
+	}
+	merged, err := json.Marshal(result)
+	return merged, fields, err
 }
 
 type tokenPair struct {
@@ -707,6 +1248,16 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 	}
 	if token != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+token)
+		if method != http.MethodGet && method != http.MethodHead &&
+			method != http.MethodOptions {
+			nonce := make([]byte, 24)
+			if _, err := rand.Read(nonce); err != nil {
+				return err
+			}
+			httpRequest.Header.Set("X-Nya-Nonce", base64.RawURLEncoding.EncodeToString(nonce))
+			httpRequest.Header.Set("X-Nya-Timestamp",
+				fmt.Sprintf("%d", time.Now().UTC().Unix()))
+		}
 	}
 	httpResponse, err := c.http.Do(httpRequest)
 	if err != nil {
@@ -735,6 +1286,9 @@ func (c *Client) load(ctx context.Context) (Profile, State, error) {
 	if state.Records == nil {
 		state.Records = map[string]RecordState{}
 	}
+	if state.Deferred == nil {
+		state.Deferred = map[string]serverRecord{}
+	}
 	return profile, state, nil
 }
 
@@ -742,7 +1296,10 @@ func (c *Client) saveProfile(ctx context.Context, profile Profile) error {
 	return c.vault.Put(ctx, store.TypeSyncProfile, profileID, profile)
 }
 
-func createRecoveryBundle(syncRootKey []byte) (string, map[string]any, error) {
+func createRecoveryBundle(syncRootKey []byte, generation int64) (string, map[string]any, error) {
+	if generation < 1 {
+		return "", nil, errors.New("invalid recovery generation")
+	}
 	recoverySecret := make([]byte, 32)
 	salt := make([]byte, 16)
 	if _, err := rand.Read(recoverySecret); err != nil {
@@ -762,9 +1319,46 @@ func createRecoveryBundle(syncRootKey []byte) (string, map[string]any, error) {
 	verifier := sha256.Sum256(verifierInput)
 	wipe(verifierInput)
 	return formatRecoveryCode(code), map[string]any{
-		"generation": 1, "salt": salt, "nonce": nonce,
+		"generation": generation, "salt": salt, "nonce": nonce,
 		"ciphertext": ciphertext, "verifier": verifier[:],
 	}, nil
+}
+
+func recoveryMaterial(code string, salt []byte) ([]byte, []byte, error) {
+	canonical := normalizeRecoveryCode(code)
+	raw, err := base64.RawURLEncoding.DecodeString(canonical)
+	if err != nil || len(raw) != 32 || len(salt) < 16 || len(salt) > 64 {
+		wipe(raw)
+		return nil, nil, errors.New("recovery code is invalid")
+	}
+	canonical = base64.RawURLEncoding.EncodeToString(raw)
+	wipe(raw)
+	wrappingKey := argon2.IDKey([]byte(canonical), salt, 3, 64*1024, 2, 32)
+	verifierInput := append([]byte("nyaterminal:recovery-verifier:v1"), wrappingKey...)
+	verifier := sha256.Sum256(verifierInput)
+	wipe(verifierInput)
+	return wrappingKey, verifier[:], nil
+}
+
+func normalizeRecoveryCode(value string) string {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").
+		Replace(strings.TrimSpace(value))
+	// Versions before the space-separated format inserted a dash after each
+	// four Base64URL characters. Remove only those separator positions so a
+	// real '-' from the Base64URL alphabet is preserved.
+	if len(compact) == 53 {
+		var legacy strings.Builder
+		for index, char := range compact {
+			if (index+1)%5 == 0 && char == '-' {
+				continue
+			}
+			legacy.WriteRune(char)
+		}
+		if legacy.Len() == 43 {
+			return legacy.String()
+		}
+	}
+	return compact
 }
 
 func validateServerURL(value string) (string, error) {
@@ -784,6 +1378,21 @@ func validateServerURL(value string) (string, error) {
 
 func syncAAD(recordType, id string, version int64) []byte {
 	return []byte(fmt.Sprintf("nyaterminal:sync:v1:%s:%s:%d", recordType, id, version))
+}
+
+func syncRecordAAD(
+	recordType, id string,
+	version int64,
+	vector map[string]int64,
+) []byte {
+	if len(vector) == 0 {
+		return syncAAD(recordType, id, version)
+	}
+	encoded, _ := json.Marshal(vector)
+	return []byte(fmt.Sprintf(
+		"nyaterminal:sync:v2:%s:%s:%d:%s",
+		recordType, id, version, encoded,
+	))
 }
 
 func derivePairingKey(shared []byte, pairingID string) ([]byte, error) {
@@ -850,7 +1459,7 @@ func formatRecoveryCode(value string) string {
 	var builder strings.Builder
 	for index, char := range value {
 		if index > 0 && index%4 == 0 {
-			builder.WriteByte('-')
+			builder.WriteByte(' ')
 		}
 		builder.WriteRune(char)
 	}

@@ -14,21 +14,26 @@ import (
 	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
 	"github.com/nyaterminal/nyaterminal/desktop/internal/syncclient"
 	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal/desktop/internal/zmodemstore"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	mu          sync.RWMutex
-	ctx         context.Context
-	dataDir     string
-	initErr     error
-	vault       *vault.Vault
-	store       *store.Store
-	ssh         *sshclient.Manager
-	sftp        *sftpclient.Service
-	sync        *syncclient.Client
-	challengeMu sync.Mutex
-	challenges  map[string]chan challengeResponse
+	mu                 sync.RWMutex
+	ctx                context.Context
+	dataDir            string
+	initErr            error
+	vault              *vault.Vault
+	store              *store.Store
+	ssh                *sshclient.Manager
+	sftp               *sftpclient.Service
+	sync               *syncclient.Client
+	zmodem             *zmodemstore.Store
+	challengeMu        sync.Mutex
+	challenges         map[string]chan challengeResponse
+	unlockMu           sync.Mutex
+	unlockFailures     int
+	unlockBlockedUntil time.Time
 }
 
 type challengeResponse struct {
@@ -37,11 +42,12 @@ type challengeResponse struct {
 }
 
 type Bootstrap struct {
-	Vault       vault.Status       `json:"vault"`
-	Groups      []model.Group      `json:"groups,omitempty"`
-	Tags        []model.Tag        `json:"tags,omitempty"`
-	Connections []model.Connection `json:"connections,omitempty"`
-	Settings    *model.Settings    `json:"settings,omitempty"`
+	Vault          vault.Status       `json:"vault"`
+	Groups         []model.Group      `json:"groups,omitempty"`
+	Tags           []model.Tag        `json:"tags,omitempty"`
+	Connections    []model.Connection `json:"connections,omitempty"`
+	Settings       *model.Settings    `json:"settings,omitempty"`
+	SyncConfigured bool               `json:"syncConfigured"`
 }
 
 type TerminalStart struct {
@@ -83,6 +89,7 @@ func (a *App) initialize() error {
 	a.ssh = sshManager
 	a.sftp = sftpclient.New(sshManager)
 	a.sync = syncclient.New(v)
+	a.zmodem = zmodemstore.New()
 	sshManager.SetInteractiveHandler(a.handleInteractiveChallenge)
 	return nil
 }
@@ -101,6 +108,12 @@ func (a *App) Shutdown(context.Context) {
 }
 
 func (a *App) Close() error {
+	if a.zmodem != nil {
+		a.zmodem.Close()
+	}
+	if a.sftp != nil {
+		a.sftp.Close()
+	}
 	if a.ssh != nil {
 		_ = a.ssh.Close()
 	}
@@ -108,6 +121,34 @@ func (a *App) Close() error {
 		return a.vault.Close()
 	}
 	return nil
+}
+
+func (a *App) BeginZmodemReceive(name string, size int64) (string, error) {
+	if name == "" {
+		name = "transfer.bin"
+	}
+	localPath, err := runtime.SaveFileDialog(a.context(), runtime.SaveDialogOptions{
+		Title: "保存 ZMODEM 文件", DefaultFilename: filepath.Base(name),
+	})
+	if err != nil || localPath == "" {
+		return "", err
+	}
+	return a.zmodem.Begin(localPath, size)
+}
+
+func (a *App) WriteZmodemReceive(id string, data []byte) error {
+	if len(data) > 1<<20 {
+		return errors.New("ZMODEM chunk is too large")
+	}
+	return a.zmodem.Write(id, data)
+}
+
+func (a *App) FinishZmodemReceive(id string) error {
+	return a.zmodem.Finish(id)
+}
+
+func (a *App) CancelZmodemReceive(id string) error {
+	return a.zmodem.Cancel(id)
 }
 
 func (a *App) Bootstrap() (Bootstrap, error) {
@@ -139,6 +180,7 @@ func (a *App) Bootstrap() (Bootstrap, error) {
 		return Bootstrap{}, err
 	}
 	result.Settings = &settings
+	result.SyncConfigured = a.sync.Configured(a.context())
 	return result, nil
 }
 
@@ -147,15 +189,51 @@ func (a *App) InitializeVault(password string) error {
 }
 
 func (a *App) Unlock(password string) error {
+	if err := a.allowUnlock(); err != nil {
+		return err
+	}
 	err := a.vault.Unlock(a.context(), password)
 	if errors.Is(err, vault.ErrInvalidPassword) {
-		return a.vault.UnlockWithLockPassword(a.context(), password)
+		err = a.vault.UnlockWithLockPassword(a.context(), password)
 	}
+	a.recordUnlockResult(err)
 	return err
 }
 
 func (a *App) UnlockWithSystem() error {
-	return a.vault.UnlockQuick(a.context(), "default")
+	if err := a.allowUnlock(); err != nil {
+		return err
+	}
+	err := a.vault.UnlockQuick(a.context(), "default")
+	a.recordUnlockResult(err)
+	return err
+}
+
+func (a *App) allowUnlock() error {
+	a.unlockMu.Lock()
+	defer a.unlockMu.Unlock()
+	if time.Now().Before(a.unlockBlockedUntil) {
+		return errors.New("too many unlock attempts; try again later")
+	}
+	return nil
+}
+
+func (a *App) recordUnlockResult(err error) {
+	a.unlockMu.Lock()
+	defer a.unlockMu.Unlock()
+	if err == nil {
+		a.unlockFailures = 0
+		a.unlockBlockedUntil = time.Time{}
+		return
+	}
+	a.unlockFailures++
+	if a.unlockFailures >= 5 {
+		delay := time.Duration(a.unlockFailures-4) * 15 * time.Second
+		if delay > 5*time.Minute {
+			delay = 5 * time.Minute
+		}
+		a.unlockBlockedUntil = time.Now().Add(delay)
+	}
 }
 
 func (a *App) EnableSystemUnlock() error {
@@ -169,6 +247,7 @@ func (a *App) DisableSystemUnlock() error {
 func (a *App) Lock() error {
 	settings, err := a.store.Settings(a.context())
 	if err == nil && settings.DisconnectOnLock {
+		a.sftp.Close()
 		_ = a.ssh.Close()
 		newManager, managerErr := sshclient.NewManager(a.store)
 		if managerErr == nil {
@@ -202,6 +281,10 @@ func (a *App) SaveGroup(value model.Group) (model.Group, error) {
 	return a.store.PutGroup(a.context(), value)
 }
 
+func (a *App) DeleteGroup(id string) error {
+	return a.store.DeleteGroup(a.context(), id)
+}
+
 func (a *App) ListTags() ([]model.Tag, error) {
 	return a.store.ListTags(a.context())
 }
@@ -210,12 +293,20 @@ func (a *App) SaveTag(value model.Tag) (model.Tag, error) {
 	return a.store.PutTag(a.context(), value)
 }
 
+func (a *App) DeleteTag(id string) error {
+	return a.store.DeleteTag(a.context(), id)
+}
+
 func (a *App) ListConnections() ([]model.Connection, error) {
 	return a.store.ListConnections(a.context())
 }
 
 func (a *App) SaveConnection(value model.Connection) (model.Connection, error) {
 	return a.store.PutConnection(a.context(), value)
+}
+
+func (a *App) DeleteConnection(id string) error {
+	return a.store.DeleteConnection(a.context(), id)
 }
 
 func (a *App) SaveCredential(value model.Credential) (model.Credential, error) {
@@ -316,29 +407,87 @@ func (a *App) DownloadGranted(
 	)
 }
 
-func (a *App) UploadFile(connectionID, remoteDirectory string) error {
+func (a *App) StartSFTPUpload(
+	connectionID, token, localRelativePath, remotePath string, overwrite bool,
+) (sftpclient.Transfer, error) {
+	return a.sftp.StartUploadGranted(
+		connectionID, token, localRelativePath, remotePath, overwrite,
+	)
+}
+
+func (a *App) StartSFTPDownload(
+	connectionID, remotePath, token, localRelativePath string, overwrite bool,
+) (sftpclient.Transfer, error) {
+	return a.sftp.StartDownloadGranted(
+		connectionID, remotePath, token, localRelativePath, overwrite,
+	)
+}
+
+func (a *App) ListSFTPTransfers() []sftpclient.Transfer {
+	return a.sftp.ListTransfers()
+}
+
+func (a *App) PauseSFTPTransfer(id string) error {
+	return a.sftp.PauseTransfer(id)
+}
+
+func (a *App) ResumeSFTPTransfer(id string) error {
+	return a.sftp.ResumeTransfer(id)
+}
+
+func (a *App) CancelSFTPTransfer(id string) error {
+	return a.sftp.CancelTransfer(id)
+}
+
+func (a *App) CreateRemoteDirectory(connectionID, remotePath string) error {
+	return a.sftp.CreateRemoteDirectory(a.context(), connectionID, remotePath)
+}
+
+func (a *App) RenameRemote(connectionID, oldPath, newPath string) error {
+	return a.sftp.RenameRemote(a.context(), connectionID, oldPath, newPath)
+}
+
+func (a *App) DeleteRemote(connectionID, remotePath string, directory bool) error {
+	return a.sftp.DeleteRemote(a.context(), connectionID, remotePath, directory)
+}
+
+func (a *App) UploadFile(connectionID, remoteDirectory string) (sftpclient.Transfer, error) {
 	localPath, err := runtime.OpenFileDialog(a.context(), runtime.OpenDialogOptions{
 		Title: "选择要上传的文件",
 	})
 	if err != nil || localPath == "" {
-		return err
+		return sftpclient.Transfer{}, err
 	}
 	remotePath := filepath.ToSlash(filepath.Join(remoteDirectory, filepath.Base(localPath)))
-	return a.sftp.Upload(a.context(), connectionID, localPath, remotePath)
+	return a.sftp.StartUpload(connectionID, localPath, remotePath, false)
 }
 
-func (a *App) DownloadFile(connectionID, remotePath, suggestedName string) error {
+func (a *App) DownloadFile(
+	connectionID, remotePath, suggestedName string,
+) (sftpclient.Transfer, error) {
 	localPath, err := runtime.SaveFileDialog(a.context(), runtime.SaveDialogOptions{
 		Title: "保存下载文件", DefaultFilename: filepath.Base(suggestedName),
 	})
 	if err != nil || localPath == "" {
-		return err
+		return sftpclient.Transfer{}, err
 	}
-	return a.sftp.Download(a.context(), connectionID, remotePath, localPath)
+	return a.sftp.StartDownload(connectionID, remotePath, localPath, true)
 }
 
 func (a *App) InitializeSync(serverURL, username, password, deviceName string) (syncclient.SetupResult, error) {
 	return a.sync.Initialize(a.context(), serverURL, username, password, deviceName)
+}
+
+func (a *App) RecoverSync(
+	serverURL, username, password, totpCode, deviceName, recoveryCode string,
+) (syncclient.SetupResult, error) {
+	return a.sync.Recover(
+		a.context(), serverURL, username, password, totpCode, deviceName, recoveryCode,
+	)
+}
+
+func (a *App) RotateSyncRecoveryCode() (string, error) {
+	return a.sync.RotateRecoveryCode(a.context())
 }
 
 func (a *App) LoginSync(serverURL, username, password, deviceID string) error {
@@ -379,6 +528,10 @@ func (a *App) BeginSyncTOTPSetup() (syncclient.TOTPSetup, error) {
 
 func (a *App) ConfirmSyncTOTPSetup(setupToken, code string) ([]string, error) {
 	return a.sync.ConfirmTOTPSetup(a.context(), setupToken, code)
+}
+
+func (a *App) DisableSyncTOTP(password, code string) error {
+	return a.sync.DisableTOTP(a.context(), password, code)
 }
 
 func (a *App) context() context.Context {

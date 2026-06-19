@@ -75,7 +75,11 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .terminal-pane { position: absolute; inset: 0; visibility: hidden; background: #0a0e16; }
 .terminal-pane.active { visibility: visible; }
 .terminal-host { position: absolute; inset: 7px 7px 24px; }
-.terminal-status { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; border-top: 1px solid #1c2634; color: #68788e; font-size: 10px; padding: 4px 10px; background: #0d121b; }
+.terminal-status { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; border-top: 1px solid #1c2634; color: #68788e; font-size: 10px; padding: 3px 10px; background: #0d121b; }
+.terminal-status button { float: right; padding: 1px 7px; border: 1px solid #64313a; border-radius: 5px; color: #ff9ba5; }
+.terminal-search { position: absolute; top: 8px; right: 10px; z-index: 6; display: flex; gap: 4px; padding: 6px; border: 1px solid #344258; border-radius: 8px; background: #101824f2; box-shadow: 0 12px 35px #0008; }
+.terminal-search input { width: 220px; padding: 5px 7px; border: 1px solid #344258; border-radius: 5px; background: #090e16; color: #e6edf7; font-size: 11px; }
+.terminal-search button { padding: 4px 7px; color: #aeb9c8; font-size: 10px; }
 .command-suggestions { position: absolute; left: 12px; bottom: 30px; z-index: 4; width: min(560px, calc(100% - 24px)); padding: 5px; border: 1px solid #2a374b; border-radius: 9px; background: #111824f2; box-shadow: 0 16px 45px #000a; backdrop-filter: blur(8px); }
 .command-suggestions button { width: 100%; height: 30px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 50px; align-items: center; border: 0; border-radius: 5px; background: transparent; color: #dce3ee; text-align: left; cursor: pointer; }
 .command-suggestions button:first-child, .command-suggestions button:hover { background: #62d9ca13; }
@@ -136,13 +140,20 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .transfer-queue { overflow: auto; border-top: 1px solid var(--line); padding: 10px 14px; background: var(--bg); }
 .transfer-queue > strong { display: block; margin-bottom: 7px; font-size: 11px; }
 .transfer-queue > span { color: var(--muted); font-size: 10px; }
-.transfer-item { display: grid; grid-template-columns: 20px minmax(120px, 1fr) 230px; align-items: center; min-height: 28px; border-top: 1px solid var(--line); font-size: 10px; }
+.remote-file-actions { display: flex; gap: 7px; padding: 0 14px 10px; }
+.remote-file-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--text); font-size: 10px; }
+.transfer-item { display: grid; grid-template-columns: 20px minmax(120px, 1fr) 180px 64px; align-items: center; min-height: 38px; border-top: 1px solid var(--line); font-size: 10px; }
 .transfer-item i { color: var(--accent); font-style: normal; }
+.transfer-item > span { display: grid; gap: 3px; }
+.transfer-item progress { width: min(280px, 100%); height: 4px; accent-color: var(--accent); }
 .transfer-item small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.transfer-item.error small { color: #ff7c88; }
-.transfer-item.done small { color: #70d6a1; }
+.transfer-item.failed small { color: #ff7c88; }
+.transfer-item.completed small { color: #70d6a1; }
+.transfer-controls { display: flex; justify-content: flex-end; gap: 3px; }
+.transfer-controls button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--muted); }
 
 .auth-screen { width: 100%; height: 100%; display: grid; place-items: center; background: radial-gradient(circle at 50% 0, #17394a 0, transparent 38%), #0a0e16; color: #dce3ee; }
+.lock-overlay { position: fixed; inset: 0; z-index: 120; }
 .auth-card { width: min(410px, calc(100% - 40px)); padding: 35px; border: 1px solid #253247; background: #101620ee; border-radius: 18px; box-shadow: 0 35px 100px #0009; }
 .auth-brand { display: flex; justify-content: center; margin-bottom: 20px; }
 .auth-card h1 { text-align: center; margin: 0 0 8px; font-size: 23px; }

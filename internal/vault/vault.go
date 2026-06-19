@@ -38,10 +38,11 @@ type Vault struct {
 }
 
 type Status struct {
-	Initialized        bool `json:"initialized"`
-	Locked             bool `json:"locked"`
-	QuickUnlock        bool `json:"quickUnlock"`
-	CustomLockPassword bool `json:"customLockPassword"`
+	Initialized        bool   `json:"initialized"`
+	Locked             bool   `json:"locked"`
+	QuickUnlock        bool   `json:"quickUnlock"`
+	QuickUnlockMethod  string `json:"quickUnlockMethod"`
+	CustomLockPassword bool   `json:"customLockPassword"`
 }
 
 type ExportedRecord struct {
@@ -53,6 +54,9 @@ type ExportedRecord struct {
 
 func Open(path string) (*Vault, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := hardenDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", path)
@@ -103,6 +107,10 @@ func Open(path string) (*Vault, error) {
 			return nil, err
 		}
 	}
+	if err := hardenFile(path); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Vault{db: db}, nil
 }
 
@@ -131,6 +139,7 @@ func (v *Vault) Status(ctx context.Context) (Status, error) {
 	}
 	return Status{
 		Initialized: count > 0, Locked: locked, QuickUnlock: quickUnlock > 0,
+		QuickUnlockMethod:  userPresenceMethod,
 		CustomLockPassword: customLock > 0,
 	}, nil
 }
@@ -249,6 +258,9 @@ func (v *Vault) Lock() {
 }
 
 func (v *Vault) EnableQuickUnlock(ctx context.Context, profile string) error {
+	if err := verifyUserPresence("Enable Windows Hello unlock for NyaTerminal"); err != nil {
+		return err
+	}
 	key, err := v.keyCopy()
 	if err != nil {
 		return err
@@ -277,6 +289,9 @@ func (v *Vault) EnableQuickUnlock(ctx context.Context, profile string) error {
 }
 
 func (v *Vault) UnlockQuick(ctx context.Context, profile string) error {
+	if err := verifyUserPresence("Unlock NyaTerminal"); err != nil {
+		return err
+	}
 	quickKey, err := LoadQuickUnlock(profile)
 	if err != nil {
 		return ErrInvalidPassword
@@ -468,6 +483,58 @@ func (v *Vault) Delete(ctx context.Context, id string) error {
 	wipe(key)
 	_, err = v.db.ExecContext(ctx, "DELETE FROM encrypted_records WHERE id = ?", id)
 	return err
+}
+
+func (v *Vault) RecordType(ctx context.Context, id string) (string, error) {
+	var recordType string
+	err := v.db.QueryRowContext(ctx,
+		"SELECT record_type FROM encrypted_records WHERE id = ?", id,
+	).Scan(&recordType)
+	return recordType, err
+}
+
+// DeleteAndPut atomically removes one encrypted record and writes another.
+// It is used for the encrypted synchronization deletion journal so a crash
+// cannot leave a deletion without a corresponding tombstone.
+func (v *Vault) DeleteAndPut(
+	ctx context.Context, deletedID, recordType, id string, value any,
+) error {
+	key, err := v.keyCopy()
+	if err != nil {
+		return err
+	}
+	defer wipe(key)
+	plain, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	defer wipe(plain)
+	aad := []byte("nyaterminal:record:v1:" + recordType + ":" + id)
+	nonce, ciphertext, err := seal(key, plain, aad)
+	if err != nil {
+		return err
+	}
+	tx, err := v.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO encrypted_records(id, record_type, nonce, ciphertext, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET record_type = excluded.record_type,
+		nonce = excluded.nonce, ciphertext = excluded.ciphertext,
+		updated_at = excluded.updated_at`,
+		id, recordType, nonce, ciphertext, time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM encrypted_records WHERE id = ?", deletedID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (v *Vault) ExportRecords(ctx context.Context, allowedTypes map[string]bool) ([]ExportedRecord, error) {

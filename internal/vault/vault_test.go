@@ -114,3 +114,46 @@ func TestIndependentLockPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRecordTamperingIsDetectedAndNoncesAreUnique(t *testing.T) {
+	v, err := Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	ctx := context.Background()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, "test", "one", map[string]string{"value": "first"}); err != nil {
+		t.Fatal(err)
+	}
+	var firstNonce []byte
+	if err := v.db.QueryRowContext(ctx,
+		"SELECT nonce FROM encrypted_records WHERE id = 'one'",
+	).Scan(&firstNonce); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, "test", "one", map[string]string{"value": "second"}); err != nil {
+		t.Fatal(err)
+	}
+	var secondNonce, ciphertext []byte
+	if err := v.db.QueryRowContext(ctx,
+		"SELECT nonce, ciphertext FROM encrypted_records WHERE id = 'one'",
+	).Scan(&secondNonce, &ciphertext); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstNonce, secondNonce) {
+		t.Fatal("record encryption reused a nonce")
+	}
+	ciphertext[len(ciphertext)/2] ^= 0x80
+	if _, err := v.db.ExecContext(ctx,
+		"UPDATE encrypted_records SET ciphertext = ? WHERE id = 'one'", ciphertext,
+	); err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]string
+	if err := v.Get(ctx, "test", "one", &value); err == nil {
+		t.Fatal("tampered ciphertext was accepted")
+	}
+}

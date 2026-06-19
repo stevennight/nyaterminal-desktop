@@ -18,9 +18,25 @@ import (
 )
 
 type Service struct {
-	ssh    *sshclient.Manager
-	mu     sync.Mutex
-	grants map[string]localGrant
+	ssh       *sshclient.Manager
+	mu        sync.Mutex
+	grants    map[string]localGrant
+	transfers map[string]*transferJob
+	slots     chan struct{}
+	wg        sync.WaitGroup
+}
+
+func (s *Service) Close() {
+	s.mu.Lock()
+	jobs := make([]*transferJob, 0, len(s.transfers))
+	for _, job := range s.transfers {
+		jobs = append(jobs, job)
+	}
+	s.mu.Unlock()
+	for _, job := range jobs {
+		_ = s.CancelTransfer(job.value.ID)
+	}
+	s.wg.Wait()
 }
 
 type localGrant struct {
@@ -44,7 +60,10 @@ type Entry struct {
 }
 
 func New(sshManager *sshclient.Manager) *Service {
-	return &Service{ssh: sshManager, grants: make(map[string]localGrant)}
+	return &Service{
+		ssh: sshManager, grants: make(map[string]localGrant),
+		transfers: make(map[string]*transferJob), slots: make(chan struct{}, 3),
+	}
 }
 
 func (s *Service) GrantLocalDirectory(root string) (LocalLocation, error) {
@@ -153,6 +172,85 @@ func (s *Service) ListRemote(ctx context.Context, connectionID, remotePath strin
 	return result, nil
 }
 
+func (s *Service) CreateRemoteDirectory(
+	ctx context.Context, connectionID, remotePath string,
+) error {
+	remotePath, err := cleanRemote(remotePath)
+	if err != nil {
+		return err
+	}
+	client, sftpClient, err := s.connect(ctx, connectionID)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer sftpClient.Close()
+	return sftpClient.Mkdir(remotePath)
+}
+
+func (s *Service) RenameRemote(
+	ctx context.Context, connectionID, oldPath, newPath string,
+) error {
+	oldPath, err := cleanRemote(oldPath)
+	if err != nil {
+		return err
+	}
+	newPath, err = cleanRemote(newPath)
+	if err != nil {
+		return err
+	}
+	client, sftpClient, err := s.connect(ctx, connectionID)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer sftpClient.Close()
+	return sftpClient.Rename(oldPath, newPath)
+}
+
+func (s *Service) DeleteRemote(
+	ctx context.Context, connectionID, remotePath string, directory bool,
+) error {
+	remotePath, err := cleanRemote(remotePath)
+	if err != nil {
+		return err
+	}
+	if remotePath == "." || remotePath == "/" {
+		return errors.New("refusing to delete remote root")
+	}
+	client, sftpClient, err := s.connect(ctx, connectionID)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer sftpClient.Close()
+	if directory {
+		var entries []string
+		walker := sftpClient.Walk(remotePath)
+		for walker.Step() {
+			if walker.Err() != nil {
+				return walker.Err()
+			}
+			entries = append(entries, walker.Path())
+		}
+		for index := len(entries) - 1; index >= 0; index-- {
+			info, err := sftpClient.Lstat(entries[index])
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				if err := sftpClient.RemoveDirectory(entries[index]); err != nil {
+					return err
+				}
+			} else if err := sftpClient.Remove(entries[index]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return sftpClient.Remove(remotePath)
+}
+
 func (s *Service) Upload(ctx context.Context, connectionID, localPath, remotePath string) error {
 	localPath, err := validateLocalFile(localPath)
 	if err != nil {
@@ -219,6 +317,12 @@ func (s *Service) Download(ctx context.Context, connectionID, remotePath, localP
 }
 
 func (s *Service) connect(ctx context.Context, connectionID string) (io.Closer, *sftp.Client, error) {
+	if borrowed := s.ssh.BorrowConnection(connectionID); borrowed != nil {
+		sftpClient, err := sftp.NewClient(borrowed, sftp.MaxPacket(1<<15))
+		if err == nil {
+			return nopCloser{}, sftpClient, nil
+		}
+	}
 	client, err := s.ssh.DialConnection(ctx, connectionID, nil)
 	if err != nil {
 		return nil, nil, err
@@ -230,6 +334,10 @@ func (s *Service) connect(ctx context.Context, connectionID string) (io.Closer, 
 	}
 	return client, sftpClient, nil
 }
+
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }
 
 func (s *Service) resolveGrantedPath(token, relativePath string) (string, error) {
 	s.mu.Lock()
