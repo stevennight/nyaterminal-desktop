@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import {
   ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
-  Moon, MoreHorizontal, Plus, Search, Settings as SettingsIcon, Sun,
-  TerminalSquare, X
+  Moon, MoreHorizontal, Paintbrush, Plus, Search, Settings as SettingsIcon,
+  Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
 import { api } from './bridge'
 import { SftpPanel } from './SftpPanel'
@@ -685,91 +685,135 @@ function SettingsDialog({ value, vault, onClose, onSaved, onReload }: {
   const [oldMasterPassword, setOldMasterPassword] = useState('')
   const [newMasterPassword, setNewMasterPassword] = useState('')
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
-  const updateSystemUnlock = async () => {
+  const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
+
+  const sections = [
+    { id: 'appearance', label: '外观', icon: Paintbrush },
+    { id: 'terminal', label: '终端', icon: Monitor },
+    { id: 'security', label: '安全', icon: Shield },
+    { id: 'sync', label: '同步', icon: SlidersHorizontal }
+  ] as const
+
+  const toggleSystemUnlock = async (enabled: boolean) => {
     setSystemUnlockStatus('')
     try {
-      if (quickUnlock) {
-        await api.DisableSystemUnlock()
-        setQuickUnlock(false)
-        setSystemUnlockStatus('系统快速解锁已关闭')
-      } else {
-        await api.EnableSystemUnlock()
-        setQuickUnlock(true)
-        setSystemUnlockStatus('系统快速解锁已启用')
-      }
+      if (enabled) await api.EnableSystemUnlock()
+      else await api.DisableSystemUnlock()
+      setQuickUnlock(enabled)
+      setSystemUnlockStatus(enabled ? '系统快速解锁已启用' : '系统快速解锁已关闭')
     } catch (error) {
       setSystemUnlockStatus(String(error))
     }
   }
-  return <Modal title="设置" onClose={onClose}>
-    <div className="form-grid">
-      <label className="full">外观<div className="theme-picker">
-        <button className={next.theme === 'dark' ? 'selected' : ''}
-          onClick={() => setNext({ ...next, theme: 'dark' })}><Moon size={16} />深色</button>
-        <button className={next.theme === 'light' ? 'selected' : ''}
-          onClick={() => setNext({ ...next, theme: 'light' })}><Sun size={16} />浅色</button>
-      </div></label>
-      <label>终端字号<input type="number" value={next.fontSize}
-        onChange={e => setNext({ ...next, fontSize: Number(e.target.value) })} /></label>
-      <label className="full">终端字体<input value={next.fontFamily}
-        onChange={e => setNext({ ...next, fontFamily: e.target.value })} /></label>
-      <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
-        onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
-      <label className="check full"><input type="checkbox" checked={next.disconnectOnLock}
-        onChange={e => setNext({ ...next, disconnectOnLock: e.target.checked })} />锁屏时断开 SSH 会话</label>
-      <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
-        onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />允许同步命令历史</label>
-      <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
-        onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />
-        默认同步密码和私钥</label>
-      <button className="secondary full" title={quickUnlock ? '关闭系统快速解锁' : '启用系统快速解锁'}
-        onClick={() => void updateSystemUnlock()}>
-        {quickUnlock ? '关闭系统快速解锁' : '启用系统快速解锁'}
-      </button>
-      <label className="full">独立锁屏密码（可选）
-        <input type="password" value={lockPassword} placeholder="至少 8 个字符；留空不修改"
-          onChange={event => setLockPassword(event.target.value)} /></label>
-      {vault.customLockPassword && <button className="secondary full"
-        onClick={() => void api.ClearLockPassword()
-          .then(() => setSystemUnlockStatus('独立锁屏密码已清除'))
-          .catch(error => setSystemUnlockStatus(String(error)))}>
-        清除独立锁屏密码
-      </button>}
-      <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
-        onChange={event => setOldMasterPassword(event.target.value)} /></label>
-      <label>新主密码<input type="password" value={newMasterPassword}
-        placeholder="至少 12 个字符"
-        onChange={event => setNewMasterPassword(event.target.value)} /></label>
-      <label className="full">敏感命令过滤规则（每行一个正则）
-        <textarea rows={4} value={sensitiveRules}
-          onChange={event => setSensitiveRules(event.target.value)} />
-      </label>
-      <div className="full settings-divider" />
-      <button className="secondary full" onClick={() => setSyncOpen(true)}>配置端到端加密同步</button>
+
+  const persist = async () => {
+    try {
+      if (lockPassword) await api.SetLockPassword(lockPassword)
+      if (oldMasterPassword || newMasterPassword) {
+        await api.ChangeMasterPassword(oldMasterPassword, newMasterPassword)
+      }
+      await api.SaveSettings({
+        ...next,
+        sensitiveCommandRules: sensitiveRules.split('\n').map(rule => rule.trim()).filter(Boolean)
+      })
+      await onSaved()
+    } catch (error) {
+      setSystemUnlockStatus(String(error))
+    }
+  }
+
+  let content
+  if (activeSection === 'appearance') {
+    content = <div className="settings-page">
+      <h3>外观</h3>
+      <div className="form-grid">
+        <label className="full">主题
+          <div className="theme-picker">
+            <button type="button" className={next.theme === 'dark' ? 'selected' : ''}
+              onClick={() => setNext({ ...next, theme: 'dark' })}><Moon size={16} />深色</button>
+            <button type="button" className={next.theme === 'light' ? 'selected' : ''}
+              onClick={() => setNext({ ...next, theme: 'light' })}><Sun size={16} />浅色</button>
+          </div>
+        </label>
+        <label>终端字号<input type="number" value={next.fontSize}
+          onChange={e => setNext({ ...next, fontSize: Number(e.target.value) })} /></label>
+        <label className="full">终端字体<input value={next.fontFamily}
+          onChange={e => setNext({ ...next, fontFamily: e.target.value })} /></label>
+      </div>
+    </div>
+  } else if (activeSection === 'terminal') {
+    content = <div className="settings-page">
+      <h3>终端</h3>
+      <div className="form-grid">
+        <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
+          onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
+        <label className="check full"><input type="checkbox" checked={next.disconnectOnLock}
+          onChange={e => setNext({ ...next, disconnectOnLock: e.target.checked })} />锁屏时断开 SSH 会话</label>
+      </div>
+    </div>
+  } else if (activeSection === 'security') {
+    content = <div className="settings-page">
+      <h3>安全</h3>
+      <div className="form-grid">
+        <label className="check full"><input type="checkbox" checked={quickUnlock}
+          onChange={e => void toggleSystemUnlock(e.target.checked)} />系统快速解锁</label>
+        <small className="hint full">
+          {quickUnlock
+            ? `${vault.quickUnlockMethod} 快速解锁已启用，解锁时需要操作系统用户验证。`
+            : `${vault.quickUnlockMethod} 快速解锁未启用。`}
+        </small>
+        <label className="full">独立锁屏密码（可选）
+          <input type="password" value={lockPassword} placeholder="至少 8 个字符；留空不修改"
+            onChange={event => setLockPassword(event.target.value)} /></label>
+        {vault.customLockPassword && <button className="secondary full" type="button"
+          onClick={() => void api.ClearLockPassword()
+            .then(() => setSystemUnlockStatus('独立锁屏密码已清除'))
+            .catch(error => setSystemUnlockStatus(String(error)))}>
+          清除独立锁屏密码
+        </button>}
+        <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
+          onChange={event => setOldMasterPassword(event.target.value)} /></label>
+        <label>新主密码<input type="password" value={newMasterPassword}
+          placeholder="至少 12 个字符"
+          onChange={event => setNewMasterPassword(event.target.value)} /></label>
+        <label className="full">敏感命令过滤规则（每行一个正则）
+          <textarea rows={4} value={sensitiveRules}
+            onChange={event => setSensitiveRules(event.target.value)} />
+        </label>
+      </div>
+    </div>
+  } else {
+    content = <div className="settings-page">
+      <h3>同步</h3>
+      <div className="form-grid">
+        <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
+          onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />允许同步命令历史</label>
+        <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
+          onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
+        <button className="secondary full" type="button" onClick={() => setSyncOpen(true)}>配置端到端加密同步</button>
+      </div>
+    </div>
+  }
+
+  return <Modal title="设置" onClose={onClose} width="920px">
+    <div className="settings-layout">
+      <aside className="settings-nav">
+        {sections.map(section => {
+          const Icon = section.icon
+          return <button key={section.id} type="button"
+            className={activeSection === section.id ? 'active' : ''}
+            onClick={() => setActiveSection(section.id)}>
+            <Icon size={16} /><span>{section.label}</span>
+          </button>
+        })}
+      </aside>
+      <section className="settings-content">
+        {content}
+        {systemUnlockStatus && <div className="form-error">{systemUnlockStatus}</div>}
+      </section>
     </div>
     <footer className="modal-actions"><button onClick={onClose}>取消</button>
-      <button className="primary" onClick={() => void (async () => {
-        try {
-          if (lockPassword) await api.SetLockPassword(lockPassword)
-          if (oldMasterPassword || newMasterPassword) {
-            await api.ChangeMasterPassword(oldMasterPassword, newMasterPassword)
-          }
-          await api.SaveSettings({
-            ...next,
-            sensitiveCommandRules: sensitiveRules.split('\n')
-              .map(rule => rule.trim()).filter(Boolean)
-          })
-          await onSaved()
-        } catch (error) {
-          setSystemUnlockStatus(String(error))
-        }
-      })()}>保存</button></footer>
-    <small className="hint">
-      {quickUnlock
-        ? `${vault.quickUnlockMethod} 快速解锁已启用；解锁时需要操作系统用户验证。`
-        : `${vault.quickUnlockMethod} 快速解锁未启用。`}
-    </small>
-    {systemUnlockStatus && <div className="form-error">{systemUnlockStatus}</div>}
+      <button className="primary" onClick={() => void persist()}>保存</button></footer>
     {syncOpen && <SyncDialog settings={next} onClose={() => setSyncOpen(false)}
       onConfigured={onReload} />}
   </Modal>

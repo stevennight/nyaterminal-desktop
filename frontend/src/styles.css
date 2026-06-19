@@ -199,6 +199,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .theme-picker button { flex: 1; border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 10px; color: var(--muted); cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 7px; }
 .theme-picker button.selected { color: var(--accent); border-color: var(--accent); background: #62d9ca0d; }
 .secondary { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 10px; cursor: pointer; }
+.settings-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: 500px; }
+.settings-nav { border-right: 1px solid var(--line); background: var(--bg); padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.settings-nav button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--muted); cursor: pointer; text-align: left; }
+.settings-nav button:hover { background: var(--panel2); color: var(--text); }
+.settings-nav button.active { background: #62d9ca12; border-color: #62d9ca33; color: var(--text); }
+.settings-content { min-width: 0; padding: 18px 20px 8px; }
+.settings-page { display: flex; flex-direction: column; gap: 14px; }
+.settings-page h3 { margin: 0; font-size: 15px; color: var(--text); }
+.settings-page .hint { margin: -4px 0 0; }
+.settings-page .secondary { justify-self: start; }
 .settings-divider { height: 1px; background: var(--line); margin: 4px 0 15px; }
 .nested-modal { position: absolute; inset: 22px; z-index: 2; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 20px 60px #000c; overflow: auto; }
 .nested-modal > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
