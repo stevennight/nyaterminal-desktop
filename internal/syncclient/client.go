@@ -1338,6 +1338,8 @@ func mergeJSONFields(
 			switch compareVectors(localClock.Vector, remoteClock.Vector) {
 			case vectorBefore:
 				useRemote = true
+			case vectorAfter:
+				useRemote = false
 			case vectorConcurrent, vectorEqual:
 				useRemote = remoteClock.Writer > localClock.Writer
 			}
@@ -1390,7 +1392,7 @@ func (c *Client) authorizedRequest(ctx context.Context, session *AccountSession,
 	return c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
 }
 
-func (c *Client) request(ctx context.Context, method, endpoint, token string, request, response any) error {
+func (c *Client) request(ctx context.Context, method, endpoint, token string, request, response any) (err error) {
 	var body io.Reader
 	if request != nil {
 		encoded, err := json.Marshal(request)
@@ -1424,15 +1426,30 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 	if err != nil {
 		return err
 	}
-	defer httpResponse.Body.Close()
+	defer func() {
+		err = joinCloseError(err, httpResponse.Body)
+	}()
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(httpResponse.Body, 4096))
+		data, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, 4096))
+		if readErr != nil {
+			return fmt.Errorf(
+				"sync server returned %d and response body could not be read: %w",
+				httpResponse.StatusCode, readErr,
+			)
+		}
 		return fmt.Errorf("sync server returned %d: %s", httpResponse.StatusCode, strings.TrimSpace(string(data)))
 	}
 	if response == nil || httpResponse.StatusCode == http.StatusNoContent {
 		return nil
 	}
 	return json.NewDecoder(io.LimitReader(httpResponse.Body, 8<<20)).Decode(response)
+}
+
+func joinCloseError(err error, closer io.Closer) error {
+	if closeErr := closer.Close(); closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	return err
 }
 
 func (c *Client) load(ctx context.Context) (Profile, AccountSession, State, error) {

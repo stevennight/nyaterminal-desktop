@@ -1,5 +1,4 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import QRCode from 'qrcode'
 import {
   ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
   Moon, MoreHorizontal, Paintbrush, Plus, Search, Settings as SettingsIcon,
@@ -23,6 +22,10 @@ type SessionTab = {
   privateSession: boolean
 }
 
+type ThemeName = 'dark' | 'light'
+
+const THEME_STORAGE_KEY = 'nyaterminal.theme'
+
 const emptyConnection: Connection = {
   id: '', name: '', host: '', port: 22, username: 'root',
   authentication: 'password', tags: [], encoding: 'utf-8',
@@ -31,9 +34,25 @@ const emptyConnection: Connection = {
   legacyAlgorithms: false, commandHistory: true
 }
 
+function isThemeName(value: string | null | undefined): value is ThemeName {
+  return value === 'dark' || value === 'light'
+}
+
+function getPreferredTheme(): ThemeName {
+  if (typeof window === 'undefined') return 'dark'
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+    if (isThemeName(stored)) return stored
+  } catch {
+    // Ignore storage failures and fall back to system preference.
+  }
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap>()
   const [error, setError] = useState('')
+  const [theme, setTheme] = useState<ThemeName>(() => getPreferredTheme())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState(false)
   const [tagEditor, setTagEditor] = useState(false)
@@ -60,6 +79,17 @@ export function App() {
   }, [])
 
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    const nextTheme = bootstrap?.settings?.theme
+    if (!isThemeName(nextTheme)) return
+    setTheme(nextTheme)
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
+    } catch {
+      // Ignore storage failures; the in-memory theme still updates.
+    }
+  }, [bootstrap?.settings?.theme])
 
   useEffect(() => {
     return window.runtime?.EventsOn?.('ssh:interactive-challenge', value => {
@@ -169,15 +199,15 @@ export function App() {
   }, [bootstrap?.connections, query, activeTag])
 
   if (!bootstrap) {
-    return <CenteredCard title="NyaTerminal" subtitle="正在准备安全保险库…"><Spinner /></CenteredCard>
+    return <CenteredCard theme={theme} title="NyaTerminal" subtitle="正在准备安全保险库…"><Spinner /></CenteredCard>
   }
 
   if (!bootstrap.vault.initialized) {
-    return <VaultSetup onComplete={reload} />
+    return <VaultSetup theme={theme} onComplete={reload} />
   }
 
   if (bootstrap.vault.locked && (!bootstrap.settings || sessions.length === 0)) {
-    return <Unlock quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
+    return <Unlock theme={theme} quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
   }
 
   const settings = bootstrap.settings!
@@ -343,7 +373,7 @@ export function App() {
       {error && <div className="toast-error" onClick={() => setError('')}>{error}</div>}
       {bootstrap.vault.locked && (
         <div className="lock-overlay">
-          <Unlock quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
+          <Unlock theme={theme} quickUnlock={bootstrap.vault.quickUnlock} onComplete={reload} />
         </div>
       )}
     </div>
@@ -463,7 +493,7 @@ function Welcome({ onCreate }: { onCreate: () => void }) {
   </div>
 }
 
-function VaultSetup({ onComplete }: { onComplete: () => Promise<void> }) {
+function VaultSetup({ theme, onComplete }: { theme: ThemeName; onComplete: () => Promise<void> }) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
@@ -474,7 +504,7 @@ function VaultSetup({ onComplete }: { onComplete: () => Promise<void> }) {
       await onComplete()
     } catch (value) { setError(String(value)) }
   }
-  return <CenteredCard title="创建安全保险库" subtitle="主密码用于保护本机保存的连接和凭据。">
+  return <CenteredCard theme={theme} title="创建安全保险库" subtitle="主密码用于保护本机保存的连接和凭据。">
     <label>主密码<input autoFocus type="password" value={password}
       onChange={event => setPassword(event.target.value)} /></label>
     <label>确认主密码<input type="password" value={confirm}
@@ -486,7 +516,7 @@ function VaultSetup({ onComplete }: { onComplete: () => Promise<void> }) {
   </CenteredCard>
 }
 
-function Unlock({ quickUnlock, onComplete }: { quickUnlock: boolean; onComplete: () => Promise<void> }) {
+function Unlock({ theme, quickUnlock, onComplete }: { theme: ThemeName; quickUnlock: boolean; onComplete: () => Promise<void> }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const submit = async () => {
@@ -495,7 +525,7 @@ function Unlock({ quickUnlock, onComplete }: { quickUnlock: boolean; onComplete:
       await onComplete()
     } catch { setError('主密码不正确') }
   }
-  return <CenteredCard title="欢迎回来" subtitle="保险库已锁定，请验证后继续。">
+  return <CenteredCard theme={theme} title="欢迎回来" subtitle="保险库已锁定，请验证后继续。">
     <div className="unlock-icon"><LockKeyhole /></div>
     <label>主密码<input autoFocus type="password" value={password}
       onChange={event => setPassword(event.target.value)}
@@ -508,10 +538,10 @@ function Unlock({ quickUnlock, onComplete }: { quickUnlock: boolean; onComplete:
   </CenteredCard>
 }
 
-function CenteredCard({ title, subtitle, children }: {
-  title: string; subtitle: string; children: React.ReactNode
+function CenteredCard({ theme, title, subtitle, children }: {
+  theme: ThemeName; title: string; subtitle: string; children: React.ReactNode
 }) {
-  return <div className="auth-screen"><div className="auth-card">
+  return <div className={`auth-screen theme-${theme}`}><div className="auth-card">
     <div className="auth-brand"><div className="brand-mark large">N</div></div>
     <h1>{title}</h1><p>{subtitle}</p>{children}
   </div></div>

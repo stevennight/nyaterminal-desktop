@@ -19,11 +19,38 @@ import (
 	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
 )
 
-func TestSyncCiphertextAuthenticatesMetadata(t *testing.T) {
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
+func fillRandom(t *testing.T, data []byte) {
+	t.Helper()
+	if _, err := rand.Read(data); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func closeServer(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	t.Cleanup(server.Close)
+}
+
+func closeVault(t *testing.T, v *vault.Vault) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close vault: %v", err)
+		}
+	})
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encode response: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func TestSyncCiphertextAuthenticatesMetadata(t *testing.T) {
+	key := make([]byte, 32)
+	fillRandom(t, key)
 	plain := []byte(`{"id":"connection-1","host":"example.test"}`)
 	aad := syncAAD("connection", "connection-1", 1)
 	nonce, ciphertext, err := seal(key, plain, aad)
@@ -97,7 +124,7 @@ func TestConcurrentJSONFieldsMergeWithoutOverwritingIndependentChanges(t *testin
 
 func TestVectorIsAuthenticatedBySyncAAD(t *testing.T) {
 	key := make([]byte, 32)
-	_, _ = rand.Read(key)
+	fillRandom(t, key)
 	vector := map[string]int64{"device-a": 2, "device-b": 1}
 	aad := syncRecordAAD("connection", "one", 2, vector)
 	nonce, ciphertext, err := seal(key, []byte(`{"data":"secret"}`), aad)
@@ -114,7 +141,6 @@ func TestVectorIsAuthenticatedBySyncAAD(t *testing.T) {
 }
 
 func TestCredentialSyncPolicyUsesCredentialThenConnectionThenGlobal(t *testing.T) {
-	enabled, disabled := true, false
 	if !credentialPayloadAllowed(
 		"credential", []byte(`{"syncOverride":true}`), false,
 		map[string]bool{"credential": false},
@@ -123,13 +149,13 @@ func TestCredentialSyncPolicyUsesCredentialThenConnectionThenGlobal(t *testing.T
 	}
 	if credentialPayloadAllowed(
 		"credential", []byte(`{"name":"key"}`), true,
-		map[string]bool{"credential": disabled},
+		map[string]bool{"credential": false},
 	) {
 		t.Fatal("connection override was ignored")
 	}
 	if !credentialPayloadAllowed(
 		"credential", []byte(`{"name":"key"}`), false,
-		map[string]bool{"credential": enabled},
+		map[string]bool{"credential": true},
 	) {
 		t.Fatal("enabled connection override was ignored")
 	}
@@ -143,7 +169,7 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/auth/refresh":
-			_ = json.NewEncoder(w).Encode(TokenPair{
+			writeJSON(t, w, TokenPair{
 				AccessToken: "new-access", RefreshToken: "new-refresh",
 				AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
 				RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
@@ -159,14 +185,14 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	closeServer(t, server)
 
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVault(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -220,20 +246,20 @@ func TestLoginGeneratesDeviceIDWhenMissing(t *testing.T) {
 			return
 		}
 		seenDeviceID = body.DeviceID
-		_ = json.NewEncoder(w).Encode(TokenPair{
+		writeJSON(t, w, TokenPair{
 			AccessToken: "a", RefreshToken: "b",
 			AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
 			RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
 		})
 	}))
-	defer server.Close()
+	closeServer(t, server)
 
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVault(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -268,20 +294,20 @@ func TestLoginSendsSecondFactor(t *testing.T) {
 			return
 		}
 		seenSecondFactor = body.TOTPCode
-		_ = json.NewEncoder(w).Encode(TokenPair{
+		writeJSON(t, w, TokenPair{
 			AccessToken: "a", RefreshToken: "b",
 			AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
 			RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
 		})
 	}))
-	defer server.Close()
+	closeServer(t, server)
 
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVault(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +398,7 @@ func TestPairingPackageRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootKey := make([]byte, 32)
-	_, _ = rand.Read(rootKey)
+	fillRandom(t, rootKey)
 	nonce, ciphertext, err := seal(
 		oldKey, rootKey, []byte("nyaterminal:pairing-package:v1:pairing-id"),
 	)

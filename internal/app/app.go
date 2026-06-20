@@ -88,7 +88,9 @@ func (a *App) initialize() error {
 	dataStore := store.New(v)
 	sshManager, err := sshclient.NewManager(dataStore)
 	if err != nil {
-		v.Close()
+		if closeErr := v.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		a.initErr = err
 		return err
 	}
@@ -114,7 +116,7 @@ func (a *App) Startup(ctx context.Context) {
 	go a.syncLoop()
 }
 
-func (a *App) Shutdown(context.Context) {
+func (a *App) Shutdown(_ context.Context) {
 	_ = a.Close()
 }
 
