@@ -773,9 +773,16 @@ function CenteredCard({ theme, title, subtitle, children }: {
 
 function Spinner() { return <div className="spinner" /> }
 
+function modalPortalTarget() {
+  if (typeof document === 'undefined') return null
+  return document.querySelector('.app-shell') ?? document.body
+}
+
 function Modal({ title, children, onClose, width = '520px' }: {
   title: string; children: React.ReactNode; onClose: () => void; width?: string
 }) {
+  const target = modalPortalTarget()
+  if (!target) return null
   return createPortal(
     <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
       <section className="modal" style={{ width }}>
@@ -783,7 +790,7 @@ function Modal({ title, children, onClose, width = '520px' }: {
         <div className="modal-body">{children}</div>
       </section>
     </div>,
-    document.body,
+    target,
   )
 }
 
@@ -1619,6 +1626,8 @@ function AccountManagerDialog({ account, onClose, onReload }: {
 function NoticeDialog({ title, message, onClose }: {
   title: string; message: string; onClose: () => void
 }) {
+  const target = modalPortalTarget()
+  if (!target) return null
   return createPortal(
     <div className="modal-backdrop notice-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
       <section className="modal notice-modal">
@@ -1627,7 +1636,7 @@ function NoticeDialog({ title, message, onClose }: {
         <footer className="modal-actions"><button className="primary" onClick={onClose}>确定</button></footer>
       </section>
     </div>,
-    document.body,
+    target,
   )
 }
 
