@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
-  Moon, MoreHorizontal, Paintbrush, Plus, Search, Settings as SettingsIcon,
+  Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -17,6 +17,7 @@ import type {
 type SessionTab = {
   id: string
   connection: Connection
+  title?: string
   attempt: number
   sshSessionId?: string
   sftp: boolean
@@ -37,6 +38,7 @@ type SSHAuthPrompt = {
 }
 
 type ThemeName = 'dark' | 'light'
+type RenameTabState = { id: string; value: string }
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 
@@ -214,6 +216,14 @@ function displayDeviceLabel(deviceName?: string, deviceId?: string) {
   return deviceName || deviceId || ''
 }
 
+function connectionLabel(connection: Connection) {
+  return connection.name || connection.host || '未命名终端'
+}
+
+function sessionLabel(session: Pick<SessionTab, 'title' | 'connection'>) {
+  return session.title?.trim() || connectionLabel(session.connection)
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap>()
   const [error, setError] = useState('')
@@ -226,6 +236,8 @@ export function App() {
   const [sftpWorkspace, setSftpWorkspace] = useState<Connection>()
   const [sessions, setSessions] = useState<SessionTab[]>([])
   const [activeSession, setActiveSession] = useState('')
+  const [tabMenuOpen, setTabMenuOpen] = useState(false)
+  const [renamingTab, setRenamingTab] = useState<RenameTabState>()
   const [hostKey, setHostKey] = useState<{ tabId: string; value: PendingHostKey }>()
   const [sshAuthPrompt, setSSHAuthPrompt] = useState<SSHAuthPrompt>()
   const [interactiveChallenge, setInteractiveChallenge] = useState<InteractiveChallenge>()
@@ -234,6 +246,10 @@ export function App() {
   const [syncBusy, setSyncBusy] = useState(false)
   const activityTimer = useRef<number | undefined>(undefined)
   const searchInput = useRef<HTMLInputElement>(null)
+  const tabScroll = useRef<HTMLDivElement>(null)
+  const tabMenu = useRef<HTMLDivElement>(null)
+  const tabMenuButton = useRef<HTMLButtonElement>(null)
+  const tabButtons = useRef<Record<string, HTMLButtonElement | null>>({})
 
   const reload = useCallback(async () => {
     try {
@@ -262,6 +278,35 @@ export function App() {
       setInteractiveChallenge(value as InteractiveChallenge)
     })
   }, [])
+
+  useEffect(() => {
+    if (!tabMenuOpen) return
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (tabMenu.current?.contains(target) || tabMenuButton.current?.contains(target)) return
+      setTabMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTabMenuOpen(false)
+    }
+    window.addEventListener('pointerdown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [tabMenuOpen])
+
+  useEffect(() => {
+    const target = activeSession ? tabButtons.current[activeSession] : null
+    target?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+  }, [activeSession])
+
+  useEffect(() => {
+    if (sessions.length) return
+    setTabMenuOpen(false)
+  }, [sessions.length])
 
   const resetActivity = useCallback(() => {
     if (activityTimer.current) window.clearTimeout(activityTimer.current)
@@ -341,7 +386,7 @@ export function App() {
   const openConnection = (connection: Connection, privateSession = false) => {
     const id = crypto.randomUUID()
     setSessions(current => [...current, {
-      id, connection, attempt: 0, sftp: false, privateSession, credentialOverride: undefined
+      id, connection, title: undefined, attempt: 0, sftp: false, privateSession, credentialOverride: undefined
     }])
     setActiveSession(id)
   }
@@ -355,6 +400,27 @@ export function App() {
       return next
     })
   }
+
+  const openRenameTab = (tab: SessionTab) => {
+    setRenamingTab({ id: tab.id, value: tab.title ?? '' })
+    setTabMenuOpen(false)
+  }
+
+  const saveTabTitle = (id: string, value: string) => {
+    const nextTitle = value.trim()
+    setSessions(current => current.map(item =>
+      item.id === id ? { ...item, title: nextTitle || undefined } : item
+    ))
+    setRenamingTab(undefined)
+  }
+
+  const handleTabListWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    const container = event.currentTarget
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+    if (container.scrollWidth <= container.clientWidth) return
+    container.scrollLeft += event.deltaY
+    event.preventDefault()
+  }, [])
 
   const filteredConnections = useMemo(() => {
     const value = query.trim().toLowerCase()
@@ -439,15 +505,82 @@ export function App() {
 
       <main className="workspace">
         <div className="tabbar">
-          {sessions.map(tab => (
-            <button key={tab.id} className={`session-tab ${tab.id === activeSession ? 'active' : ''}`}
-              onClick={() => setActiveSession(tab.id)}>
-              <TerminalSquare size={15} /><span>{tab.connection.name}</span>
-              <i onClick={event => { event.stopPropagation(); closeSession(tab.id) }}><X size={13} /></i>
+          <div className="tab-scroll" ref={tabScroll} onWheel={handleTabListWheel}>
+            <div className="tab-strip">
+              {sessions.map(tab => (
+                <button
+                  key={tab.id}
+                  ref={node => { tabButtons.current[tab.id] = node }}
+                  className={`session-tab ${tab.id === activeSession ? 'active' : ''}`}
+                  onClick={() => setActiveSession(tab.id)}
+                  onDoubleClick={() => openRenameTab(tab)}
+                  title={sessionLabel(tab)}
+                >
+                  <TerminalSquare size={15} /><span>{sessionLabel(tab)}</span>
+                  <i
+                    onClick={event => {
+                      event.stopPropagation()
+                      closeSession(tab.id)
+                    }}
+                    title="关闭标签页"
+                  >
+                    <X size={13} />
+                  </i>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="tabbar-actions">
+            <button
+              ref={tabMenuButton}
+              className={`tab-menu-toggle ${tabMenuOpen ? 'active' : ''}`}
+              onClick={() => setTabMenuOpen(current => !current)}
+              title="终端标签列表"
+            >
+              <ChevronDown size={16} />
             </button>
-          ))}
-          <button className="new-tab" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
-          <div className="window-drag" />
+            {tabMenuOpen && (
+              <div className="tab-switcher-menu" ref={tabMenu}>
+                <div className="tab-switcher-list">
+                  {sessions.length ? sessions.map(tab => (
+                    <div key={tab.id} className={`tab-switcher-item ${tab.id === activeSession ? 'active' : ''}`}>
+                      <button
+                        className="tab-switcher-select"
+                        onClick={() => {
+                          setActiveSession(tab.id)
+                          setTabMenuOpen(false)
+                        }}
+                        title={sessionLabel(tab)}
+                      >
+                        <TerminalSquare size={15} />
+                        <span className="tab-switcher-copy">
+                          <strong>{sessionLabel(tab)}</strong>
+                          <small>{tab.connection.username}@{tab.connection.host}:{tab.connection.port}</small>
+                        </span>
+                      </button>
+                      <button
+                        className="tab-switcher-action"
+                        onClick={() => openRenameTab(tab)}
+                        title="重命名标签页"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        className="tab-switcher-action danger"
+                        onClick={() => closeSession(tab.id)}
+                        title="关闭标签页"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )) : (
+                    <div className="tab-switcher-empty">暂无打开的标签页</div>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="window-drag" />
+          </div>
           {activeTab && (
             <button className={`sftp-toggle ${activeTab.sftp ? 'active' : ''}`}
               onClick={() => setSessions(current => current.map(item =>
@@ -505,6 +638,15 @@ export function App() {
         onSaved={async () => { setGroupEditor(false); await reload() }} />}
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
+      {renamingTab && <RenameTabDialog
+        value={renamingTab.value}
+        placeholder={sessionLabel(sessions.find(item => item.id === renamingTab.id) ?? {
+          connection: emptyConnection,
+          title: undefined
+        })}
+        onClose={() => setRenamingTab(undefined)}
+        onSave={value => saveTabTitle(renamingTab.id, value)}
+      />}
       {accountManagerOpen && <AccountManagerDialog
         account={bootstrap.account}
         onClose={() => setAccountManagerOpen(false)}
@@ -1322,14 +1464,14 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
           onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
         <label className="check full"><input type="checkbox" checked={autoSyncEnabled}
           onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
-        <div className="sync-action-grid full">
-          <button className="secondary" type="button" disabled={syncBusy}
+        <div className="sync-action-grid sync-action-grid-configured full">
+          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
             onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
-          <button className="secondary" type="button" disabled={syncBusy}
+          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
             onClick={() => setShowRotateRecoveryModal(true)}>刷新同步恢复码</button>
-          <button className="secondary" type="button" disabled={syncBusy}
+          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
             onClick={() => setShowApproveModal(true)}>批准新设备加入</button>
-          <button className="danger-button" type="button" disabled={syncBusy}
+          <button className="danger-button sync-action-button" type="button" disabled={syncBusy}
             onClick={() => setShowLeaveSyncModal(true)}>退出同步保险库</button>
         </div>
       </div>}
@@ -1611,12 +1753,6 @@ function AccountManagerDialog({ account, onClose, onReload }: {
           每条恢复码只能使用一次，可在登录时填到 “TOTP / 恢复码” 输入框里代替 6 位验证码。
         </small>}
       </details>
-      <details className="pairing-approval">
-        <summary>登录状态</summary>
-        <small className="hint full">
-          当前设备和用户名仅作展示，退出后可重新登录，已撤销设备也可再次登录并重新授权。
-        </small>
-      </details>
     </div>
     {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
     </section>
@@ -1656,6 +1792,35 @@ function RecoveryCodeDialog({ title, code, onClose }: {
     <footer className="modal-actions">
       <button onClick={() => void copy()}>{copied ? '已复制' : '复制恢复码'}</button>
       <button className="primary" onClick={onClose}>我已保存</button>
+    </footer>
+  </Modal>
+}
+
+function RenameTabDialog({ value, placeholder, onClose, onSave }: {
+  value: string
+  placeholder: string
+  onClose: () => void
+  onSave: (value: string) => void
+}) {
+  const [next, setNext] = useState(value)
+  return <Modal title="重命名标签页" onClose={onClose} width="420px">
+    <div className="form-grid rename-tab-form">
+      <label className="full">标签名称
+        <input
+          autoFocus
+          value={next}
+          placeholder={placeholder}
+          onChange={event => setNext(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') onSave(next)
+          }}
+        />
+      </label>
+      <small className="hint full">留空则恢复显示连接名称。</small>
+    </div>
+    <footer className="modal-actions">
+      <button onClick={onClose}>取消</button>
+      <button className="primary" onClick={() => onSave(next)}>保存</button>
     </footer>
   </Modal>
 }
