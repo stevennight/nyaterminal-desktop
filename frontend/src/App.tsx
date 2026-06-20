@@ -4,6 +4,7 @@ import {
   Moon, MoreHorizontal, Paintbrush, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { api } from './bridge'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
@@ -71,6 +72,137 @@ function decodeBase64Url(value: string) {
   return atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
 }
 
+function localizeError(value: unknown) {
+  const raw = value instanceof Error ? value.message : String(value)
+  const message = raw.replace(/^Error:\s*/, '').trim()
+  if (!message) return '发生未知错误。'
+
+  const codeMap: Record<string, string> = {
+    authentication_required: '需要先完成身份验证。',
+    invalid_token: '登录状态已失效，请重新登录。',
+    invalid_credentials: '账号或密码不正确。',
+    invalid_recovery_code: '恢复码无效。',
+    invalid_totp_code: 'TOTP 验证码无效。',
+    invalid_request: '请求参数无效。',
+    invalid_json: '请求数据格式无效。',
+    invalid_backup: '备份数据无效。',
+    invalid_batch: '批量数据无效。',
+    invalid_record: '同步记录无效。',
+    invalid_record_hash: '同步记录校验失败。',
+    invalid_pairing: '配对信息无效。',
+    invalid_pairing_package: '配对包无效。',
+    invalid_pairing_signature: '配对签名无效。',
+    invalid_claim_token: '配对令牌无效。',
+    invalid_cursor: '同步游标无效。',
+    invalid_limit: '分页大小无效。',
+    invalid_device: '设备信息无效。',
+    invalid_session: '会话无效。',
+    invalid_recovery_bundle: '恢复包无效。',
+    restore_confirmation_required: '请先确认恢复操作。',
+    reset_confirmation_required: '请先确认重置操作。',
+    approved_device_required: '需要已批准的设备。',
+    pairing_not_found: '未找到配对请求。',
+    pairing_expired: '配对请求已过期。',
+    pairing_already_approved: '配对请求已经批准。',
+    pairing_already_claimed: '配对请求已经被领取。',
+    device_not_found: '未找到该设备。',
+    device_exists: '设备已存在。',
+    device_required: '需要先绑定设备。',
+    device_not_bound: '当前账号还未绑定设备。',
+    session_not_found: '会话不存在。',
+    conflict: '当前操作发生冲突，请刷新后重试。',
+    stale_generation: '数据版本已变化，请刷新后重试。',
+    sync_conflict: '同步发生冲突。',
+    sync_already_initialized: '同步保险库已经初始化。',
+    sync_initialize_failed: '同步初始化失败。',
+    backup_not_supported: '当前环境不支持备份。',
+    recovery_not_configured: '尚未配置恢复信息。',
+    recovery_conflict: '恢复信息保存冲突，请重试。',
+    restore_failed: '恢复失败。',
+    try_again_later: '请求过于频繁，请稍后再试。',
+    origin_required: '缺少来源信息。',
+    origin_not_allowed: '来源不被允许。',
+    request_timestamp_invalid: '请求时间戳无效。',
+    replay_protection_required: '需要重放保护。',
+    request_replayed: '请求已被重放拦截。',
+    server_not_initialized: '服务端尚未初始化。',
+    totp_already_enabled: 'TOTP 已经启用。',
+    internal_error: '服务器发生内部错误。',
+    already_initialized: '已经初始化过了。',
+    cannot_revoke_current_device: '不能撤销当前设备。',
+    device_name: '设备名称无效。',
+    invalid_pairing_approval_code: '批准串无效。',
+    invalid_recovery_generation: '恢复代数无效。',
+  }
+
+  const directMap: Array<[string, string]> = [
+    ['synchronization requires login', '同步需要先登录。'],
+    ['synchronization is not configured', '同步尚未配置。'],
+    ['recovery bundle changed during recovery', '恢复过程中恢复包已变化。'],
+    ['recovery code is invalid', '恢复码无效。'],
+    ['invalid pairing approval code', '批准串无效。'],
+    ['pairing request belongs to a different server', '批准信息来自其他服务端。'],
+    ['pairing request changed after approval code generation', '批准请求在生成批准串后发生变化。'],
+    ['there is no pending pairing request', '没有待处理的配对请求。'],
+    ['pairing request has expired', '配对请求已过期。'],
+    ['pairing package signature is invalid', '配对包签名无效。'],
+    ['pairing package authentication failed', '配对包认证失败。'],
+    ['pairing package contents are invalid', '配对包内容无效。'],
+    ['device name is too long', '设备名称过长。'],
+    ['synchronization ciphertext authentication failed', '同步数据认证失败。'],
+    ['synchronization payload is invalid', '同步载荷无效。'],
+    ['invalid synchronization server url', '同步服务器地址无效。'],
+    ['synchronization requires https outside localhost', '本地地址之外的同步服务器必须使用 HTTPS。'],
+    ['password is not configured', '未配置密码。'],
+    ['private key is not configured', '未配置私钥。'],
+    ['invalid private key or passphrase', '私钥或密码短语无效。'],
+    ['unsupported authentication type', '不支持的认证方式。'],
+    ['interactive authentication response count mismatch', '交互认证响应数量不匹配。'],
+    ['interactive authentication requires more responses', '交互认证缺少响应。'],
+    ['interactive authentication cancelled', 'SSH 交互认证已取消。'],
+    ['interactive authentication timed out', 'SSH 交互认证超时。'],
+    ['ssh authentication challenge has expired', 'SSH 交互认证已过期。'],
+    ['too many unlock attempts; try again later', '解锁尝试过多，请稍后再试。'],
+    ['zmodem chunk is too large', 'ZMODEM 分片过大。'],
+    ['terminal input cannot be represented in selected encoding', '当前编码无法表示终端输入。'],
+    ['application is not initialized', '应用尚未初始化。'],
+    ['ssh host key has changed', 'SSH 主机密钥已变化。'],
+    ['ssh host key is not trusted', 'SSH 主机密钥尚未信任。'],
+    ['connect SSH agent:', '连接 SSH Agent 失败：'],
+    ['unable to authenticate', 'SSH 认证失败。'],
+    ['invalid credentials', '账号或密码不正确。'],
+  ]
+
+  const serverMatch = message.match(/^sync server returned (\d+): (.+)$/i)
+  if (serverMatch) {
+    const status = Number(serverMatch[1])
+    const body = serverMatch[2].trim()
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown }
+      if (typeof parsed.error === 'string') {
+        const localized = codeMap[parsed.error] ?? parsed.error
+        return `同步服务器返回 ${status}：${localized}`
+      }
+    } catch {
+      // Fallback to the raw body below.
+    }
+    return `同步服务器返回 ${status}：${body}`
+  }
+
+  const lower = message.toLowerCase()
+  for (const [needle, replacement] of directMap) {
+    const idx = lower.indexOf(needle.toLowerCase())
+    if (idx >= 0) {
+      if (needle.endsWith(':')) {
+        return replacement + message.slice(idx + needle.length)
+      }
+      return replacement
+    }
+  }
+
+  return codeMap[message] ?? message
+}
+
 function syncHeadline(syncSummary?: SyncSummary) {
   if (!syncSummary?.loggedIn) return '未登录'
   if (!syncSummary.syncInitialized) return '等待初始化'
@@ -108,7 +240,7 @@ export function App() {
       setError('')
       setBootstrap(await api.Bootstrap())
     } catch (value) {
-      setError(String(value))
+      setError(localizeError(value))
     }
   }, [])
 
@@ -288,11 +420,11 @@ export function App() {
                 if (name === null) return
                 if (!name.trim()) {
                   if (window.confirm(`确定删除标签 ${tag.name}？`)) {
-                    void api.DeleteTag(tag.id).then(reload).catch(reason => setError(String(reason)))
+                    void api.DeleteTag(tag.id).then(reload).catch(reason => setError(localizeError(reason)))
                   }
                 } else {
                   void api.SaveTag({ ...tag, name: name.trim() }).then(reload)
-                    .catch(reason => setError(String(reason)))
+                    .catch(reason => setError(localizeError(reason)))
                 }
               }}>
               <i style={{ background: tag.color }} /><span>{tag.name}</span>
@@ -644,10 +776,15 @@ function Spinner() { return <div className="spinner" /> }
 function Modal({ title, children, onClose, width = '520px' }: {
   title: string; children: React.ReactNode; onClose: () => void; width?: string
 }) {
-  return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
-    <section className="modal" style={{ width }}><header><h2>{title}</h2>
-      <button onClick={onClose}><X size={18} /></button></header>{children}</section>
-  </div>
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <section className="modal" style={{ width }}>
+        <header><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></header>
+        <div className="modal-body">{children}</div>
+      </section>
+    </div>,
+    document.body,
+  )
 }
 
 function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }: {
@@ -676,7 +813,7 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }
         credentialId = credential.id
       }
       await onSaved(await api.SaveConnection({ ...value, credentialId }))
-    } catch (reason) { setError(String(reason)) }
+    } catch (reason) { setError(localizeError(reason)) }
   }
   return <Modal title={value.id ? '编辑 SSH 连接' : '新建 SSH 连接'} onClose={onClose}>
     <div className="form-grid">
@@ -849,7 +986,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setQuickUnlock(enabled)
       showNotice('系统快速解锁', enabled ? '系统快速解锁已启用。' : '系统快速解锁已关闭。')
     } catch (error) {
-      showNotice('系统快速解锁', String(error))
+      showNotice('系统快速解锁', localizeError(error))
     }
   }
 
@@ -865,7 +1002,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       })
       await onSaved()
     } catch (error) {
-      showNotice('保存设置失败', String(error))
+      showNotice('保存设置失败', localizeError(error))
     }
   }
 
@@ -876,7 +1013,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       showNotice('同步完成', `上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}。`)
       await onReload()
     } catch (error) {
-      showNotice('同步失败', String(error))
+      showNotice('同步失败', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -888,7 +1025,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       await api.SetSyncAutoEnabled(enabled)
       await onReload()
     } catch (error) {
-      showNotice('自动同步', String(error))
+      showNotice('自动同步', localizeError(error))
       setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
     }
   }
@@ -903,7 +1040,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       })
       await onReload()
     } catch (error) {
-      showNotice('同步初始化失败', String(error))
+      showNotice('同步初始化失败', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -932,7 +1069,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       showNotice('设备加入', '本机已通过恢复码加入同步保险库。')
       await onReload()
     } catch (error) {
-      showNotice('设备加入', String(error))
+      showNotice('设备加入', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -949,7 +1086,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setShowJoinModal(true)
       showNotice('设备加入', '请在已加入同步的设备上输入批准串并核对短码。')
     } catch (error) {
-      showNotice('设备加入', String(error))
+      showNotice('设备加入', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -978,7 +1115,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       showNotice('设备加入', '本机已通过已授权设备批准加入同步。')
       await onReload()
     } catch (error) {
-      showNotice('设备加入', String(error))
+      showNotice('设备加入', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -1003,7 +1140,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setShowApproveModal(false)
       showNotice('批准新设备', '已批准新的设备加入请求。')
     } catch (error) {
-      showNotice('批准新设备', String(error))
+      showNotice('批准新设备', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -1022,7 +1159,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       })
       await onReload()
     } catch (error) {
-      showNotice('刷新同步恢复码失败', String(error))
+      showNotice('刷新同步恢复码失败', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -1040,7 +1177,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       showNotice('已退出同步保险库', '本机已恢复到未加入同步保险库的状态。')
       await onReload()
     } catch (error) {
-      showNotice('退出同步失败', String(error))
+      showNotice('退出同步失败', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -1063,7 +1200,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       showNotice('同步保险库已重置', '本机已退出同步配置，可重新初始化或使用恢复码加入。')
       await onReload()
     } catch (error) {
-      showNotice('重置同步失败', String(error))
+      showNotice('重置同步失败', localizeError(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -1119,7 +1256,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
         {vault.customLockPassword && <button className="secondary full" type="button"
           onClick={() => void api.ClearLockPassword()
             .then(() => showNotice('独立锁屏密码', '独立锁屏密码已清除。'))
-            .catch(error => showNotice('独立锁屏密码', String(error)))}>
+            .catch(error => showNotice('独立锁屏密码', localizeError(error)))}>
           清除独立锁屏密码
         </button>}
         <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
@@ -1317,7 +1454,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       setDeviceId(resolvedDeviceId)
       setDeviceName(account?.deviceName ?? '')
       await onReload()
-    } catch (error) { showNotice('账号管理', String(error)) }
+    } catch (error) { showNotice('账号管理', localizeError(error)) }
   }
   const logout = async () => {
     try {
@@ -1327,19 +1464,19 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       setTotpSetup(undefined)
       setAccountRecoveryCodes([])
       await onReload()
-    } catch (error) { showNotice('账号管理', String(error)) }
+    } catch (error) { showNotice('账号管理', localizeError(error)) }
   }
   const loadDevices = async () => {
     try {
       const values = await api.ListSyncDevices()
       setDevices(Array.isArray(values) ? values : [])
-    } catch (error) { showNotice('设备管理', String(error)) }
+    } catch (error) { showNotice('设备管理', localizeError(error)) }
   }
   const beginTOTP = async () => {
     try {
       setTotpSetup(await api.BeginSyncTOTPSetup())
       showNotice('TOTP 设置', '请把密钥添加到验证器，再输入六位验证码确认。')
-    } catch (error) { showNotice('TOTP 设置', String(error)) }
+    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
   }
   const confirmTOTP = async () => {
     if (!totpSetup) return
@@ -1349,7 +1486,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       setTotpSetup(undefined)
       setTotpCode('')
       showNotice('TOTP 设置', 'TOTP 已启用。请离线保存账号恢复码。')
-    } catch (error) { showNotice('TOTP 设置', String(error)) }
+    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
   }
   const disableTOTP = async () => {
     try {
@@ -1360,14 +1497,14 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       setTotpCode('')
       showNotice('TOTP 设置', 'TOTP 已关闭。')
       await onReload()
-    } catch (error) { showNotice('TOTP 设置', String(error)) }
+    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
   }
   const saveDeviceName = async () => {
     try {
       await api.SetDeviceName(deviceName.trim())
       showNotice('设备名称', '当前设备名称已更新。')
       await onReload()
-    } catch (error) { showNotice('设备名称', String(error)) }
+    } catch (error) { showNotice('设备名称', localizeError(error)) }
   }
   if (!loggedIn) {
     return <Modal title="账号管理" onClose={onClose} width="720px">
@@ -1438,7 +1575,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
             <button onClick={() => {
               if (!window.confirm(`确定撤销设备「${device.name || device.id}」？`)) return
               void api.RevokeSyncDevice(device.id)
-                .then(loadDevices).catch(error => showNotice('设备管理', String(error)))
+                .then(loadDevices).catch(error => showNotice('设备管理', localizeError(error)))
             }}>撤销</button>
           </div>)}
           {!devices.length && <small>暂无设备，或尚未刷新。</small>}
@@ -1482,13 +1619,16 @@ function AccountManagerDialog({ account, onClose, onReload }: {
 function NoticeDialog({ title, message, onClose }: {
   title: string; message: string; onClose: () => void
 }) {
-  return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
-    <section className="modal notice-modal">
-      <header><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></header>
-      <div className="notice-body">{message}</div>
-      <footer className="modal-actions"><button className="primary" onClick={onClose}>确定</button></footer>
-    </section>
-  </div>
+  return createPortal(
+    <div className="modal-backdrop notice-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <section className="modal notice-modal">
+        <header><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></header>
+        <div className="modal-body notice-body">{message}</div>
+        <footer className="modal-actions"><button className="primary" onClick={onClose}>确定</button></footer>
+      </section>
+    </div>,
+    document.body,
+  )
 }
 
 function RecoveryCodeDialog({ title, code, onClose }: {
@@ -1733,3 +1873,4 @@ function SSHAuthPromptDialog({ connection, value, onCancel, onSubmit }: {
     </footer>
   </Modal>
 }
+

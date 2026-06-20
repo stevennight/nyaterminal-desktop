@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   color: #dce3ee;
   background: #0a0e16;
@@ -229,9 +229,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .spinner { width: 25px; height: 25px; border: 3px solid #263348; border-top-color: #62d9ca; border-radius: 50%; animation: spin .8s linear infinite; margin: auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: #03060bbd; backdrop-filter: blur(4px); }
-.modal { position: relative; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid var(--line); background: var(--panel); border-radius: 15px; box-shadow: 0 30px 90px #000b; padding: 0 22px 20px; }
-.modal > header { height: 58px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); margin: 0 -22px 20px; padding: 0 20px; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: #03060bbd; backdrop-filter: blur(4px); }
+.modal { position: relative; display: flex; flex-direction: column; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); overflow: hidden; border: 1px solid var(--line); background-color: var(--panel); border-radius: 15px; box-shadow: 0 30px 90px #000b; }
+.modal > header { flex: 0 0 auto; height: 58px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 20px; background-color: var(--panel); }
 .modal h2 { font-size: 16px; margin: 0; }
 .modal > header button { border: 0; background: transparent; cursor: pointer; color: var(--muted); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 120px; column-gap: 12px; }
@@ -244,9 +244,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .connection-tags button.selected { border-color: var(--accent); color: var(--text); background: #62d9ca12; }
 .check { flex-direction: row; align-items: center; }
 .check input { width: auto; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding-top: 10px; }
+.modal-body { min-height: 0; overflow: auto; padding: 20px 22px 20px; background-color: var(--panel); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 0 22px 20px; flex: 0 0 auto; background-color: var(--panel); }
 .modal-actions > button:not(.primary):not(.danger-button) { border: 1px solid var(--line); background: var(--panel2); border-radius: 8px; padding: 9px 14px; cursor: pointer; }
-.danger-button { border: 0; background: #e74e5b; color: white; border-radius: 8px; padding: 9px 14px; font-weight: 600; cursor: pointer; }
 .account-panel {
   display: flex;
   flex-direction: column;
@@ -347,7 +347,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .security-notice { display: flex; gap: 13px; padding: 14px; border-radius: 10px; background: #62d9ca10; color: var(--accent); margin-bottom: 17px; }
 .security-notice.danger { background: #e74e5b14; color: #ff7c88; }
 .security-notice p { color: var(--muted); margin: 6px 0 0; font-size: 11px; line-height: 1.5; }
-.toast-error { position: fixed; right: 18px; bottom: 18px; z-index: 100; max-width: 430px; background: #3b1720; border: 1px solid #7f2c3d; color: #ffadb5; border-radius: 10px; padding: 12px 16px; font-size: 12px; box-shadow: 0 20px 50px #0008; cursor: pointer; }
+.toast-error { position: fixed; right: 18px; bottom: 18px; z-index: 120; max-width: 430px; background: #3b1720; border: 1px solid #7f2c3d; color: #ffadb5; border-radius: 10px; padding: 12px 16px; font-size: 12px; box-shadow: 0 20px 50px #0008; cursor: pointer; }
 
 @media (max-width: 1080px) {
   .app-shell { grid-template-columns: 235px 1fr auto; }
@@ -361,3 +361,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
     align-items: stretch;
   }
 }
+
+.notice-backdrop { z-index: 140; }
+.notice-modal { max-width: min(560px, calc(100vw - 40px)); }
+.notice-body { background-color: var(--panel); white-space: pre-wrap; line-height: 1.6; }
+
