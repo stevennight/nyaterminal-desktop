@@ -10,7 +10,7 @@ import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
 import type {
-  Bootstrap, Connection, Credential, Group, InteractiveChallenge,
+  AccountSummary, Bootstrap, Connection, Credential, Group, InteractiveChallenge,
   PendingHostKey, Settings, SyncSummary, Tag
 } from './types'
 
@@ -37,6 +37,7 @@ export function App() {
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState(false)
   const [tagEditor, setTagEditor] = useState(false)
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sftpWorkspace, setSftpWorkspace] = useState<Connection>()
   const [sessions, setSessions] = useState<SessionTab[]>([])
@@ -188,6 +189,9 @@ export function App() {
         <div className="brand-row">
           <div className="brand-mark">N</div>
           <div><strong>NyaTerminal</strong><small>Secure workspace</small></div>
+          <button className="icon-button" onClick={() => setAccountManagerOpen(true)} title="账号管理">
+            <Shield size={17} />
+          </button>
           <button className="icon-button" onClick={() => void lock()} title="锁屏"><LockKeyhole size={17} /></button>
         </div>
         <div className="search-box"><Search size={16} />
@@ -301,6 +305,11 @@ export function App() {
         onSaved={async () => { setGroupEditor(false); await reload() }} />}
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
+      {accountManagerOpen && <AccountManagerDialog
+        account={bootstrap.account}
+        onClose={() => setAccountManagerOpen(false)}
+        onReload={reload}
+      />}
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
         syncSummary={bootstrap.syncSummary}
         syncBusy={syncBusy}
@@ -668,11 +677,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
   const [next, setNext] = useState(value)
-  const [syncOpen, setSyncOpen] = useState(false)
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(syncSummary?.autoSyncEnabled ?? true)
   const [lockPassword, setLockPassword] = useState('')
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
-  const [systemUnlockStatus, setSystemUnlockStatus] = useState('')
+  const [notice, setNotice] = useState<{ title: string; message: string }>()
   const [oldMasterPassword, setOldMasterPassword] = useState('')
   const [newMasterPassword, setNewMasterPassword] = useState('')
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
@@ -689,15 +697,16 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     { id: 'sync', label: '同步', icon: SlidersHorizontal }
   ] as const
 
+  const showNotice = (title: string, message: string) => setNotice({ title, message })
+
   const toggleSystemUnlock = async (enabled: boolean) => {
-    setSystemUnlockStatus('')
     try {
       if (enabled) await api.EnableSystemUnlock()
       else await api.DisableSystemUnlock()
       setQuickUnlock(enabled)
-      setSystemUnlockStatus(enabled ? '系统快速解锁已启用' : '系统快速解锁已关闭')
+      showNotice('系统快速解锁', enabled ? '系统快速解锁已启用。' : '系统快速解锁已关闭。')
     } catch (error) {
-      setSystemUnlockStatus(String(error))
+      showNotice('系统快速解锁', String(error))
     }
   }
 
@@ -713,7 +722,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       })
       await onSaved()
     } catch (error) {
-      setSystemUnlockStatus(String(error))
+      showNotice('保存设置失败', String(error))
     }
   }
 
@@ -721,10 +730,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     onSyncBusyChange(true)
     try {
       const result = await api.SyncNow(next.syncSecretsByDefault, next.syncCommandHistory)
-      setSystemUnlockStatus(`完成：上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}`)
+      showNotice('同步完成', `上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}。`)
       await onReload()
     } catch (error) {
-      setSystemUnlockStatus(String(error))
+      showNotice('同步失败', String(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -736,7 +745,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       await api.SetSyncAutoEnabled(enabled)
       await onReload()
     } catch (error) {
-      setSystemUnlockStatus(String(error))
+      showNotice('自动同步', String(error))
       setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
     }
   }
@@ -786,8 +795,8 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
             onChange={event => setLockPassword(event.target.value)} /></label>
         {vault.customLockPassword && <button className="secondary full" type="button"
           onClick={() => void api.ClearLockPassword()
-            .then(() => setSystemUnlockStatus('独立锁屏密码已清除'))
-            .catch(error => setSystemUnlockStatus(String(error)))}>
+            .then(() => showNotice('独立锁屏密码', '独立锁屏密码已清除。'))
+            .catch(error => showNotice('独立锁屏密码', String(error)))}>
           清除独立锁屏密码
         </button>}
         <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
@@ -806,8 +815,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       <h3>同步</h3>
       <div className="sync-summary">
         <div>
-          <strong>{syncSummary?.configured ? '已配置' : '未配置'}</strong>
-          <span>{syncSummary?.serverUrl ? `${syncSummary.serverUrl} · ${syncSummary.username}` : '尚未初始化同步保险库'}</span>
+          <strong>{syncSummary?.loggedIn ? '已登录' : syncSummary?.configured ? '已配置' : '未登录'}</strong>
+          <span>{syncSummary?.serverUrl
+            ? `${syncSummary.serverUrl} · ${syncSummary.username}${syncSummary.deviceName ? ` · ${syncSummary.deviceName}` : ''}`
+            : '尚未初始化同步保险库'}</span>
         </div>
         <div>
           <strong>{syncSummary?.running ? '同步中' : syncSummary?.autoSyncEnabled === false ? '自动同步已关闭' : '自动同步已开启'}</strong>
@@ -828,9 +839,6 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
         <button className="secondary full" type="button" disabled={syncBusy || !syncSummary?.configured}
           onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
       </div>
-      <button className="secondary" type="button" onClick={() => setSyncOpen(true)}>
-        打开同步管理
-      </button>
     </div>
   }
 
@@ -848,235 +856,126 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       </aside>
       <section className="settings-content">
         {content}
-        {systemUnlockStatus && <div className="form-error">{systemUnlockStatus}</div>}
       </section>
     </div>
     <footer className="modal-actions"><button onClick={onClose}>取消</button>
       <button className="primary" onClick={() => void persist()}>保存</button></footer>
-    {syncOpen && <SyncDialog
-      value={syncSummary}
-      settings={next}
-      onClose={() => setSyncOpen(false)}
-      onConfigured={onReload}
-    />}
+    {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
   </Modal>
 }
 
-function SyncDialog({ value, settings, onClose, onConfigured }: {
-  value?: SyncSummary; settings: Settings; onClose: () => void; onConfigured: () => Promise<void>
+function AccountManagerDialog({ account, onClose, onReload }: {
+  account?: AccountSummary; onClose: () => void; onReload: () => Promise<void>
 }) {
-  const [serverUrl, setServerUrl] = useState(value?.serverUrl ?? 'https://')
-  const [username, setUsername] = useState(value?.username ?? '')
+  const [serverUrl, setServerUrl] = useState(account?.serverUrl ?? 'https://')
+  const [username, setUsername] = useState(account?.username ?? '')
   const [password, setPassword] = useState('')
-  const [deviceName, setDeviceName] = useState('My device')
-  const [recoveryInput, setRecoveryInput] = useState('')
-  const [autoSyncEnabled, setAutoSyncEnabled] = useState(value?.autoSyncEnabled ?? true)
-  const [currentRecoveryCode, setCurrentRecoveryCode] = useState('')
-  const [status, setStatus] = useState('')
-  const [pairing, setPairing] = useState<{
-    shortCode: string; qrPayload: string; expiresAt: string
-  }>()
-  const [approvalPayload, setApprovalPayload] = useState('')
-  const [approvalCode, setApprovalCode] = useState('')
   const [totpCode, setTotpCode] = useState('')
+  const [notice, setNotice] = useState<{ title: string; message: string }>()
+  const [loggedIn, setLoggedIn] = useState(account?.loggedIn ?? false)
+  const [deviceId, setDeviceId] = useState(account?.deviceId ?? '')
+  const [accessExpiresAt, setAccessExpiresAt] = useState(account?.accessExpiresAt ?? '')
+  const [refreshExpiresAt, setRefreshExpiresAt] = useState(account?.refreshExpiresAt ?? '')
   const [devices, setDevices] = useState<Array<{
     id: string; name: string; approved: boolean; revoked: boolean
     createdAt: string; lastSeenAt: string
   }>>([])
   const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
   const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
-  const qrCanvas = useRef<HTMLCanvasElement>(null)
-  const qrFile = useRef<HTMLInputElement>(null)
   useEffect(() => {
-    if (value?.serverUrl) setServerUrl(value.serverUrl)
-    if (value?.username) setUsername(value.username)
-    if (typeof value?.autoSyncEnabled === 'boolean') setAutoSyncEnabled(value.autoSyncEnabled)
-  }, [value?.serverUrl, value?.username])
-  useEffect(() => {
-    if (value?.lastError) setStatus(value.lastError)
-  }, [value?.lastError])
-  const initialize = async () => {
-    setStatus('正在初始化…')
+    if (account?.serverUrl) setServerUrl(account.serverUrl)
+    if (account?.username) setUsername(account.username)
+    setLoggedIn(account?.loggedIn ?? false)
+    setDeviceId(account?.deviceId ?? '')
+    setAccessExpiresAt(account?.accessExpiresAt ?? '')
+    setRefreshExpiresAt(account?.refreshExpiresAt ?? '')
+  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.accessExpiresAt, account?.refreshExpiresAt])
+  const showNotice = (title: string, message: string) => setNotice({ title, message })
+  const login = async () => {
     try {
-      const result = await api.InitializeSync(serverUrl, username, password, deviceName)
-      setCurrentRecoveryCode(result.recoveryCode)
-      setStatus('同步服务初始化完成。请立即离线保存恢复码。')
-      await onConfigured()
-    } catch (error) { setStatus(String(error)) }
+      const resolvedDeviceId = deviceId || ''
+      await api.LoginAccount(serverUrl, username, password, resolvedDeviceId)
+      showNotice('账号管理', '已登录服务端。')
+      setLoggedIn(true)
+      setDeviceId(resolvedDeviceId)
+      await onReload()
+    } catch (error) { showNotice('账号管理', String(error)) }
   }
-  const sync = async () => {
-    setStatus('正在同步…')
+  const logout = async () => {
     try {
-      const result = await api.SyncNow(settings.syncSecretsByDefault, settings.syncCommandHistory)
-      setStatus(`完成：上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}`)
-    } catch (error) { setStatus(String(error)) }
-  }
-  const recover = async () => {
-    setStatus('正在使用恢复码恢复同步保险库…')
-    try {
-      const result = await api.RecoverSync(
-        serverUrl, username, password, totpCode, deviceName, recoveryInput
-      )
-      setStatus(`设备 ${result.deviceId} 已恢复，可以开始同步。`)
-      setRecoveryInput('')
-      await onConfigured()
-    } catch (error) { setStatus(String(error)) }
-  }
-  const rotateRecoveryCode = async () => {
-    setStatus('正在轮换恢复码…')
-    try {
-      setCurrentRecoveryCode(await api.RotateSyncRecoveryCode())
-      setStatus('恢复码已轮换。旧恢复码已失效，请立即保存新恢复码。')
-    } catch (error) { setStatus(String(error)) }
-  }
-  const beginPairing = async () => {
-    setStatus('正在创建设备配对请求…')
-    try {
-      const result = await api.BeginDevicePairing(serverUrl, deviceName)
-      setPairing(result)
-      setStatus('请在已授权设备上扫描二维码，并核对六位短码。')
-    } catch (error) { setStatus(String(error)) }
-  }
-  const approvePairing = async () => {
-    try {
-      const parsed = JSON.parse(approvalPayload) as { shortCode?: string }
-      if (!parsed.shortCode || parsed.shortCode !== approvalCode.trim()) {
-        return setStatus('短码与配对载荷不一致，请重新核对。')
-      }
-      await api.ApproveDevicePairing(approvalPayload)
-      setStatus('新设备已批准并收到加密密钥包。')
-    } catch (error) { setStatus(String(error)) }
-  }
-  const scanPairingQR = async (file?: File) => {
-    if (!file) return
-    try {
-      const Detector = (window as typeof window & {
-        BarcodeDetector?: new (options: { formats: string[] }) => {
-          detect(source: ImageBitmap): Promise<Array<{ rawValue: string }>>
-        }
-      }).BarcodeDetector
-      if (!Detector) return setStatus('当前 WebView 不支持二维码识别，请粘贴二维码内容。')
-      const bitmap = await createImageBitmap(file)
-      const results = await new Detector({ formats: ['qr_code'] }).detect(bitmap)
-      bitmap.close()
-      if (!results[0]?.rawValue) return setStatus('图片中没有识别到配对二维码。')
-      setApprovalPayload(results[0].rawValue)
-      const parsed = JSON.parse(results[0].rawValue) as { shortCode?: string }
-      if (parsed.shortCode) setApprovalCode(parsed.shortCode)
-      setStatus('已识别配对二维码，请核对短码后批准。')
-    } catch (error) { setStatus(String(error)) }
-  }
-  const claimPairing = async () => {
-    try {
-      const result = await api.ClaimDevicePairing(username, password, totpCode)
-      setStatus(result.approved ? '设备配对完成，可以开始同步。' : '仍在等待已授权设备批准。')
-      if (result.approved) await onConfigured()
-    } catch (error) { setStatus(String(error)) }
+      await api.LogoutAccount()
+      showNotice('账号管理', '已退出登录。')
+      setLoggedIn(false)
+      await onReload()
+    } catch (error) { showNotice('账号管理', String(error)) }
   }
   const loadDevices = async () => {
-    try { setDevices(await api.ListSyncDevices()) } catch (error) { setStatus(String(error)) }
+    try { setDevices(await api.ListSyncDevices()) } catch (error) { showNotice('设备管理', String(error)) }
   }
   const beginTOTP = async () => {
     try {
       setTotpSetup(await api.BeginSyncTOTPSetup())
-      setStatus('请把密钥添加到验证器，再输入六位验证码确认。')
-    } catch (error) { setStatus(String(error)) }
+      showNotice('TOTP 设置', '请把密钥添加到验证器，再输入六位验证码确认。')
+    } catch (error) { showNotice('TOTP 设置', String(error)) }
   }
   const confirmTOTP = async () => {
     if (!totpSetup) return
     try {
       setAccountRecoveryCodes(await api.ConfirmSyncTOTPSetup(totpSetup.setupToken, totpCode))
-      setStatus('TOTP 已启用。请离线保存账号恢复码。')
-    } catch (error) { setStatus(String(error)) }
+      showNotice('TOTP 设置', 'TOTP 已启用。请离线保存账号恢复码。')
+    } catch (error) { showNotice('TOTP 设置', String(error)) }
   }
-  useEffect(() => {
-    if (pairing && qrCanvas.current) {
-      void QRCode.toCanvas(qrCanvas.current, pairing.qrPayload, {
-        width: 188, margin: 1, color: { dark: '#0a0e16', light: '#ffffff' }
-      })
-    }
-  }, [pairing])
-  return <div className="nested-modal">
-    <header><strong>同步管理</strong><button onClick={onClose}><X size={16} /></button></header>
-    <div className="sync-banner">
-      <strong>{value?.configured ? '已配置同步' : '尚未配置同步'}</strong>
-      <span>{value?.serverUrl ? `${value.serverUrl} · ${value.username}` : '先初始化或恢复一次同步保险库'}</span>
+  return <Modal title="账号管理" onClose={onClose} width="720px">
+    <div className="sync-summary">
+      <div>
+        <strong>{loggedIn ? '已登录' : '未登录'}</strong>
+        <span>{serverUrl
+          ? `${serverUrl} · ${username}`
+          : '同步信息尚未初始化'}</span>
+      </div>
+      <div>
+        <strong>{deviceId ? '设备编号已保存' : '暂无设备编号'}</strong>
+        <span>{deviceId || '登录后会自动生成并保存。'}</span>
+      </div>
+      <div>
+        <strong>{accessExpiresAt ? '访问令牌已存' : '访问令牌未显示'}</strong>
+        <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
+      </div>
+      <div>
+        <strong>{refreshExpiresAt ? '刷新令牌已存' : '刷新令牌未显示'}</strong>
+        <span>{refreshExpiresAt ? `刷新令牌到期：${new Date(refreshExpiresAt).toLocaleString()}` : '退出登录后需重新登录。'}</span>
+      </div>
     </div>
-    <div className="form-grid sync-edit-grid">
+    <div className="form-grid">
       <label className="wide">服务端地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
-      <label className="wide">用户名<input value={username} onChange={e => setUsername(e.target.value)} /></label>
-      <label className="wide">设备名<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
-      <label className="full">密码
-        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-          placeholder={value?.configured ? '仅在初始化、恢复或加入设备时使用' : ''} />
-      </label>
+      <label className="wide">账号<input value={username} onChange={e => setUsername(e.target.value)} /></label>
+      <label className="wide">密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
     </div>
-    <div className="sync-button-grid">
-      <button className="secondary" onClick={() => void sync()}>立即同步</button>
-      <button className="secondary" onClick={() => {
-        if (currentRecoveryCode && !window.confirm('已经生成过同步恢复码。重新初始化可能覆盖当前同步配置，确定继续吗？')) return
-        void initialize()
-      }}>初始化新同步保险库</button>
-      <button className="secondary" onClick={() => void beginPairing()}>将本设备加入已有保险库</button>
-      <button className="secondary" onClick={() => void rotateRecoveryCode()}>轮换恢复码</button>
-    </div>
+    <footer className="modal-actions">
+      <button onClick={onClose}>关闭</button>
+      <button className="secondary" onClick={() => void login()}>登录</button>
+      <button className="danger-button" onClick={() => void logout()}>退出登录</button>
+    </footer>
     <details className="pairing-approval">
-      <summary>使用恢复码恢复设备</summary>
-      <label>同步恢复码<textarea rows={3} value={recoveryInput}
-        onChange={e => setRecoveryInput(e.target.value)}
-        placeholder="输入初始化或轮换时生成的高熵恢复码" /></label>
-      <button className="secondary wide" disabled={!recoveryInput.trim()}
-        onClick={() => void recover()}>恢复同步保险库</button>
-    </details>
-    <div className="sync-banner">
-    </div>
-    {pairing && <div className="pairing-card">
-      <canvas ref={qrCanvas} />
-      <div><small>设备配对短码</small><strong>{pairing.shortCode.slice(0, 3)} {pairing.shortCode.slice(3)}</strong>
-        <p>二维码十分钟内有效。领取令牌不会包含在二维码中。</p>
-        <button onClick={() => void claimPairing()}>检查批准状态</button></div>
-    </div>}
-    <details className="pairing-approval">
-      <summary>批准另一台设备</summary>
-      <input ref={qrFile} hidden type="file" accept="image/*"
-        onChange={event => void scanPairingQR(event.target.files?.[0])} />
-      <button className="secondary wide" onClick={() => qrFile.current?.click()}>
-        从图片扫描配对二维码
-      </button>
-      <label>二维码载荷<textarea rows={4} value={approvalPayload}
-        onChange={e => setApprovalPayload(e.target.value)}
-        placeholder="扫描二维码后粘贴配对载荷" /></label>
-      <label>六位短码<input inputMode="numeric" maxLength={6}
-        value={approvalCode} onChange={e => setApprovalCode(e.target.value.replace(/\D/g, ''))} /></label>
-      <button className="secondary wide" onClick={() => void approvePairing()}>核对并批准设备</button>
-    </details>
-    <label>账号 TOTP（启用时）<input inputMode="numeric" value={totpCode}
-      onChange={e => setTotpCode(e.target.value)} /></label>
-    <details className="pairing-approval">
-      <summary onClick={() => !devices.length && void loadDevices()}>设备管理</summary>
+      <summary>设备管理</summary>
+      <button className="secondary wide" onClick={() => void loadDevices()}>刷新设备</button>
       <div className="device-list">
         {devices.map(device => <div key={device.id}>
           <span><strong>{device.name}</strong><small>
             {device.revoked ? '已撤销' : device.approved ? '已授权' : '等待批准'}
           </small></span>
           {!device.revoked && <button onClick={() => {
-            if (!window.confirm(`确定撤销设备「${device.name}」？如果这是当前设备，之后需要重新配对或用恢复码恢复。`)) return
+            if (!window.confirm(`确定撤销设备「${device.name}」？`)) return
             void api.RevokeSyncDevice(device.id)
-              .then(loadDevices).catch(error => setStatus(String(error)))
+              .then(loadDevices).catch(error => showNotice('设备管理', String(error)))
           }}>撤销</button>}
         </div>)}
-        {!devices.length && <small>同步尚未配置，或暂无设备。</small>}
+        {!devices.length && <small>暂无设备，或尚未刷新。</small>}
       </div>
     </details>
     <details className="pairing-approval">
       <summary>账号二次验证</summary>
       {!totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}
-      {!totpSetup && <button className="secondary wide" onClick={() => {
-        if (!window.confirm('确定关闭账户 TOTP？现有账户恢复码也会失效。')) return
-        void api.DisableSyncTOTP(password, totpCode)
-          .then(() => setStatus('账户 TOTP 已关闭。'))
-          .catch(error => setStatus(String(error)))
-      }}>关闭 TOTP</button>}
       {totpSetup && <>
         <label>验证器密钥<input readOnly value={totpSetup.secret} /></label>
         <label>六位验证码<input inputMode="numeric" value={totpCode}
@@ -1086,8 +985,25 @@ function SyncDialog({ value, settings, onClose, onConfigured }: {
       {!!accountRecoveryCodes.length && <label>账号恢复码<textarea readOnly rows={6}
         value={accountRecoveryCodes.join('\n')} /></label>}
     </details>
-    {currentRecoveryCode && <label>恢复码<textarea readOnly rows={3} value={currentRecoveryCode} /></label>}
-    {status && <div className="sync-status">{status}</div>}
+    <details className="pairing-approval">
+      <summary>登录状态</summary>
+      <small className="hint full">
+        {loggedIn ? '账号已登录，TOTP、设备列表和撤销入口可用。' : '未登录时仍可填写服务端地址、账号和密码进行登录。'}
+      </small>
+    </details>
+    {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
+  </Modal>
+}
+
+function NoticeDialog({ title, message, onClose }: {
+  title: string; message: string; onClose: () => void
+}) {
+  return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+    <section className="modal notice-modal">
+      <header><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></header>
+      <div className="notice-body">{message}</div>
+      <footer className="modal-actions"><button className="primary" onClick={onClose}>确定</button></footer>
+    </section>
   </div>
 }
 

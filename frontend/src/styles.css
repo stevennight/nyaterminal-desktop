@@ -26,6 +26,7 @@ button { color: inherit; }
 .brand-row { display: flex; align-items: center; gap: 11px; height: 72px; padding: 0 16px; }
 .brand-row > div:nth-child(2) { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-row small { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.brand-row .icon-button { margin-left: 0; }
 .brand-mark { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: #071210; font-weight: 800; box-shadow: 0 8px 30px #37c9b735; }
 .brand-mark.large { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
 .icon-button { margin-left: auto; background: transparent; border: 0; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--muted); }
@@ -229,6 +230,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .sync-summary span { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .sync-status { margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .sync-button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.sync-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .pairing-card { display: flex; gap: 18px; align-items: center; margin-bottom: 14px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--bg); }
 .pairing-card canvas { width: 150px !important; height: 150px !important; padding: 5px; border-radius: 7px; background: white; image-rendering: pixelated; }
 .pairing-card > div { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }

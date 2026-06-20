@@ -48,13 +48,14 @@ type challengeResponse struct {
 }
 
 type Bootstrap struct {
-	Vault          vault.Status        `json:"vault"`
-	Groups         []model.Group       `json:"groups,omitempty"`
-	Tags           []model.Tag         `json:"tags,omitempty"`
-	Connections    []model.Connection  `json:"connections,omitempty"`
-	Settings       *model.Settings     `json:"settings,omitempty"`
-	SyncConfigured bool                `json:"syncConfigured"`
-	SyncSummary    *syncclient.Summary `json:"syncSummary,omitempty"`
+	Vault          vault.Status               `json:"vault"`
+	Groups         []model.Group              `json:"groups,omitempty"`
+	Tags           []model.Tag                `json:"tags,omitempty"`
+	Connections    []model.Connection         `json:"connections,omitempty"`
+	Settings       *model.Settings            `json:"settings,omitempty"`
+	Account        *syncclient.AccountSummary `json:"account,omitempty"`
+	SyncConfigured bool                       `json:"syncConfigured"`
+	SyncSummary    *syncclient.Summary        `json:"syncSummary,omitempty"`
 }
 
 type TerminalStart struct {
@@ -198,6 +199,9 @@ func (a *App) Bootstrap() (Bootstrap, error) {
 		return Bootstrap{}, err
 	}
 	result.Settings = &settings
+	if account, err := a.sync.AccountSummary(a.context()); err == nil {
+		result.Account = &account
+	}
 	result.SyncConfigured = a.sync.Configured(a.context())
 	if result.SyncConfigured {
 		if summary, err := a.sync.Summary(a.context()); err == nil {
@@ -537,10 +541,6 @@ func (a *App) DownloadFile(
 	return a.sftp.StartDownload(connectionID, remotePath, localPath, true)
 }
 
-func (a *App) InitializeSync(serverURL, username, password, deviceName string) (syncclient.SetupResult, error) {
-	return a.sync.Initialize(a.context(), serverURL, username, password, deviceName)
-}
-
 func (a *App) RecoverSync(
 	serverURL, username, password, totpCode, deviceName, recoveryCode string,
 ) (syncclient.SetupResult, error) {
@@ -553,8 +553,16 @@ func (a *App) RotateSyncRecoveryCode() (string, error) {
 	return a.sync.RotateRecoveryCode(a.context())
 }
 
-func (a *App) LoginSync(serverURL, username, password, deviceID string) error {
-	return a.sync.Login(a.context(), serverURL, username, password, deviceID)
+func (a *App) BootstrapAccount(serverURL, username, password string) (syncclient.TokenPair, error) {
+	return a.sync.BootstrapAccount(a.context(), serverURL, username, password)
+}
+
+func (a *App) LoginAccount(serverURL, username, password, deviceID string) error {
+	return a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID)
+}
+
+func (a *App) LogoutAccount() error {
+	return a.sync.Logout(a.context())
 }
 
 func (a *App) SyncNow(syncSecrets, syncHistory bool) (syncclient.SyncResult, error) {

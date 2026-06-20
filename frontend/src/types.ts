@@ -69,6 +69,7 @@ export type SyncSummary = {
   username?: string
   deviceName?: string
   deviceId?: string
+  loggedIn?: boolean
   autoSyncEnabled: boolean
   lastSyncedAt?: string
   lastAttemptAt?: string
@@ -80,12 +81,23 @@ export type SyncSummary = {
   running: boolean
 }
 
+export type AccountSummary = {
+  loggedIn: boolean
+  serverUrl?: string
+  username?: string
+  deviceName?: string
+  deviceId?: string
+  accessExpiresAt?: string
+  refreshExpiresAt?: string
+}
+
 export type Bootstrap = {
   vault: VaultStatus
   groups?: Group[]
   tags?: Tag[]
   connections?: Connection[]
   settings?: Settings
+  account?: AccountSummary
   syncConfigured: boolean
   syncSummary?: SyncSummary
 }

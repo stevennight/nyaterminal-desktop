@@ -68,14 +68,15 @@ type Backend = {
   DeleteRemote(connectionId: string, remotePath: string, directory: boolean): Promise<void>
   UploadFile(connectionId: string, remotePath: string): Promise<SFTPTransfer>
   DownloadFile(connectionId: string, remotePath: string, suggestedName: string): Promise<SFTPTransfer>
-  InitializeSync(serverUrl: string, username: string, password: string, deviceName: string):
-    Promise<{ deviceId: string; recoveryCode: string }>
+  BootstrapAccount(serverUrl: string, username: string, password: string):
+    Promise<{ accessToken: string; refreshToken: string; accessExpiresAt: string; refreshExpiresAt: string }>
   RecoverSync(
     serverUrl: string, username: string, password: string, totpCode: string,
     deviceName: string, recoveryCode: string
   ): Promise<{ deviceId: string; recoveryCode: string }>
   RotateSyncRecoveryCode(): Promise<string>
-  LoginSync(serverUrl: string, username: string, password: string, deviceId: string): Promise<void>
+  LoginAccount(serverUrl: string, username: string, password: string, deviceId: string): Promise<void>
+  LogoutAccount(): Promise<void>
   SyncNow(syncSecrets: boolean, syncHistory: boolean):
     Promise<{ pushed: number; pulled: number; conflicts: number; cursor: number }>
   BeginDevicePairing(serverUrl: string, deviceName: string): Promise<{

@@ -15,17 +15,18 @@ import (
 )
 
 const (
-	TypeGroup       = "group"
-	TypeConnection  = "connection"
-	TypeCredential  = "credential"
-	TypeTag         = "tag"
-	TypeSettings    = "settings"
-	TypeHistory     = "command_history"
-	TypeHostTrust   = "host_trust"
-	TypeSyncProfile = "sync_profile"
-	TypeSyncState   = "sync_state"
-	TypePairing     = "sync_pairing"
-	TypeDeletion    = "sync_deletion"
+	TypeGroup          = "group"
+	TypeConnection     = "connection"
+	TypeCredential     = "credential"
+	TypeTag            = "tag"
+	TypeSettings       = "settings"
+	TypeHistory        = "command_history"
+	TypeHostTrust      = "host_trust"
+	TypeAccountSession = "account_session"
+	TypeSyncProfile    = "sync_profile"
+	TypeSyncState      = "sync_state"
+	TypePairing        = "sync_pairing"
+	TypeDeletion       = "sync_deletion"
 )
 
 type Store struct {

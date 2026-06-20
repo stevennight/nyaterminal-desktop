@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	accountID = "account:session"
 	profileID = "sync:profile"
 	stateID   = "sync:state"
 	pairingID = "sync:pending-pairing"
@@ -37,20 +38,35 @@ type Client struct {
 }
 
 type Profile struct {
-	ServerURL          string    `json:"serverUrl"`
-	Username           string    `json:"username"`
-	DeviceID           string    `json:"deviceId"`
-	DeviceName         string    `json:"deviceName"`
-	AutoSyncEnabled    *bool     `json:"autoSyncEnabled,omitempty"`
-	ExchangePrivateKey []byte    `json:"exchangePrivateKey"`
-	ExchangePublicKey  []byte    `json:"exchangePublicKey"`
-	SigningPrivateKey  []byte    `json:"signingPrivateKey"`
-	SigningPublicKey   []byte    `json:"signingPublicKey"`
-	SyncRootKey        []byte    `json:"syncRootKey"`
-	AccessToken        string    `json:"accessToken"`
-	RefreshToken       string    `json:"refreshToken"`
-	AccessExpiresAt    time.Time `json:"accessExpiresAt"`
-	RefreshExpiresAt   time.Time `json:"refreshExpiresAt"`
+	ServerURL          string `json:"serverUrl"`
+	Username           string `json:"username"`
+	DeviceID           string `json:"deviceId"`
+	DeviceName         string `json:"deviceName"`
+	AutoSyncEnabled    *bool  `json:"autoSyncEnabled,omitempty"`
+	ExchangePrivateKey []byte `json:"exchangePrivateKey"`
+	ExchangePublicKey  []byte `json:"exchangePublicKey"`
+	SigningPrivateKey  []byte `json:"signingPrivateKey"`
+	SigningPublicKey   []byte `json:"signingPublicKey"`
+	SyncRootKey        []byte `json:"syncRootKey"`
+}
+
+type AccountSession struct {
+	ServerURL        string    `json:"serverUrl,omitempty"`
+	Username         string    `json:"username,omitempty"`
+	DeviceID         string    `json:"deviceId"`
+	DeviceName       string    `json:"deviceName"`
+	AccessToken      string    `json:"accessToken,omitempty"`
+	RefreshToken     string    `json:"refreshToken,omitempty"`
+	AccessExpiresAt  time.Time `json:"accessExpiresAt,omitempty"`
+	RefreshExpiresAt time.Time `json:"refreshExpiresAt,omitempty"`
+}
+
+type legacyProfile struct {
+	Profile
+	AccessToken      string    `json:"accessToken"`
+	RefreshToken     string    `json:"refreshToken"`
+	AccessExpiresAt  time.Time `json:"accessExpiresAt"`
+	RefreshExpiresAt time.Time `json:"refreshExpiresAt"`
 }
 
 type State struct {
@@ -119,6 +135,7 @@ type Summary struct {
 	Username        string    `json:"username,omitempty"`
 	DeviceName      string    `json:"deviceName,omitempty"`
 	DeviceID        string    `json:"deviceId,omitempty"`
+	LoggedIn        bool      `json:"loggedIn"`
 	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
 	LastSyncedAt    time.Time `json:"lastSyncedAt,omitempty"`
 	LastAttemptAt   time.Time `json:"lastAttemptAt,omitempty"`
@@ -128,6 +145,16 @@ type Summary struct {
 	LastConflicts   int       `json:"lastConflicts,omitempty"`
 	LastError       string    `json:"lastError,omitempty"`
 	Running         bool      `json:"running"`
+}
+
+type AccountSummary struct {
+	LoggedIn         bool      `json:"loggedIn"`
+	ServerURL        string    `json:"serverUrl,omitempty"`
+	Username         string    `json:"username,omitempty"`
+	DeviceID         string    `json:"deviceId"`
+	DeviceName       string    `json:"deviceName"`
+	AccessExpiresAt  time.Time `json:"accessExpiresAt,omitempty"`
+	RefreshExpiresAt time.Time `json:"refreshExpiresAt,omitempty"`
 }
 
 type PairingStart struct {
@@ -206,66 +233,18 @@ func New(v *vault.Vault) *Client {
 	}
 }
 
-func (c *Client) Initialize(ctx context.Context, serverURL, username, password, deviceName string) (SetupResult, error) {
+func (c *Client) BootstrapAccount(ctx context.Context, serverURL, username, password string) (TokenPair, error) {
 	serverURL, err := validateServerURL(serverURL)
 	if err != nil {
-		return SetupResult{}, err
+		return TokenPair{}, err
 	}
-	if strings.TrimSpace(deviceName) == "" {
-		return SetupResult{}, errors.New("device name is required")
+	var response TokenPair
+	if err := c.request(ctx, http.MethodPost, serverURL+"/api/v1/auth/bootstrap", "", map[string]any{
+		"username": username, "password": password,
+	}, &response); err != nil {
+		return TokenPair{}, err
 	}
-	exchangePrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return SetupResult{}, err
-	}
-	signingPublic, signingPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return SetupResult{}, err
-	}
-	syncRootKey := make([]byte, chacha20poly1305.KeySize)
-	if _, err := rand.Read(syncRootKey); err != nil {
-		return SetupResult{}, err
-	}
-	request := map[string]any{
-		"username": username, "password": password, "deviceName": deviceName,
-		"exchangePublicKey": exchangePrivate.PublicKey().Bytes(),
-		"signingPublicKey":  signingPublic,
-	}
-	var response struct {
-		DeviceID string    `json:"deviceId"`
-		Tokens   tokenPair `json:"tokens"`
-	}
-	if err := c.request(ctx, http.MethodPost, serverURL+"/api/v1/auth/initialize", "", request, &response); err != nil {
-		return SetupResult{}, err
-	}
-	profile := Profile{
-		ServerURL: serverURL, Username: username, DeviceID: response.DeviceID,
-		DeviceName: deviceName, AutoSyncEnabled: boolPtr(true),
-		ExchangePrivateKey: exchangePrivate.Bytes(),
-		ExchangePublicKey:  exchangePrivate.PublicKey().Bytes(),
-		SigningPrivateKey:  signingPrivate, SigningPublicKey: signingPublic,
-		SyncRootKey: syncRootKey, AccessToken: response.Tokens.AccessToken,
-		RefreshToken:     response.Tokens.RefreshToken,
-		AccessExpiresAt:  response.Tokens.AccessExpiresAt,
-		RefreshExpiresAt: response.Tokens.RefreshExpiresAt,
-	}
-	if err := c.vault.Put(ctx, store.TypeSyncProfile, profileID, profile); err != nil {
-		return SetupResult{}, err
-	}
-	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
-		return SetupResult{}, err
-	}
-	recoveryCode, bundle, err := createRecoveryBundle(syncRootKey, 1)
-	if err != nil {
-		return SetupResult{}, err
-	}
-	if err := c.authorizedRequest(ctx, &profile, http.MethodPut, "/api/v1/recovery", bundle, nil); err != nil {
-		return SetupResult{}, err
-	}
-	if err := c.saveProfile(ctx, profile); err != nil {
-		return SetupResult{}, err
-	}
-	return SetupResult{DeviceID: profile.DeviceID, RecoveryCode: recoveryCode}, nil
+	return response, nil
 }
 
 func (c *Client) Recover(
@@ -284,7 +263,7 @@ func (c *Client) Recover(
 		Salt       []byte `json:"salt"`
 	}
 	if err := c.request(
-		ctx, http.MethodGet, serverURL+"/api/v1/recovery/challenge", "",
+		ctx, http.MethodGet, serverURL+"/api/v1/sync/recovery/challenge", "",
 		nil, &challenge,
 	); err != nil {
 		return SetupResult{}, err
@@ -305,11 +284,11 @@ func (c *Client) Recover(
 	}
 	var response struct {
 		DeviceID string         `json:"deviceId"`
-		Tokens   tokenPair      `json:"tokens"`
+		Tokens   TokenPair      `json:"tokens"`
 		Bundle   recoveryBundle `json:"bundle"`
 	}
 	if err := c.request(
-		ctx, http.MethodPost, serverURL+"/api/v1/recovery/restore", "",
+		ctx, http.MethodPost, serverURL+"/api/v1/sync/recovery/restore", "",
 		map[string]any{
 			"username": username, "password": password, "totpCode": totpCode,
 			"deviceName":        deviceName,
@@ -341,11 +320,18 @@ func (c *Client) Recover(
 		ExchangePublicKey:  exchangePrivate.PublicKey().Bytes(),
 		SigningPrivateKey:  signingPrivate, SigningPublicKey: signingPublic,
 		SyncRootKey: append([]byte(nil), syncRootKey...),
-		AccessToken: response.Tokens.AccessToken, RefreshToken: response.Tokens.RefreshToken,
+	}
+	session := AccountSession{
+		ServerURL: serverURL, Username: username, DeviceID: response.DeviceID,
+		DeviceName: deviceName, AccessToken: response.Tokens.AccessToken,
+		RefreshToken:     response.Tokens.RefreshToken,
 		AccessExpiresAt:  response.Tokens.AccessExpiresAt,
 		RefreshExpiresAt: response.Tokens.RefreshExpiresAt,
 	}
 	if err := c.saveProfile(ctx, profile); err != nil {
+		return SetupResult{}, err
+	}
+	if err := c.saveAccountSession(ctx, session); err != nil {
 		return SetupResult{}, err
 	}
 	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{
@@ -357,13 +343,13 @@ func (c *Client) Recover(
 }
 
 func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
-	profile, _, err := c.load(ctx)
+	profile, session, _, err := c.load(ctx)
 	if err != nil {
 		return "", err
 	}
 	var current recoveryBundle
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodGet, "/api/v1/recovery", nil, &current,
+		ctx, &session, http.MethodGet, "/api/v1/sync/recovery", nil, &current,
 	); err != nil {
 		return "", err
 	}
@@ -372,7 +358,7 @@ func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodPut, "/api/v1/recovery", bundle, nil,
+		ctx, &session, http.MethodPut, "/api/v1/sync/recovery", bundle, nil,
 	); err != nil {
 		return "", err
 	}
@@ -387,25 +373,19 @@ func (c *Client) Login(ctx context.Context, serverURL, username, password, devic
 	if err != nil {
 		return err
 	}
-	var profile Profile
-	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err != nil {
-		return errors.New("this device has not been paired")
-	}
-	var tokens tokenPair
+	var tokens TokenPair
 	err = c.request(ctx, http.MethodPost, serverURL+"/api/v1/auth/login", "", map[string]any{
 		"username": username, "password": password, "deviceId": deviceID,
 	}, &tokens)
 	if err != nil {
 		return err
 	}
-	profile.ServerURL = serverURL
-	profile.Username = username
-	profile.DeviceID = deviceID
-	profile.AccessToken = tokens.AccessToken
-	profile.RefreshToken = tokens.RefreshToken
-	profile.AccessExpiresAt = tokens.AccessExpiresAt
-	profile.RefreshExpiresAt = tokens.RefreshExpiresAt
-	return c.saveProfile(ctx, profile)
+	session := AccountSession{
+		ServerURL: serverURL, Username: username, DeviceID: deviceID,
+		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
+		AccessExpiresAt: tokens.AccessExpiresAt, RefreshExpiresAt: tokens.RefreshExpiresAt,
+	}
+	return c.saveAccountSession(ctx, session)
 }
 
 func (c *Client) BeginPairing(
@@ -434,7 +414,7 @@ func (c *Client) BeginPairing(
 		QRPayload  string    `json:"qrPayload"`
 		ExpiresAt  time.Time `json:"expiresAt"`
 	}
-	err = c.request(ctx, http.MethodPost, serverURL+"/api/v1/devices/pairing", "", map[string]any{
+	err = c.request(ctx, http.MethodPost, serverURL+"/api/v1/account/devices/pairing", "", map[string]any{
 		"name": deviceName, "exchangePublicKey": exchangePrivate.PublicKey().Bytes(),
 		"signingPublicKey": signingPublic,
 	}, &response)
@@ -459,8 +439,12 @@ func (c *Client) BeginPairing(
 	}, nil
 }
 
+func (c *Client) LoginAccount(ctx context.Context, serverURL, username, password, deviceID string) error {
+	return c.Login(ctx, serverURL, username, password, deviceID)
+}
+
 func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
-	profile, _, err := c.load(ctx)
+	profile, session, _, err := c.load(ctx)
 	if err != nil {
 		return err
 	}
@@ -474,7 +458,7 @@ func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
 	}
 	var remote pairingQR
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodGet, "/api/v1/devices/pairing/"+url.PathEscape(qr.PairingID),
+		ctx, &session, http.MethodGet, "/api/v1/account/devices/pairing/"+url.PathEscape(qr.PairingID),
 		nil, &remote,
 	); err != nil {
 		return err
@@ -522,8 +506,8 @@ func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
 	)
 	signature := ed25519.Sign(ed25519.PrivateKey(profile.SigningPrivateKey), message)
 	err = c.authorizedRequest(
-		ctx, &profile, http.MethodPost,
-		"/api/v1/devices/pairing/"+url.PathEscape(qr.PairingID)+"/approve",
+		ctx, &session, http.MethodPost,
+		"/api/v1/account/devices/pairing/"+url.PathEscape(qr.PairingID)+"/approve",
 		map[string]any{"nonce": nonce, "ciphertext": ciphertext, "signature": signature}, nil,
 	)
 	if err != nil {
@@ -554,7 +538,7 @@ func (c *Client) ClaimPairing(
 	}
 	err := c.request(
 		ctx, http.MethodPost,
-		pending.ServerURL+"/api/v1/devices/pairing/"+url.PathEscape(pending.PairingID)+"/claim",
+		pending.ServerURL+"/api/v1/account/devices/pairing/"+url.PathEscape(pending.PairingID)+"/claim",
 		"", map[string]string{"claimToken": pending.ClaimToken}, &response,
 	)
 	if err != nil {
@@ -608,7 +592,7 @@ func (c *Client) ClaimPairing(
 		time.Since(contents.IssuedAt) > 15*time.Minute {
 		return PairingClaim{}, errors.New("pairing package contents are invalid")
 	}
-	var tokens tokenPair
+	var tokens TokenPair
 	if err := c.request(ctx, http.MethodPost, pending.ServerURL+"/api/v1/auth/login", "", map[string]any{
 		"username": username, "password": password, "deviceId": pending.DeviceID,
 		"totpCode": totpCode,
@@ -623,10 +607,17 @@ func (c *Client) ClaimPairing(
 		SigningPrivateKey:  pending.SigningPrivateKey,
 		SigningPublicKey:   pending.SigningPublicKey,
 		SyncRootKey:        append([]byte(nil), contents.SyncRootKey...),
-		AccessToken:        tokens.AccessToken, RefreshToken: tokens.RefreshToken,
+	}
+	session := AccountSession{
+		ServerURL: pending.ServerURL, Username: username,
+		DeviceID: pending.DeviceID, DeviceName: pending.DeviceName,
+		AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken,
 		AccessExpiresAt: tokens.AccessExpiresAt, RefreshExpiresAt: tokens.RefreshExpiresAt,
 	}
 	if err := c.saveProfile(ctx, profile); err != nil {
+		return PairingClaim{}, err
+	}
+	if err := c.saveAccountSession(ctx, session); err != nil {
 		return PairingClaim{}, err
 	}
 	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
@@ -639,7 +630,7 @@ func (c *Client) ClaimPairing(
 }
 
 func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
-	profile, _, err := c.load(ctx)
+	_, session, _, err := c.load(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -647,42 +638,36 @@ func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 		Devices []Device `json:"devices"`
 	}
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodGet, "/api/v1/devices", nil, &response,
+		ctx, &session, http.MethodGet, "/api/v1/account/devices", nil, &response,
 	); err != nil {
-		return nil, err
-	}
-	if err := c.saveProfile(ctx, profile); err != nil {
 		return nil, err
 	}
 	return response.Devices, nil
 }
 
 func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
-	profile, _, err := c.load(ctx)
+	_, session, _, err := c.load(ctx)
 	if err != nil {
 		return err
 	}
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodDelete,
-		"/api/v1/devices/"+url.PathEscape(deviceID), nil, nil,
+		ctx, &session, http.MethodDelete,
+		"/api/v1/account/devices/"+url.PathEscape(deviceID), nil, nil,
 	); err != nil {
 		return err
 	}
-	return c.saveProfile(ctx, profile)
+	return nil
 }
 
 func (c *Client) BeginTOTPSetup(ctx context.Context) (TOTPSetup, error) {
-	profile, _, err := c.load(ctx)
+	_, session, _, err := c.load(ctx)
 	if err != nil {
 		return TOTPSetup{}, err
 	}
 	var setup TOTPSetup
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodPost, "/api/v1/auth/totp/setup", map[string]any{}, &setup,
+		ctx, &session, http.MethodPost, "/api/v1/account/totp/setup", map[string]any{}, &setup,
 	); err != nil {
-		return TOTPSetup{}, err
-	}
-	if err := c.saveProfile(ctx, profile); err != nil {
 		return TOTPSetup{}, err
 	}
 	return setup, nil
@@ -691,7 +676,7 @@ func (c *Client) BeginTOTPSetup(ctx context.Context) (TOTPSetup, error) {
 func (c *Client) ConfirmTOTPSetup(
 	ctx context.Context, setupToken, code string,
 ) ([]string, error) {
-	profile, _, err := c.load(ctx)
+	_, session, _, err := c.load(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -699,33 +684,30 @@ func (c *Client) ConfirmTOTPSetup(
 		RecoveryCodes []string `json:"recoveryCodes"`
 	}
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodPost, "/api/v1/auth/totp/confirm",
+		ctx, &session, http.MethodPost, "/api/v1/account/totp/confirm",
 		map[string]string{"setupToken": setupToken, "code": code}, &response,
 	); err != nil {
-		return nil, err
-	}
-	if err := c.saveProfile(ctx, profile); err != nil {
 		return nil, err
 	}
 	return response.RecoveryCodes, nil
 }
 
 func (c *Client) DisableTOTP(ctx context.Context, password, code string) error {
-	profile, _, err := c.load(ctx)
+	_, session, _, err := c.load(ctx)
 	if err != nil {
 		return err
 	}
 	if err := c.authorizedRequest(
-		ctx, &profile, http.MethodDelete, "/api/v1/auth/totp",
+		ctx, &session, http.MethodDelete, "/api/v1/account/totp",
 		map[string]string{"password": password, "code": code}, nil,
 	); err != nil {
 		return err
 	}
-	return c.saveProfile(ctx, profile)
+	return nil
 }
 
 func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (result SyncResult, err error) {
-	profile, state, err := c.load(ctx)
+	profile, session, state, err := c.load(ctx)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -750,6 +732,9 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 			err = putErr
 		}
 		if saveErr := c.saveProfile(ctx, profile); saveErr != nil && err == nil {
+			err = saveErr
+		}
+		if saveErr := c.saveAccountSession(ctx, session); saveErr != nil && err == nil {
 			err = saveErr
 		}
 	}()
@@ -850,7 +835,7 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 		pushedDeletions = append(pushedDeletions, deletion.ID)
 	}
 	if len(outgoing) > 0 {
-		if err := c.authorizedRequest(ctx, &profile, http.MethodPost, "/api/v1/sync/push",
+		if err := c.authorizedRequest(ctx, &session, http.MethodPost, "/api/v1/sync/push",
 			map[string]any{"records": outgoing}, nil); err != nil {
 			return SyncResult{}, err
 		}
@@ -861,7 +846,7 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 		}
 	}
 	pulled, next, conflicts, err := c.pull(
-		ctx, &profile, &state, allowed, syncSecrets, credentialOverrides,
+		ctx, &session, profile.SyncRootKey, &state, allowed, syncSecrets, credentialOverrides,
 	)
 	if err != nil {
 		return SyncResult{}, err
@@ -892,7 +877,7 @@ func (c *Client) AutoSyncEnabled(ctx context.Context) bool {
 }
 
 func (c *Client) Summary(ctx context.Context) (Summary, error) {
-	profile, state, err := c.load(ctx)
+	profile, session, state, err := c.load(ctx)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -906,6 +891,7 @@ func (c *Client) Summary(ctx context.Context) (Summary, error) {
 		Username:        profile.Username,
 		DeviceName:      profile.DeviceName,
 		DeviceID:        profile.DeviceID,
+		LoggedIn:        session.AccessToken != "" && session.RefreshToken != "",
 		AutoSyncEnabled: autoSyncEnabled,
 		LastSyncedAt:    state.LastSyncedAt,
 		LastAttemptAt:   state.Sync.LastAttemptAt,
@@ -918,8 +904,57 @@ func (c *Client) Summary(ctx context.Context) (Summary, error) {
 	}, nil
 }
 
+func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
+	var session AccountSession
+	if err := c.vault.Get(ctx, store.TypeAccountSession, accountID, &session); err == nil {
+		return AccountSummary{
+			LoggedIn:         session.AccessToken != "" && session.RefreshToken != "",
+			ServerURL:        session.ServerURL,
+			Username:         session.Username,
+			DeviceID:         session.DeviceID,
+			DeviceName:       session.DeviceName,
+			AccessExpiresAt:  session.AccessExpiresAt,
+			RefreshExpiresAt: session.RefreshExpiresAt,
+		}, nil
+	}
+	var profile Profile
+	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err == nil {
+		return AccountSummary{
+			LoggedIn:   false,
+			ServerURL:  profile.ServerURL,
+			Username:   profile.Username,
+			DeviceID:   profile.DeviceID,
+			DeviceName: profile.DeviceName,
+		}, nil
+	}
+	return AccountSummary{}, nil
+}
+
+func (c *Client) SetDeviceName(ctx context.Context, deviceName string) error {
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return err
+	}
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		return errors.New("device name is required")
+	}
+	session.DeviceName = deviceName
+	if err := c.saveAccountSession(ctx, session); err != nil {
+		return err
+	}
+	var profile Profile
+	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err == nil {
+		profile.DeviceName = deviceName
+		if err := c.saveProfile(ctx, profile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Client) SetAutoSyncEnabled(ctx context.Context, enabled bool) error {
-	profile, _, err := c.load(ctx)
+	profile, _, _, err := c.load(ctx)
 	if err != nil {
 		return err
 	}
@@ -927,9 +962,25 @@ func (c *Client) SetAutoSyncEnabled(ctx context.Context, enabled bool) error {
 	return c.saveProfile(ctx, profile)
 }
 
+func (c *Client) Logout(ctx context.Context) error {
+	_, session, _, err := c.load(ctx)
+	if err != nil {
+		return err
+	}
+	if session.AccessToken != "" && session.ServerURL != "" {
+		_ = c.request(ctx, http.MethodPost, session.ServerURL+"/api/v1/auth/logout", session.AccessToken, nil, nil)
+	}
+	session.AccessToken = ""
+	session.RefreshToken = ""
+	session.AccessExpiresAt = time.Time{}
+	session.RefreshExpiresAt = time.Time{}
+	return c.saveAccountSession(ctx, session)
+}
+
 func (c *Client) pull(
 	ctx context.Context,
-	profile *Profile,
+	session *AccountSession,
+	syncRootKey []byte,
 	state *State,
 	allowed map[string]bool,
 	syncSecrets bool,
@@ -940,7 +991,7 @@ func (c *Client) pull(
 		Next    int64          `json:"next"`
 	}
 	path := fmt.Sprintf("/api/v1/sync/pull?after=%d&limit=1000", state.Cursor)
-	if err := c.authorizedRequest(ctx, profile, http.MethodGet, path, nil, &response); err != nil {
+	if err := c.authorizedRequest(ctx, session, http.MethodGet, path, nil, &response); err != nil {
 		return 0, state.Cursor, 0, err
 	}
 	local, err := c.vault.ExportRecords(ctx, allowed)
@@ -978,7 +1029,7 @@ func (c *Client) pull(
 		if relation == vectorEqual || relation == vectorAfter {
 			continue
 		}
-		plain, err := open(profile.SyncRootKey, record.Nonce, record.Ciphertext,
+		plain, err := open(syncRootKey, record.Nonce, record.Ciphertext,
 			syncRecordAAD(
 				record.EntityType, record.EntityID, record.Version, record.VersionVector,
 			))
@@ -1303,29 +1354,32 @@ func mergeJSONFields(
 	return merged, fields, err
 }
 
-type tokenPair struct {
+type TokenPair struct {
 	AccessToken      string    `json:"accessToken"`
 	RefreshToken     string    `json:"refreshToken"`
 	AccessExpiresAt  time.Time `json:"accessExpiresAt"`
 	RefreshExpiresAt time.Time `json:"refreshExpiresAt"`
 }
 
-func (c *Client) authorizedRequest(ctx context.Context, profile *Profile, method, path string, request, response any) error {
-	if time.Until(profile.AccessExpiresAt) < time.Minute {
-		var tokens tokenPair
-		if err := c.request(ctx, http.MethodPost, profile.ServerURL+"/api/v1/auth/refresh", "",
-			map[string]string{"refreshToken": profile.RefreshToken}, &tokens); err != nil {
+func (c *Client) authorizedRequest(ctx context.Context, session *AccountSession, method, path string, request, response any) error {
+	if session.AccessToken == "" || session.RefreshToken == "" {
+		return errors.New("synchronization requires login")
+	}
+	if time.Until(session.AccessExpiresAt) < time.Minute {
+		var tokens TokenPair
+		if err := c.request(ctx, http.MethodPost, session.ServerURL+"/api/v1/auth/refresh", "",
+			map[string]string{"refreshToken": session.RefreshToken}, &tokens); err != nil {
 			return err
 		}
-		profile.AccessToken = tokens.AccessToken
-		profile.RefreshToken = tokens.RefreshToken
-		profile.AccessExpiresAt = tokens.AccessExpiresAt
-		profile.RefreshExpiresAt = tokens.RefreshExpiresAt
-		if err := c.saveProfile(ctx, *profile); err != nil {
+		session.AccessToken = tokens.AccessToken
+		session.RefreshToken = tokens.RefreshToken
+		session.AccessExpiresAt = tokens.AccessExpiresAt
+		session.RefreshExpiresAt = tokens.RefreshExpiresAt
+		if err := c.saveAccountSession(ctx, *session); err != nil {
 			return err
 		}
 	}
-	return c.request(ctx, method, profile.ServerURL+path, profile.AccessToken, request, response)
+	return c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
 }
 
 func (c *Client) request(ctx context.Context, method, endpoint, token string, request, response any) error {
@@ -1373,10 +1427,14 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 	return json.NewDecoder(io.LimitReader(httpResponse.Body, 8<<20)).Decode(response)
 }
 
-func (c *Client) load(ctx context.Context) (Profile, State, error) {
+func (c *Client) load(ctx context.Context) (Profile, AccountSession, State, error) {
 	var profile Profile
 	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err != nil {
-		return Profile{}, State{}, errors.New("synchronization is not configured")
+		return Profile{}, AccountSession{}, State{}, errors.New("synchronization is not configured")
+	}
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return Profile{}, AccountSession{}, State{}, err
 	}
 	var state State
 	if err := c.vault.Get(ctx, store.TypeSyncState, stateID, &state); err != nil {
@@ -1388,11 +1446,37 @@ func (c *Client) load(ctx context.Context) (Profile, State, error) {
 	if state.Deferred == nil {
 		state.Deferred = map[string]serverRecord{}
 	}
-	return profile, state, nil
+	return profile, session, state, nil
 }
 
 func (c *Client) saveProfile(ctx context.Context, profile Profile) error {
 	return c.vault.Put(ctx, store.TypeSyncProfile, profileID, profile)
+}
+
+func (c *Client) loadAccountSession(ctx context.Context) (AccountSession, error) {
+	var session AccountSession
+	if err := c.vault.Get(ctx, store.TypeAccountSession, accountID, &session); err == nil {
+		return session, nil
+	}
+	var legacy legacyProfile
+	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &legacy); err == nil &&
+		(legacy.AccessToken != "" || legacy.RefreshToken != "") {
+		session = AccountSession{
+			ServerURL: legacy.ServerURL, Username: legacy.Username, DeviceID: legacy.DeviceID,
+			DeviceName: legacy.DeviceName, AccessToken: legacy.AccessToken,
+			RefreshToken: legacy.RefreshToken, AccessExpiresAt: legacy.AccessExpiresAt,
+			RefreshExpiresAt: legacy.RefreshExpiresAt,
+		}
+		if err := c.saveAccountSession(ctx, session); err != nil {
+			return AccountSession{}, err
+		}
+		return session, nil
+	}
+	return AccountSession{}, nil
+}
+
+func (c *Client) saveAccountSession(ctx context.Context, session AccountSession) error {
+	return c.vault.Put(ctx, store.TypeAccountSession, accountID, session)
 }
 
 func createRecoveryBundle(syncRootKey []byte, generation int64) (string, map[string]any, error) {

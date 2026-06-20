@@ -142,7 +142,7 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/auth/refresh":
-			_ = json.NewEncoder(w).Encode(tokenPair{
+			_ = json.NewEncoder(w).Encode(TokenPair{
 				AccessToken: "new-access", RefreshToken: "new-refresh",
 				AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
 				RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
@@ -172,24 +172,30 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	client := New(v)
 	profile := Profile{
 		ServerURL: server.URL, DeviceID: "device-a", DeviceName: "test",
-		SyncRootKey: make([]byte, 32), AccessToken: "old-access",
-		RefreshToken:     "old-refresh",
+		SyncRootKey: make([]byte, 32),
+	}
+	session := AccountSession{
+		ServerURL: server.URL, DeviceID: "device-a", DeviceName: "test",
+		AccessToken: "old-access", RefreshToken: "old-refresh",
 		AccessExpiresAt:  time.Now().UTC().Add(-time.Minute),
 		RefreshExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := client.saveProfile(ctx, profile); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
 	if err := v.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.authorizedRequest(ctx, &profile, http.MethodGet, "/ok", nil, nil); err != nil {
+	if err := client.authorizedRequest(ctx, &session, http.MethodGet, "/ok", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !sawNewAccess {
 		t.Fatal("authorized request did not use refreshed access token")
 	}
-	loaded, _, err := client.load(ctx)
+	loaded, err := client.loadAccountSession(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
