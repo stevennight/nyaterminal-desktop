@@ -171,11 +171,11 @@ type AccountSummary struct {
 }
 
 type PairingStart struct {
-	PairingID string    `json:"pairingId"`
-	DeviceID  string    `json:"deviceId"`
-	ShortCode string    `json:"shortCode"`
-	QRPayload string    `json:"qrPayload"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	PairingID    string    `json:"pairingId"`
+	DeviceID     string    `json:"deviceId"`
+	ShortCode    string    `json:"shortCode"`
+	ApprovalCode string    `json:"approvalCode"`
+	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
 type PairingClaim struct {
@@ -205,7 +205,7 @@ type pendingPairing struct {
 	PairingID          string    `json:"pairingId"`
 	ClaimToken         string    `json:"claimToken"`
 	ShortCode          string    `json:"shortCode"`
-	QRPayload          string    `json:"qrPayload"`
+	ApprovalCode       string    `json:"approvalCode"`
 	ExpiresAt          time.Time `json:"expiresAt"`
 	ExchangePrivateKey []byte    `json:"exchangePrivateKey"`
 	ExchangePublicKey  []byte    `json:"exchangePublicKey"`
@@ -213,7 +213,7 @@ type pendingPairing struct {
 	SigningPublicKey   []byte    `json:"signingPublicKey"`
 }
 
-type pairingQR struct {
+type pairingApprovalCode struct {
 	Version           int    `json:"version"`
 	ServerURL         string `json:"serverUrl"`
 	PairingID         string `json:"pairingId"`
@@ -460,7 +460,7 @@ func (c *Client) ResetSync(
 	return c.clearSyncConfiguration(ctx)
 }
 
-func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
+func (c *Client) RotateRecoveryCode(ctx context.Context, password, totpCode string) (string, error) {
 	profile, session, _, err := c.load(ctx)
 	if err != nil {
 		return "", err
@@ -476,7 +476,15 @@ func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if err := c.authorizedRequest(
-		ctx, &session, http.MethodPut, "/api/v1/sync/recovery", bundle, nil,
+		ctx, &session, http.MethodPost, "/api/v1/sync/recovery/rotate", map[string]any{
+			"password":   password,
+			"totpCode":   strings.TrimSpace(totpCode),
+			"generation": bundle["generation"],
+			"salt":       bundle["salt"],
+			"nonce":      bundle["nonce"],
+			"ciphertext": bundle["ciphertext"],
+			"verifier":   bundle["verifier"],
+		}, nil,
 	); err != nil {
 		return "", err
 	}
@@ -528,12 +536,12 @@ func (c *Client) BeginPairing(
 		return PairingStart{}, err
 	}
 	var response struct {
-		PairingID  string    `json:"pairingId"`
-		DeviceID   string    `json:"deviceId"`
-		ClaimToken string    `json:"claimToken"`
-		ShortCode  string    `json:"shortCode"`
-		QRPayload  string    `json:"qrPayload"`
-		ExpiresAt  time.Time `json:"expiresAt"`
+		PairingID    string    `json:"pairingId"`
+		DeviceID     string    `json:"deviceId"`
+		ClaimToken   string    `json:"claimToken"`
+		ShortCode    string    `json:"shortCode"`
+		ApprovalCode string    `json:"approvalCode"`
+		ExpiresAt    time.Time `json:"expiresAt"`
 	}
 	err = c.request(ctx, http.MethodPost, serverURL+"/api/v1/account/devices/pairing", "", map[string]any{
 		"name": deviceName, "exchangePublicKey": exchangePrivate.PublicKey().Bytes(),
@@ -545,7 +553,7 @@ func (c *Client) BeginPairing(
 	pending := pendingPairing{
 		ServerURL: serverURL, DeviceID: response.DeviceID, DeviceName: deviceName,
 		PairingID: response.PairingID, ClaimToken: response.ClaimToken,
-		ShortCode: response.ShortCode, QRPayload: response.QRPayload,
+		ShortCode: response.ShortCode, ApprovalCode: response.ApprovalCode,
 		ExpiresAt: response.ExpiresAt, ExchangePrivateKey: exchangePrivate.Bytes(),
 		ExchangePublicKey: exchangePrivate.PublicKey().Bytes(),
 		SigningPrivateKey: signingPrivate, SigningPublicKey: signingPublic,
@@ -555,7 +563,7 @@ func (c *Client) BeginPairing(
 	}
 	return PairingStart{
 		PairingID: response.PairingID, DeviceID: response.DeviceID,
-		ShortCode: response.ShortCode, QRPayload: response.QRPayload,
+		ShortCode: response.ShortCode, ApprovalCode: response.ApprovalCode,
 		ExpiresAt: response.ExpiresAt,
 	}, nil
 }
@@ -566,37 +574,42 @@ func (c *Client) LoginAccount(
 	return c.Login(ctx, serverURL, username, password, deviceID, secondFactor)
 }
 
-func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
+func (c *Client) ApprovePairing(ctx context.Context, approvalCode string) error {
 	profile, session, _, err := c.load(ctx)
 	if err != nil {
 		return err
 	}
-	var qr pairingQR
-	if err := json.Unmarshal([]byte(qrPayload), &qr); err != nil {
-		return errors.New("invalid pairing QR payload")
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(approvalCode))
+	if err != nil {
+		return errors.New("invalid pairing approval code")
 	}
-	serverURL, err := validateServerURL(qr.ServerURL)
-	if err != nil || serverURL != profile.ServerURL || qr.Version != 1 {
+	defer wipe(decoded)
+	var code pairingApprovalCode
+	if err := json.Unmarshal(decoded, &code); err != nil {
+		return errors.New("invalid pairing approval code")
+	}
+	serverURL, err := validateServerURL(code.ServerURL)
+	if err != nil || serverURL != profile.ServerURL || code.Version != 1 {
 		return errors.New("pairing request belongs to a different server")
 	}
-	var remote pairingQR
+	var remote pairingApprovalCode
 	if err := c.authorizedRequest(
-		ctx, &session, http.MethodGet, "/api/v1/account/devices/pairing/"+url.PathEscape(qr.PairingID),
+		ctx, &session, http.MethodGet, "/api/v1/account/devices/pairing/"+url.PathEscape(code.PairingID),
 		nil, &remote,
 	); err != nil {
 		return err
 	}
-	if remote.PairingID != qr.PairingID || remote.DeviceID != qr.DeviceID ||
-		remote.ShortCode != qr.ShortCode ||
-		!bytes.Equal(remote.ExchangePublicKey, qr.ExchangePublicKey) ||
-		!bytes.Equal(remote.SigningPublicKey, qr.SigningPublicKey) {
-		return errors.New("pairing request changed after QR generation")
+	if remote.PairingID != code.PairingID || remote.DeviceID != code.DeviceID ||
+		remote.ShortCode != code.ShortCode ||
+		!bytes.Equal(remote.ExchangePublicKey, code.ExchangePublicKey) ||
+		!bytes.Equal(remote.SigningPublicKey, code.SigningPublicKey) {
+		return errors.New("pairing request changed after approval code generation")
 	}
 	oldPrivate, err := ecdh.X25519().NewPrivateKey(profile.ExchangePrivateKey)
 	if err != nil {
 		return err
 	}
-	newPublic, err := ecdh.X25519().NewPublicKey(qr.ExchangePublicKey)
+	newPublic, err := ecdh.X25519().NewPublicKey(code.ExchangePublicKey)
 	if err != nil {
 		return err
 	}
@@ -604,7 +617,7 @@ func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
 	if err != nil {
 		return err
 	}
-	packageKey, err := derivePairingKey(shared, qr.PairingID)
+	packageKey, err := derivePairingKey(shared, code.PairingID)
 	wipe(shared)
 	if err != nil {
 		return err
@@ -612,31 +625,45 @@ func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
 	defer wipe(packageKey)
 	plain, err := json.Marshal(map[string]any{
 		"syncRootKey":    profile.SyncRootKey,
-		"targetDeviceId": qr.DeviceID,
+		"targetDeviceId": code.DeviceID,
 		"issuedAt":       time.Now().UTC(),
 	})
 	if err != nil {
 		return err
 	}
 	defer wipe(plain)
-	nonce, ciphertext, err := seal(packageKey, plain, []byte("nyaterminal:pairing-package:v1:"+qr.PairingID))
+	nonce, ciphertext, err := seal(packageKey, plain, []byte("nyaterminal:pairing-package:v1:"+code.PairingID))
 	if err != nil {
 		return err
 	}
 	message := pairingApprovalMessage(
-		qr.PairingID, qr.DeviceID, profile.DeviceID,
+		code.PairingID, code.DeviceID, profile.DeviceID,
 		profile.ExchangePublicKey, nonce, ciphertext,
 	)
 	signature := ed25519.Sign(ed25519.PrivateKey(profile.SigningPrivateKey), message)
 	err = c.authorizedRequest(
 		ctx, &session, http.MethodPost,
-		"/api/v1/account/devices/pairing/"+url.PathEscape(qr.PairingID)+"/approve",
+		"/api/v1/account/devices/pairing/"+url.PathEscape(code.PairingID)+"/approve",
 		map[string]any{"nonce": nonce, "ciphertext": ciphertext, "signature": signature}, nil,
 	)
 	if err != nil {
 		return err
 	}
 	return c.saveProfile(ctx, profile)
+}
+
+func (c *Client) LeaveSync(ctx context.Context, password, totpCode string) error {
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.authorizedRequest(ctx, &session, http.MethodDelete, "/api/v1/sync/device", map[string]string{
+		"password": password,
+		"totpCode": strings.TrimSpace(totpCode),
+	}, nil); err != nil {
+		return err
+	}
+	return c.clearSyncConfiguration(ctx)
 }
 
 func (c *Client) ClaimPairing(

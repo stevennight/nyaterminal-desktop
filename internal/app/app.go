@@ -549,8 +549,8 @@ func (a *App) RecoverSync(
 	)
 }
 
-func (a *App) RotateSyncRecoveryCode() (string, error) {
-	return a.sync.RotateRecoveryCode(a.context())
+func (a *App) RotateSyncRecoveryCode(password, totpCode string) (string, error) {
+	return a.sync.RotateRecoveryCode(a.context(), password, totpCode)
 }
 
 func (a *App) BootstrapAccount(serverURL, username, password string) (syncclient.TokenPair, error) {
@@ -587,8 +587,8 @@ func (a *App) BeginDevicePairing(
 	return a.sync.BeginPairing(a.context(), serverURL, deviceName)
 }
 
-func (a *App) ApproveDevicePairing(qrPayload string) error {
-	return a.sync.ApprovePairing(a.context(), qrPayload)
+func (a *App) ApproveDevicePairing(approvalCode string) error {
+	return a.sync.ApprovePairing(a.context(), approvalCode)
 }
 
 func (a *App) ClaimDevicePairing(
@@ -603,6 +603,10 @@ func (a *App) ListSyncDevices() ([]syncclient.Device, error) {
 
 func (a *App) RevokeSyncDevice(deviceID string) error {
 	return a.sync.RevokeDevice(a.context(), deviceID)
+}
+
+func (a *App) LeaveSync(password, totpCode string) error {
+	return a.sync.LeaveSync(a.context(), password, totpCode)
 }
 
 func (a *App) BeginSyncTOTPSetup() (syncclient.TOTPSetup, error) {

@@ -81,7 +81,7 @@ type Backend = {
     serverUrl: string, username: string, password: string, totpCode: string,
     deviceName: string, recoveryCode: string
   ): Promise<{ deviceId: string; recoveryCode: string }>
-  RotateSyncRecoveryCode(): Promise<string>
+  RotateSyncRecoveryCode(password: string, totpCode: string): Promise<string>
   LoginAccount(
     serverUrl: string, username: string, password: string, deviceId: string, secondFactor: string
   ): Promise<void>
@@ -91,9 +91,9 @@ type Backend = {
     Promise<{ pushed: number; pulled: number; conflicts: number; cursor: number }>
   BeginDevicePairing(serverUrl: string, deviceName: string): Promise<{
     pairingId: string; deviceId: string; shortCode: string
-    qrPayload: string; expiresAt: string
+    approvalCode: string; expiresAt: string
   }>
-  ApproveDevicePairing(qrPayload: string): Promise<void>
+  ApproveDevicePairing(approvalCode: string): Promise<void>
   ClaimDevicePairing(username: string, password: string, totpCode: string):
     Promise<{ approved: boolean; deviceId?: string }>
   ListSyncDevices(): Promise<Array<{
@@ -105,6 +105,7 @@ type Backend = {
   ConfirmSyncTOTPSetup(setupToken: string, code: string): Promise<string[]>
   DisableSyncTOTP(password: string, code: string): Promise<void>
   SetSyncAutoEnabled(enabled: boolean): Promise<void>
+  LeaveSync(password: string, totpCode: string): Promise<void>
 }
 
 declare global {

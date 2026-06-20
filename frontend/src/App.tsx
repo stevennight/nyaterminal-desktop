@@ -4,7 +4,6 @@ import {
   Moon, MoreHorizontal, Paintbrush, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
-import QRCode from 'qrcode'
 import { api } from './bridge'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
@@ -52,6 +51,11 @@ function getPreferredTheme(): ThemeName {
 
 function formatDateTime(value?: string) {
   return value ? new Date(value).toLocaleString() : '暂无'
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.trim().replace(/-/g, '+').replace(/_/g, '/')
+  return atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
 }
 
 function syncHeadline(syncSummary?: SyncSummary) {
@@ -728,14 +732,23 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
   const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
   const [deviceName, setDeviceName] = useState(syncSummary?.deviceName ?? '当前设备')
-  const [recoveryCode, setRecoveryCode] = useState('')
+  const [recoveryCodeModal, setRecoveryCodeModal] = useState<{ title: string; code: string }>()
   const [joinPassword, setJoinPassword] = useState('')
   const [joinTotpCode, setJoinTotpCode] = useState('')
   const [syncRecoveryCode, setSyncRecoveryCode] = useState('')
   const [pairing, setPairing] = useState<{
-    pairingId: string; deviceId: string; shortCode: string; qrPayload: string; expiresAt: string
+    pairingId: string; deviceId: string; shortCode: string; approvalCode: string; expiresAt: string
   }>()
-  const [pairingCodeUrl, setPairingCodeUrl] = useState('')
+  const [approveCode, setApproveCode] = useState('')
+  const [approveShortCode, setApproveShortCode] = useState('')
+  const [showJoinModal, setShowJoinModal] = useState(false)
+  const [showApproveModal, setShowApproveModal] = useState(false)
+  const [showRotateRecoveryModal, setShowRotateRecoveryModal] = useState(false)
+  const [rotatePassword, setRotatePassword] = useState('')
+  const [rotateTotpCode, setRotateTotpCode] = useState('')
+  const [showLeaveSyncModal, setShowLeaveSyncModal] = useState(false)
+  const [leavePassword, setLeavePassword] = useState('')
+  const [leaveTotpCode, setLeaveTotpCode] = useState('')
   const [resetPassword, setResetPassword] = useState('')
   const [resetTotpCode, setResetTotpCode] = useState('')
   const [resetConfirmText, setResetConfirmText] = useState('')
@@ -748,21 +761,6 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   useEffect(() => {
     setDeviceName(syncSummary?.deviceName ?? '当前设备')
   }, [syncSummary?.deviceName])
-
-  useEffect(() => {
-    let active = true
-    if (!pairing?.qrPayload) {
-      setPairingCodeUrl('')
-      return
-    }
-    void QRCode.toDataURL(pairing.qrPayload, {
-      margin: 1,
-      width: 150
-    }).then(url => {
-      if (active) setPairingCodeUrl(url)
-    }).catch(error => showNotice('设备加入', String(error)))
-    return () => { active = false }
-  }, [pairing?.qrPayload])
 
   const sections = [
     { id: 'appearance', label: '外观', icon: Paintbrush },
@@ -828,8 +826,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     onSyncBusyChange(true)
     try {
       const result = await api.InitializeSync(deviceName.trim())
-      setRecoveryCode(result.recoveryCode)
-      showNotice('同步初始化完成', '已创建同步保险库，请立即离线保存恢复码。')
+      setRecoveryCodeModal({
+        title: '同步初始化完成',
+        code: result.recoveryCode
+      })
       await onReload()
     } catch (error) {
       showNotice('同步初始化失败', String(error))
@@ -856,6 +856,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setSyncRecoveryCode('')
       setJoinPassword('')
       setJoinTotpCode('')
+      setShowJoinModal(false)
       setPairing(undefined)
       showNotice('设备加入', '本机已通过恢复码加入同步保险库。')
       await onReload()
@@ -874,7 +875,8 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     onSyncBusyChange(true)
     try {
       setPairing(await api.BeginDevicePairing(syncSummary.serverUrl, deviceName.trim()))
-      showNotice('设备加入', '请使用已加入同步的设备扫描二维码并批准。')
+      setShowJoinModal(true)
+      showNotice('设备加入', '请在已加入同步的设备上输入批准串并核对短码。')
     } catch (error) {
       showNotice('设备加入', String(error))
     } finally {
@@ -901,10 +903,73 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setPairing(undefined)
       setJoinPassword('')
       setJoinTotpCode('')
+      setShowJoinModal(false)
       showNotice('设备加入', '本机已通过已授权设备批准加入同步。')
       await onReload()
     } catch (error) {
       showNotice('设备加入', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const approvePairing = async () => {
+    let parsedShortCode = ''
+    try {
+      parsedShortCode = JSON.parse(decodeBase64Url(approveCode)).shortCode ?? ''
+    } catch {
+      parsedShortCode = ''
+    }
+    if (!parsedShortCode || parsedShortCode !== approveShortCode) {
+      showNotice('批准新设备', '手动输入的短码与批准串中的短码不一致。')
+      return
+    }
+    onSyncBusyChange(true)
+    try {
+      await api.ApproveDevicePairing(approveCode.trim())
+      setApproveCode('')
+      setApproveShortCode('')
+      setShowApproveModal(false)
+      showNotice('批准新设备', '已批准新的设备加入请求。')
+    } catch (error) {
+      showNotice('批准新设备', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const rotateRecoveryCode = async () => {
+    onSyncBusyChange(true)
+    try {
+      const code = await api.RotateSyncRecoveryCode(rotatePassword, rotateTotpCode.trim())
+      setRotatePassword('')
+      setRotateTotpCode('')
+      setShowRotateRecoveryModal(false)
+      setRecoveryCodeModal({
+        title: '同步恢复码已刷新',
+        code
+      })
+      await onReload()
+    } catch (error) {
+      showNotice('刷新同步恢复码失败', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const leaveSync = async () => {
+    if (!window.confirm('这会让本机退出同步保险库，并撤销当前同步设备。确认继续？')) return
+    onSyncBusyChange(true)
+    try {
+      await api.LeaveSync(leavePassword, leaveTotpCode.trim())
+      setLeavePassword('')
+      setLeaveTotpCode('')
+      setPairing(undefined)
+      setShowLeaveSyncModal(false)
+      showNotice('已退出同步保险库', '本机已恢复到未加入同步保险库的状态。')
+      await onReload()
+    } catch (error) {
+      showNotice('退出同步失败', String(error))
     } finally {
       onSyncBusyChange(false)
     }
@@ -919,7 +984,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setResetPassword('')
       setResetTotpCode('')
       setResetConfirmText('')
-      setRecoveryCode('')
+      setRecoveryCodeModal(undefined)
       setSyncRecoveryCode('')
       setJoinPassword('')
       setJoinTotpCode('')
@@ -1028,29 +1093,12 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       {loggedIn && syncInitialized && !syncConfigured && <div className="pairing-approval">
         <label>设备名称<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
         <small className="hint full">服务端已有同步保险库，但本机还没加入。可以使用恢复码直接加入，或请求一台已加入的设备批准。</small>
-        <label>账号密码<input type="password" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} /></label>
-        <label>TOTP / 恢复码<input value={joinTotpCode} onChange={e => setJoinTotpCode(e.target.value.trim())} /></label>
-        <label>同步恢复码<input value={syncRecoveryCode} onChange={e => setSyncRecoveryCode(e.target.value)} /></label>
-        <button className="secondary wide" type="button" disabled={syncBusy || !joinPassword || !syncRecoveryCode.trim()}
-          onClick={() => void recoverSync()}>{syncBusy ? '处理中…' : '用恢复码加入'}</button>
-        <div className="settings-divider" />
-        {!pairing && <button className="secondary wide" type="button" disabled={syncBusy}
-          onClick={() => void beginPairing()}>{syncBusy ? '处理中…' : '请求已有设备批准'}</button>}
-        {!!pairing && <div className="pairing-card">
-          {pairingCodeUrl ? <img src={pairingCodeUrl} alt="配对二维码" /> : <div className="pairing-placeholder">生成二维码中…</div>}
-          <div>
-            <small>请在已加入同步的设备上批准</small>
-            <strong>{pairing.shortCode}</strong>
-            <p>核对短码后批准，批准完成后回到这里领取同步根密钥。</p>
-            <button disabled={syncBusy || !joinPassword} onClick={() => void claimPairing()}>
-              {syncBusy ? '处理中…' : '我已批准，继续加入'}
-            </button>
-          </div>
-        </div>}
-      </div>}
-      {!!recoveryCode && <div className="pairing-approval">
-        <label>同步恢复码<textarea readOnly rows={3} value={recoveryCode} /></label>
-        <small className="hint full">请立即离线保存这条恢复码。关闭此窗口后将不会再次显示明文。</small>
+        <div className="sync-actions">
+          <button className="secondary" type="button" disabled={syncBusy}
+            onClick={() => setShowJoinModal(true)}>用恢复码加入</button>
+          <button className="secondary" type="button" disabled={syncBusy}
+            onClick={() => void beginPairing()}>{syncBusy ? '处理中…' : '请求已有设备批准'}</button>
+        </div>
       </div>}
       {syncConfigured && <div className="form-grid">
         <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
@@ -1061,6 +1109,12 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
           onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
         <button className="secondary full" type="button" disabled={syncBusy}
           onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
+        <button className="secondary full" type="button" disabled={syncBusy}
+          onClick={() => setShowRotateRecoveryModal(true)}>刷新同步恢复码</button>
+        <button className="secondary full" type="button" disabled={syncBusy}
+          onClick={() => setShowApproveModal(true)}>批准新设备加入</button>
+        <button className="danger-button full" type="button" disabled={syncBusy}
+          onClick={() => setShowLeaveSyncModal(true)}>退出同步保险库</button>
       </div>}
       {syncInitialized && <details className="pairing-approval" open={showResetForm}>
         <summary onClick={() => setShowResetForm(value => !value)}>重置同步保险库</summary>
@@ -1096,6 +1150,54 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     <footer className="modal-actions"><button onClick={onClose}>取消</button>
       <button className="primary" onClick={() => void persist()}>保存</button></footer>
     {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
+    {recoveryCodeModal && <RecoveryCodeDialog title={recoveryCodeModal.title} code={recoveryCodeModal.code}
+      onClose={() => setRecoveryCodeModal(undefined)} />}
+    {showJoinModal && <JoinSyncDialog
+      syncBusy={syncBusy}
+      deviceName={deviceName}
+      joinPassword={joinPassword}
+      joinTotpCode={joinTotpCode}
+      syncRecoveryCode={syncRecoveryCode}
+      pairing={pairing}
+      onDeviceNameChange={setDeviceName}
+      onJoinPasswordChange={setJoinPassword}
+      onJoinTotpCodeChange={setJoinTotpCode}
+      onRecoveryCodeChange={setSyncRecoveryCode}
+      onClose={() => setShowJoinModal(false)}
+      onRecover={() => void recoverSync()}
+      onClaim={() => void claimPairing()}
+      onCopyApprovalCode={async () => {
+        if (!pairing?.approvalCode) return
+        await navigator.clipboard?.writeText(pairing.approvalCode)
+      }}
+    />}
+    {showApproveModal && <ApprovePairingDialog
+      syncBusy={syncBusy}
+      approvalCode={approveCode}
+      shortCode={approveShortCode}
+      onApprovalCodeChange={setApproveCode}
+      onShortCodeChange={setApproveShortCode}
+      onClose={() => setShowApproveModal(false)}
+      onApprove={() => void approvePairing()}
+    />}
+    {showRotateRecoveryModal && <RotateRecoveryDialog
+      syncBusy={syncBusy}
+      password={rotatePassword}
+      totpCode={rotateTotpCode}
+      onPasswordChange={setRotatePassword}
+      onTotpCodeChange={setRotateTotpCode}
+      onClose={() => setShowRotateRecoveryModal(false)}
+      onRotate={() => void rotateRecoveryCode()}
+    />}
+    {showLeaveSyncModal && <LeaveSyncDialog
+      syncBusy={syncBusy}
+      password={leavePassword}
+      totpCode={leaveTotpCode}
+      onPasswordChange={setLeavePassword}
+      onTotpCodeChange={setLeaveTotpCode}
+      onClose={() => setShowLeaveSyncModal(false)}
+      onLeave={() => void leaveSync()}
+    />}
   </Modal>
 }
 
@@ -1271,6 +1373,148 @@ function NoticeDialog({ title, message, onClose }: {
       <footer className="modal-actions"><button className="primary" onClick={onClose}>确定</button></footer>
     </section>
   </div>
+}
+
+function RecoveryCodeDialog({ title, code, onClose }: {
+  title: string; code: string; onClose: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard?.writeText(code)
+    setCopied(true)
+  }
+  return <Modal title={title} onClose={onClose} width="620px">
+    <div className="pairing-approval">
+      <label>同步恢复码<textarea readOnly rows={4} value={code} /></label>
+      <small className="hint full">请立即离线保存这条恢复码。关闭此窗口后将不会再次显示明文。</small>
+    </div>
+    <footer className="modal-actions">
+      <button onClick={() => void copy()}>{copied ? '已复制' : '复制恢复码'}</button>
+      <button className="primary" onClick={onClose}>我已保存</button>
+    </footer>
+  </Modal>
+}
+
+function JoinSyncDialog({ syncBusy, deviceName, joinPassword, joinTotpCode, syncRecoveryCode, pairing, onDeviceNameChange, onJoinPasswordChange, onJoinTotpCodeChange, onRecoveryCodeChange, onClose, onRecover, onClaim, onCopyApprovalCode }: {
+  syncBusy: boolean
+  deviceName: string
+  joinPassword: string
+  joinTotpCode: string
+  syncRecoveryCode: string
+  pairing?: { pairingId: string; deviceId: string; shortCode: string; approvalCode: string; expiresAt: string }
+  onDeviceNameChange: (value: string) => void
+  onJoinPasswordChange: (value: string) => void
+  onJoinTotpCodeChange: (value: string) => void
+  onRecoveryCodeChange: (value: string) => void
+  onClose: () => void
+  onRecover: () => void
+  onClaim: () => void
+  onCopyApprovalCode: () => Promise<void>
+}) {
+  return <Modal title="加入同步保险库" onClose={onClose} width="720px">
+    <div className="form-grid">
+      <label className="full">设备名称<input value={deviceName} onChange={e => onDeviceNameChange(e.target.value)} /></label>
+      <label className="wide">账号密码<input type="password" value={joinPassword} onChange={e => onJoinPasswordChange(e.target.value)} /></label>
+      <label>TOTP / 恢复码<input value={joinTotpCode} onChange={e => onJoinTotpCodeChange(e.target.value.trim())} /></label>
+      <label className="full">同步恢复码<input value={syncRecoveryCode} onChange={e => onRecoveryCodeChange(e.target.value)} /></label>
+    </div>
+    <small className="hint full">你可以直接用恢复码加入，或先发起请求，再由已加入同步的设备输入批准串并核对短码。</small>
+    <div className="sync-actions">
+      <button className="secondary" disabled={syncBusy || !joinPassword || !syncRecoveryCode.trim()} onClick={onRecover}>
+        {syncBusy ? '处理中…' : '用恢复码加入'}
+      </button>
+      {!pairing && <button className="secondary" disabled={syncBusy} onClick={onClose}>关闭</button>}
+      {!!pairing && <button disabled={syncBusy || !joinPassword} onClick={onClaim}>
+        {syncBusy ? '处理中…' : '我已获批，继续加入'}
+      </button>}
+    </div>
+    {!!pairing && <div className="pairing-card textual">
+      <div>
+        <small>批准短码</small>
+        <strong>{pairing.shortCode}</strong>
+        <p>请在已加入同步的设备上输入下方批准串，并核对这个短码是否一致。</p>
+      </div>
+      <div className="pairing-code-block">
+        <label>批准串<textarea readOnly rows={7} value={pairing.approvalCode} /></label>
+        <div className="sync-actions">
+          <button className="secondary" onClick={() => void onCopyApprovalCode()}>复制批准串</button>
+          <button className="secondary" onClick={onClaim} disabled={syncBusy || !joinPassword}>轮询批准结果</button>
+        </div>
+      </div>
+    </div>}
+  </Modal>
+}
+
+function ApprovePairingDialog({ syncBusy, approvalCode, shortCode, onApprovalCodeChange, onShortCodeChange, onClose, onApprove }: {
+  syncBusy: boolean
+  approvalCode: string
+  shortCode: string
+  onApprovalCodeChange: (value: string) => void
+  onShortCodeChange: (value: string) => void
+  onClose: () => void
+  onApprove: () => void
+}) {
+  return <Modal title="批准新设备加入" onClose={onClose} width="720px">
+    <div className="form-grid">
+      <label className="full">批准串<textarea rows={7} value={approvalCode} onChange={e => onApprovalCodeChange(e.target.value)} /></label>
+      <label className="full">短码（人工核对）<input value={shortCode} onChange={e => onShortCodeChange(e.target.value.replace(/\D/g, '').slice(0, 6))} /></label>
+    </div>
+    <small className="hint full">请先和请求加入的设备核对 6 位短码，再批准。短码目前只用于人工确认，不会改变密钥交换内容。</small>
+    <footer className="modal-actions">
+      <button onClick={onClose}>取消</button>
+      <button className="primary" disabled={syncBusy || !approvalCode.trim() || shortCode.length !== 6} onClick={onApprove}>
+        {syncBusy ? '处理中…' : '批准加入'}
+      </button>
+    </footer>
+  </Modal>
+}
+
+function RotateRecoveryDialog({ syncBusy, password, totpCode, onPasswordChange, onTotpCodeChange, onClose, onRotate }: {
+  syncBusy: boolean
+  password: string
+  totpCode: string
+  onPasswordChange: (value: string) => void
+  onTotpCodeChange: (value: string) => void
+  onClose: () => void
+  onRotate: () => void
+}) {
+  return <Modal title="刷新同步恢复码" onClose={onClose}>
+    <div className="form-grid">
+      <label className="full">账号密码<input type="password" value={password} onChange={e => onPasswordChange(e.target.value)} /></label>
+      <label className="full">TOTP（如已开启）<input value={totpCode} onChange={e => onTotpCodeChange(e.target.value.trim())} /></label>
+    </div>
+    <small className="hint full">刷新后旧的同步恢复码将失效，新的恢复码只会显示一次。</small>
+    <footer className="modal-actions">
+      <button onClick={onClose}>取消</button>
+      <button className="primary" disabled={syncBusy || !password} onClick={onRotate}>
+        {syncBusy ? '处理中…' : '刷新恢复码'}
+      </button>
+    </footer>
+  </Modal>
+}
+
+function LeaveSyncDialog({ syncBusy, password, totpCode, onPasswordChange, onTotpCodeChange, onClose, onLeave }: {
+  syncBusy: boolean
+  password: string
+  totpCode: string
+  onPasswordChange: (value: string) => void
+  onTotpCodeChange: (value: string) => void
+  onClose: () => void
+  onLeave: () => void
+}) {
+  return <Modal title="退出同步保险库" onClose={onClose}>
+    <div className="form-grid">
+      <label className="full">账号密码<input type="password" value={password} onChange={e => onPasswordChange(e.target.value)} /></label>
+      <label className="full">TOTP（如已开启）<input value={totpCode} onChange={e => onTotpCodeChange(e.target.value.trim())} /></label>
+    </div>
+    <small className="hint full">退出后，本机不再持有同步根密钥，并撤销当前同步设备。服务端同步保险库本身不会被删除。</small>
+    <footer className="modal-actions">
+      <button onClick={onClose}>取消</button>
+      <button className="danger-button" disabled={syncBusy || !password} onClick={onLeave}>
+        {syncBusy ? '处理中…' : '退出同步保险库'}
+      </button>
+    </footer>
+  </Modal>
 }
 
 function HostKeyDialog({ value, onCancel, onAccept }: {
