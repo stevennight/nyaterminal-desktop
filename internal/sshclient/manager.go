@@ -3,6 +3,7 @@ package sshclient
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -55,10 +56,11 @@ type terminalSession struct {
 }
 
 type StartRequest struct {
-	ConnectionID         string   `json:"connectionId"`
-	Columns              int      `json:"columns"`
-	Rows                 int      `json:"rows"`
-	InteractionResponses []string `json:"interactionResponses"`
+	ConnectionID         string            `json:"connectionId"`
+	Columns              int               `json:"columns"`
+	Rows                 int               `json:"rows"`
+	InteractionResponses []string          `json:"interactionResponses"`
+	CredentialOverride   *model.Credential `json:"credentialOverride,omitempty"`
 }
 
 type StartResult struct {
@@ -109,6 +111,16 @@ func (e HostKeyError) Error() string {
 	return "SSH host key is not trusted"
 }
 
+type AuthPromptError struct {
+	Kind    string `json:"kind"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+func (e AuthPromptError) Error() string {
+	return e.Message
+}
+
 func NewManager(dataStore *store.Store) (*Manager, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -155,8 +167,11 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 	if connection.CredentialID != "" {
 		credential, err = m.store.GetCredential(ctx, connection.CredentialID)
 		if err != nil {
-			return StartResult{}, err
+			return StartResult{}, authPromptErrorForCredential(connection, err)
 		}
+	}
+	if request.CredentialOverride != nil {
+		credential = mergeCredential(credential, *request.CredentialOverride, connection.Authentication)
 	}
 	client, err := m.dial(ctx, connection, credential, request.InteractionResponses)
 	if err != nil {
@@ -247,7 +262,7 @@ func (m *Manager) DialConnection(ctx context.Context, connectionID string, respo
 	if connection.CredentialID != "" {
 		credential, err = m.store.GetCredential(ctx, connection.CredentialID)
 		if err != nil {
-			return nil, err
+			return nil, authPromptErrorForCredential(connection, err)
 		}
 	}
 	return m.dial(ctx, connection, credential, responses)
@@ -315,7 +330,7 @@ func (m *Manager) dial(ctx context.Context, connection model.Connection, credent
 		ctx, connection, credential, responses, interactiveHandler,
 	)
 	if err != nil {
-		return nil, err
+		return nil, authPromptErrorForCredential(connection, err)
 	}
 	if agentConnection != nil {
 		defer agentConnection.Close()
@@ -361,7 +376,7 @@ func (m *Manager) dial(ctx context.Context, connection model.Connection, credent
 	sshConn, channels, requests, err := ssh.NewClientConn(netConn, address, config)
 	if err != nil {
 		netConn.Close()
-		return nil, err
+		return nil, authPromptErrorForCredential(connection, err)
 	}
 	return ssh.NewClient(sshConn, channels, requests), nil
 }
@@ -411,6 +426,9 @@ func authMethods(
 		}
 		methods = append(methods, ssh.Password(credential.Password))
 	case "private_key":
+		if strings.TrimSpace(credential.PrivateKeyPEM) == "" {
+			return nil, nil, errors.New("private key is not configured")
+		}
 		var signer ssh.Signer
 		var err error
 		if credential.Passphrase != "" {
@@ -464,6 +482,62 @@ func authMethods(
 		return nil, nil, errors.New("unsupported authentication type")
 	}
 	return methods, agentConnection, nil
+}
+
+func authPromptErrorForCredential(connection model.Connection, err error) error {
+	if connection.Authentication == "password" {
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "password is not configured") {
+			return AuthPromptError{
+				Kind: "password", Reason: "missing",
+				Message: "SSH password is required for this connection.",
+			}
+		}
+	}
+	if connection.Authentication == "private_key" {
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "private key is not configured") {
+			return AuthPromptError{
+				Kind: "private_key", Reason: "missing",
+				Message: "An SSH private key is required for this connection.",
+			}
+		}
+		if strings.Contains(err.Error(), "invalid private key or passphrase") {
+			return AuthPromptError{
+				Kind: "private_key", Reason: "invalid",
+				Message: "The SSH private key or passphrase is invalid.",
+			}
+		}
+	}
+	if connection.Authentication == "password" && strings.Contains(err.Error(), "unable to authenticate") {
+		return AuthPromptError{
+			Kind: "password", Reason: "invalid",
+			Message: "The SSH password was rejected by the server.",
+		}
+	}
+	if connection.Authentication == "private_key" && strings.Contains(err.Error(), "unable to authenticate") {
+		return AuthPromptError{
+			Kind: "private_key", Reason: "invalid",
+			Message: "The SSH private key was rejected by the server.",
+		}
+	}
+	return err
+}
+
+func mergeCredential(base, override model.Credential, authType string) model.Credential {
+	merged := base
+	merged.Type = authType
+	if override.Name != "" {
+		merged.Name = override.Name
+	}
+	if override.Password != "" {
+		merged.Password = override.Password
+	}
+	if override.PrivateKeyPEM != "" {
+		merged.PrivateKeyPEM = override.PrivateKeyPEM
+	}
+	if override.Passphrase != "" || strings.TrimSpace(override.PrivateKeyPEM) != "" {
+		merged.Passphrase = override.Passphrase
+	}
+	return merged
 }
 
 func (m *Manager) keepAlive(connection model.Connection, session *terminalSession) {

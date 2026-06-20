@@ -34,6 +34,13 @@ type Backend = {
     columns: number
     rows: number
     interactionResponses: string[]
+    credentialOverride?: {
+      name?: string
+      type?: Connection['authentication']
+      password?: string
+      privateKeyPem?: string
+      passphrase?: string
+    }
   }): Promise<TerminalStart>
   AcceptHostKey(id: string): Promise<void>
   ResizeSSH(sessionId: string, columns: number, rows: number): Promise<void>
@@ -101,6 +108,7 @@ type Backend = {
     createdAt: string; lastSeenAt: string
   }>>
   RevokeSyncDevice(deviceId: string): Promise<void>
+  SetDeviceName(deviceName: string): Promise<void>
   BeginSyncTOTPSetup(): Promise<{ secret: string; setupToken: string; uri: string }>
   ConfirmSyncTOTPSetup(setupToken: string, code: string): Promise<string[]>
   DisableSyncTOTP(password: string, code: string): Promise<void>

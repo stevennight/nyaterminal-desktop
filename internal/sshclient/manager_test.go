@@ -101,6 +101,46 @@ func TestPortForwardingIsReserved(t *testing.T) {
 	}
 }
 
+func TestPasswordConnectionWithoutStoredCredentialRequestsAuthPrompt(t *testing.T) {
+	address, _, closeServer := startTestSSHServer(t, "secret")
+	defer closeServer()
+	host, rawPort, _ := net.SplitHostPort(address)
+	port, _ := strconv.Atoi(rawPort)
+
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	ctx := context.Background()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	dataStore := store.New(v)
+	connection, err := dataStore.PutConnection(ctx, model.Connection{
+		Name: "test", Host: host, Port: port, Username: "user",
+		CredentialID: "missing-credential", Authentication: "password",
+		Encoding: "utf-8", ConnectTimeoutSec: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(dataStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	_, err = manager.Start(ctx, StartRequest{ConnectionID: connection.ID, Columns: 80, Rows: 24})
+	var prompt AuthPromptError
+	if !errors.As(err, &prompt) {
+		t.Fatalf("expected auth prompt error, got %v", err)
+	}
+	if prompt.Kind != "password" || prompt.Reason != "missing" {
+		t.Fatalf("unexpected prompt: %#v", prompt)
+	}
+}
+
 func startTestSSHServer(t *testing.T, password string) (string, ssh.Signer, func()) {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)

@@ -89,6 +89,7 @@ export type AccountSummary = {
   username?: string
   deviceName?: string
   deviceId?: string
+  totpEnabled?: boolean
   configured?: boolean
   serverInitialized: boolean
   syncInitialized: boolean
@@ -118,6 +119,11 @@ export type PendingHostKey = {
 export type TerminalStart = {
   session?: { sessionId: string; url: string }
   hostKey?: PendingHostKey
+  authPrompt?: {
+    kind: 'password' | 'private_key'
+    reason: 'missing' | 'invalid'
+    message: string
+  }
 }
 
 export type RemoteEntry = {

@@ -322,6 +322,32 @@ func TestLoginSendsSecondFactor(t *testing.T) {
 	}
 }
 
+func TestRequestAlwaysSetsOriginWhenEndpointHasHost(t *testing.T) {
+	var seenOrigin string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenOrigin = r.Header.Get("Origin")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	if err := client.request(ctx, http.MethodPost, server.URL+"/origin", "", map[string]any{"ok": true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if seenOrigin != server.URL {
+		t.Fatalf("expected origin %q, got %q", server.URL, seenOrigin)
+	}
+}
+
 func TestRecoveryBundleDoesNotContainRootKey(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {

@@ -311,6 +311,23 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .sync-status { margin: 10px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .sync-button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .sync-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.sync-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.sync-action-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.field-actions {
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: 15px;
+}
+.field-actions > button {
+  width: 100%;
+}
 .pairing-card { display: flex; gap: 18px; align-items: flex-start; margin-bottom: 14px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--bg); }
 .pairing-card > div { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .pairing-card.textual { align-items: stretch; }
@@ -335,4 +352,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 @media (max-width: 1080px) {
   .app-shell { grid-template-columns: 235px 1fr auto; }
   .sftp-panel { width: 290px; }
+}
+@media (max-width: 760px) {
+  .sync-action-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .field-actions {
+    align-items: stretch;
+  }
 }

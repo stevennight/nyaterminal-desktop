@@ -18,13 +18,21 @@ type Props = {
   settings: Settings
   active: boolean
   privateSession: boolean
+  credentialOverride?: {
+    name?: string
+    type?: Connection['authentication']
+    password?: string
+    privateKeyPem?: string
+    passphrase?: string
+  }
   onReady: (sessionId: string) => void
   onHostKey: (pending: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['hostKey']>) => void
+  onAuthPrompt: (prompt: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['authPrompt']>) => void
   onClose: () => void
 }
 
 export function TerminalView({
-  connection, settings, active, privateSession, onReady, onHostKey, onClose
+  connection, settings, active, privateSession, credentialOverride, onReady, onHostKey, onAuthPrompt, onClose
 }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
@@ -176,12 +184,18 @@ export function TerminalView({
         connectionId: connection.id,
         columns: terminal.cols,
         rows: terminal.rows,
-        interactionResponses: []
+        interactionResponses: [],
+        credentialOverride
       })
       if (disposed) return
       if (result.hostKey) {
         setStatus(result.hostKey.changed ? 'Host key changed' : 'Host key confirmed')
         onHostKey(result.hostKey)
+        return
+      }
+      if (result.authPrompt) {
+        setStatus(result.authPrompt.message)
+        onAuthPrompt(result.authPrompt)
         return
       }
       if (!result.session) throw new Error('SSH session was not created')
@@ -295,7 +309,7 @@ export function TerminalView({
       terminal.dispose()
       onClose()
     }
-  }, [connection.id])
+  }, [connection.id, credentialOverride?.password, credentialOverride?.privateKeyPem, credentialOverride?.passphrase])
 
   useEffect(() => {
     if (active) window.setTimeout(() => window.dispatchEvent(new Event('resize')), 0)

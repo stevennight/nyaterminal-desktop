@@ -163,6 +163,7 @@ type AccountSummary struct {
 	Username          string    `json:"username,omitempty"`
 	DeviceID          string    `json:"deviceId"`
 	DeviceName        string    `json:"deviceName"`
+	TOTPEnabled       bool      `json:"totpEnabled"`
 	Configured        bool      `json:"configured"`
 	ServerInitialized bool      `json:"serverInitialized"`
 	SyncInitialized   bool      `json:"syncInitialized"`
@@ -286,9 +287,6 @@ func (c *Client) InitializeSync(ctx context.Context, deviceName string) (SetupRe
 	if deviceName == "" {
 		deviceName = strings.TrimSpace(session.DeviceName)
 	}
-	if deviceName == "" {
-		return SetupResult{}, errors.New("device name is required")
-	}
 	exchangePrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return SetupResult{}, err
@@ -320,6 +318,9 @@ func (c *Client) InitializeSync(ctx context.Context, deviceName string) (SetupRe
 		"verifier":          bundle["verifier"],
 	}, &response); err != nil {
 		return SetupResult{}, err
+	}
+	if strings.TrimSpace(deviceName) == "" {
+		deviceName = response.DeviceID
 	}
 	profile := Profile{
 		ServerURL: session.ServerURL, Username: session.Username,
@@ -355,9 +356,7 @@ func (c *Client) Recover(
 	if err != nil {
 		return SetupResult{}, err
 	}
-	if strings.TrimSpace(deviceName) == "" {
-		return SetupResult{}, errors.New("device name is required")
-	}
+	deviceName = strings.TrimSpace(deviceName)
 	var challenge struct {
 		Generation int64  `json:"generation"`
 		Salt       []byte `json:"salt"`
@@ -398,6 +397,9 @@ func (c *Client) Recover(
 		}, &response,
 	); err != nil {
 		return SetupResult{}, err
+	}
+	if strings.TrimSpace(deviceName) == "" {
+		deviceName = response.DeviceID
 	}
 	if response.Bundle.Generation != challenge.Generation ||
 		!bytes.Equal(response.Bundle.Salt, challenge.Salt) ||
@@ -524,9 +526,7 @@ func (c *Client) BeginPairing(
 	if err != nil {
 		return PairingStart{}, err
 	}
-	if strings.TrimSpace(deviceName) == "" {
-		return PairingStart{}, errors.New("device name is required")
-	}
+	deviceName = strings.TrimSpace(deviceName)
 	exchangePrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		return PairingStart{}, err
@@ -549,6 +549,9 @@ func (c *Client) BeginPairing(
 	}, &response)
 	if err != nil {
 		return PairingStart{}, err
+	}
+	if strings.TrimSpace(deviceName) == "" {
+		deviceName = response.DeviceID
 	}
 	pending := pendingPairing{
 		ServerURL: serverURL, DeviceID: response.DeviceID, DeviceName: deviceName,
@@ -1116,6 +1119,13 @@ func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
 		}
 	}
 	if summary.ServerURL != "" {
+		var account struct {
+			TOTPEnabled bool `json:"totpEnabled"`
+		}
+		if summary.LoggedIn {
+			_ = c.authorizedRequest(ctx, &session, http.MethodGet, "/api/v1/account", nil, &account)
+			summary.TOTPEnabled = account.TOTPEnabled
+		}
 		if remote, err := c.RemoteStatus(ctx, summary.ServerURL); err == nil {
 			summary.ServerInitialized = remote.ServerInitialized
 			summary.SyncInitialized = remote.SyncInitialized
@@ -1131,8 +1141,16 @@ func (c *Client) SetDeviceName(ctx context.Context, deviceName string) error {
 		return err
 	}
 	deviceName = strings.TrimSpace(deviceName)
-	if deviceName == "" {
-		return errors.New("device name is required")
+	if len(deviceName) > 128 {
+		return errors.New("device name is too long")
+	}
+	if session.AccessToken != "" && session.RefreshToken != "" {
+		if err := c.authorizedRequest(
+			ctx, &session, http.MethodPatch, "/api/v1/account/device",
+			map[string]string{"name": deviceName}, nil,
+		); err != nil {
+			return err
+		}
 	}
 	session.DeviceName = deviceName
 	if err := c.saveAccountSession(ctx, session); err != nil {
@@ -1601,11 +1619,11 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 	if request != nil {
 		httpRequest.Header.Set("Content-Type", "application/json")
 	}
+	if parsed, parseErr := url.Parse(endpoint); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
+		httpRequest.Header.Set("Origin", parsed.Scheme+"://"+parsed.Host)
+	}
 	if token != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+token)
-		if parsed, parseErr := url.Parse(endpoint); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
-			httpRequest.Header.Set("Origin", parsed.Scheme+"://"+parsed.Host)
-		}
 		if method != http.MethodGet && method != http.MethodHead &&
 			method != http.MethodOptions {
 			nonce := make([]byte, 24)

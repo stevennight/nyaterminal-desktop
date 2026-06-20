@@ -59,8 +59,9 @@ type Bootstrap struct {
 }
 
 type TerminalStart struct {
-	Session *sshclient.StartResult    `json:"session,omitempty"`
-	HostKey *sshclient.PendingHostKey `json:"hostKey,omitempty"`
+	Session    *sshclient.StartResult     `json:"session,omitempty"`
+	HostKey    *sshclient.PendingHostKey  `json:"hostKey,omitempty"`
+	AuthPrompt *sshclient.AuthPromptError `json:"authPrompt,omitempty"`
 }
 
 func New(dataDir string) *App {
@@ -397,6 +398,10 @@ func (a *App) StartSSH(request sshclient.StartRequest) (TerminalStart, error) {
 	if errors.As(err, &hostKeyError) {
 		return TerminalStart{HostKey: &hostKeyError.Pending}, nil
 	}
+	var authPromptError sshclient.AuthPromptError
+	if errors.As(err, &authPromptError) {
+		return TerminalStart{AuthPrompt: &authPromptError}, nil
+	}
 	return TerminalStart{}, err
 }
 
@@ -603,6 +608,10 @@ func (a *App) ListSyncDevices() ([]syncclient.Device, error) {
 
 func (a *App) RevokeSyncDevice(deviceID string) error {
 	return a.sync.RevokeDevice(a.context(), deviceID)
+}
+
+func (a *App) SetDeviceName(deviceName string) error {
+	return a.sync.SetDeviceName(a.context(), deviceName)
 }
 
 func (a *App) LeaveSync(password, totpCode string) error {
