@@ -75,7 +75,9 @@ type Backend = {
     deviceName: string, recoveryCode: string
   ): Promise<{ deviceId: string; recoveryCode: string }>
   RotateSyncRecoveryCode(): Promise<string>
-  LoginAccount(serverUrl: string, username: string, password: string, deviceId: string): Promise<void>
+  LoginAccount(
+    serverUrl: string, username: string, password: string, deviceId: string, secondFactor: string
+  ): Promise<void>
   LogoutAccount(): Promise<void>
   SyncNow(syncSecrets: boolean, syncHistory: boolean):
     Promise<{ pushed: number; pulled: number; conflicts: number; cursor: number }>

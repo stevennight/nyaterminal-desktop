@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +202,97 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	}
 	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "new-refresh" {
 		t.Fatalf("refreshed tokens were not persisted: %#v", loaded)
+	}
+}
+
+func TestLoginGeneratesDeviceIDWhenMissing(t *testing.T) {
+	var seenDeviceID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/login" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			DeviceID string `json:"deviceId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		seenDeviceID = body.DeviceID
+		_ = json.NewEncoder(w).Encode(TokenPair{
+			AccessToken: "a", RefreshToken: "b",
+			AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+			RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		})
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	if err := client.Login(ctx, server.URL, "owner", "correct horse battery staple", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(seenDeviceID) == "" {
+		t.Fatal("login did not generate a device id")
+	}
+	session, err := client.loadAccountSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.DeviceID != seenDeviceID {
+		t.Fatalf("device id was not persisted: %#v vs %q", session, seenDeviceID)
+	}
+}
+
+func TestLoginSendsSecondFactor(t *testing.T) {
+	var seenSecondFactor string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/login" {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			TOTPCode string `json:"totpCode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		seenSecondFactor = body.TOTPCode
+		_ = json.NewEncoder(w).Encode(TokenPair{
+			AccessToken: "a", RefreshToken: "b",
+			AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+			RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		})
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	if err := client.Login(
+		ctx, server.URL, "owner", "correct horse battery staple", "device-a", "145651",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if seenSecondFactor != "145651" {
+		t.Fatalf("second factor was not sent: %q", seenSecondFactor)
 	}
 }
 

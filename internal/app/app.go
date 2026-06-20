@@ -557,8 +557,8 @@ func (a *App) BootstrapAccount(serverURL, username, password string) (syncclient
 	return a.sync.BootstrapAccount(a.context(), serverURL, username, password)
 }
 
-func (a *App) LoginAccount(serverURL, username, password, deviceID string) error {
-	return a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID)
+func (a *App) LoginAccount(serverURL, username, password, deviceID, secondFactor string) error {
+	return a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID, secondFactor)
 }
 
 func (a *App) LogoutAccount() error {

@@ -368,14 +368,17 @@ func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
 	return code, nil
 }
 
-func (c *Client) Login(ctx context.Context, serverURL, username, password, deviceID string) error {
+func (c *Client) Login(ctx context.Context, serverURL, username, password, deviceID, secondFactor string) error {
 	serverURL, err := validateServerURL(serverURL)
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(deviceID) == "" {
+		deviceID = uuid.NewString()
+	}
 	var tokens TokenPair
 	err = c.request(ctx, http.MethodPost, serverURL+"/api/v1/auth/login", "", map[string]any{
-		"username": username, "password": password, "deviceId": deviceID,
+		"username": username, "password": password, "deviceId": deviceID, "totpCode": secondFactor,
 	}, &tokens)
 	if err != nil {
 		return err
@@ -439,8 +442,10 @@ func (c *Client) BeginPairing(
 	}, nil
 }
 
-func (c *Client) LoginAccount(ctx context.Context, serverURL, username, password, deviceID string) error {
-	return c.Login(ctx, serverURL, username, password, deviceID)
+func (c *Client) LoginAccount(
+	ctx context.Context, serverURL, username, password, deviceID, secondFactor string,
+) error {
+	return c.Login(ctx, serverURL, username, password, deviceID, secondFactor)
 }
 
 func (c *Client) ApprovePairing(ctx context.Context, qrPayload string) error {
@@ -641,6 +646,9 @@ func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 		ctx, &session, http.MethodGet, "/api/v1/account/devices", nil, &response,
 	); err != nil {
 		return nil, err
+	}
+	if response.Devices == nil {
+		return []Device{}, nil
 	}
 	return response.Devices, nil
 }

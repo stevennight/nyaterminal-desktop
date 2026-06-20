@@ -890,11 +890,16 @@ function AccountManagerDialog({ account, onClose, onReload }: {
     setAccessExpiresAt(account?.accessExpiresAt ?? '')
     setRefreshExpiresAt(account?.refreshExpiresAt ?? '')
   }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.accessExpiresAt, account?.refreshExpiresAt])
+  useEffect(() => {
+    if (loggedIn) void loadDevices()
+  }, [loggedIn])
   const showNotice = (title: string, message: string) => setNotice({ title, message })
   const login = async () => {
     try {
-      const resolvedDeviceId = deviceId || ''
-      await api.LoginAccount(serverUrl, username, password, resolvedDeviceId)
+      const resolvedDeviceId = deviceId || crypto.randomUUID()
+      await api.LoginAccount(
+        serverUrl, username, password, resolvedDeviceId, totpCode.trim()
+      )
       showNotice('账号管理', '已登录服务端。')
       setLoggedIn(true)
       setDeviceId(resolvedDeviceId)
@@ -910,7 +915,10 @@ function AccountManagerDialog({ account, onClose, onReload }: {
     } catch (error) { showNotice('账号管理', String(error)) }
   }
   const loadDevices = async () => {
-    try { setDevices(await api.ListSyncDevices()) } catch (error) { showNotice('设备管理', String(error)) }
+    try {
+      const values = await api.ListSyncDevices()
+      setDevices(Array.isArray(values) ? values : [])
+    } catch (error) { showNotice('设备管理', String(error)) }
   }
   const beginTOTP = async () => {
     try {
@@ -925,73 +933,96 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       showNotice('TOTP 设置', 'TOTP 已启用。请离线保存账号恢复码。')
     } catch (error) { showNotice('TOTP 设置', String(error)) }
   }
-  return <Modal title="账号管理" onClose={onClose} width="720px">
-    <div className="sync-summary">
-      <div>
-        <strong>{loggedIn ? '已登录' : '未登录'}</strong>
-        <span>{serverUrl
-          ? `${serverUrl} · ${username}`
-          : '同步信息尚未初始化'}</span>
+  if (!loggedIn) {
+    return <Modal title="账号管理" onClose={onClose} width="720px">
+      <div className="sync-summary">
+        <div>
+          <strong>未登录</strong>
+          <span>{serverUrl ? `${serverUrl} · ${username || '未填写账号'}` : '同步信息尚未初始化'}</span>
+        </div>
       </div>
-      <div>
-        <strong>{deviceId ? '设备编号已保存' : '暂无设备编号'}</strong>
-        <span>{deviceId || '登录后会自动生成并保存。'}</span>
+      <div className="form-grid">
+        <label className="wide">服务端地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
+        <label className="wide">账号<input value={username} onChange={e => setUsername(e.target.value)} /></label>
+        <label className="wide">密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
+        <label className="wide">TOTP / 恢复码<input value={totpCode}
+          onChange={e => setTotpCode(e.target.value.trim())} /></label>
       </div>
+      <small className="hint full">启用 TOTP 后，这里填写 6 位验证码；没有验证器时，可改填一条恢复码。</small>
+      <footer className="modal-actions">
+        <button onClick={onClose}>关闭</button>
+        <button className="secondary" onClick={() => void login()}>登录</button>
+      </footer>
+      {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
+    </Modal>
+  }
+  return <Modal title="账号管理" onClose={onClose} width="920px">
+    <section className="account-panel">
+    <header className="account-panel-header">
       <div>
-        <strong>{accessExpiresAt ? '访问令牌已存' : '访问令牌未显示'}</strong>
-        <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
+        <strong>账号管理</strong>
+        <span>{serverUrl ? `${serverUrl} · ${username}` : '同步信息尚未初始化'}</span>
       </div>
-      <div>
-        <strong>{refreshExpiresAt ? '刷新令牌已存' : '刷新令牌未显示'}</strong>
-        <span>{refreshExpiresAt ? `刷新令牌到期：${new Date(refreshExpiresAt).toLocaleString()}` : '退出登录后需重新登录。'}</span>
+      <div className="account-panel-actions">
+        <button className="secondary" onClick={() => void loadDevices()}>刷新设备</button>
+        <button className="danger-button" onClick={() => void logout()}>退出登录</button>
+        <button className="icon-button" onClick={onClose} title="关闭"><X size={16} /></button>
       </div>
+    </header>
+    <div className="account-panel-body">
+      <div className="sync-summary">
+        <div>
+          <strong>{deviceId ? '当前设备' : '暂无设备编号'}</strong>
+          <span>{deviceId || '设备编号会在首次登录时生成并保存。'}</span>
+        </div>
+        <div>
+          <strong>{accessExpiresAt ? '访问令牌已存' : '访问令牌未显示'}</strong>
+          <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
+        </div>
+        <div>
+          <strong>{refreshExpiresAt ? '刷新令牌已存' : '刷新令牌未显示'}</strong>
+          <span>{refreshExpiresAt ? `刷新令牌到期：${new Date(refreshExpiresAt).toLocaleString()}` : '退出登录后需重新登录。'}</span>
+        </div>
+      </div>
+      <div className="pairing-approval">
+        <div className="device-list">
+          {devices.map(device => <div key={device.id}>
+            <span><strong>{device.name}</strong><small>
+              {device.approved ? '已授权' : '等待批准'}
+            </small></span>
+            <button onClick={() => {
+              if (!window.confirm(`确定撤销设备「${device.name}」？`)) return
+              void api.RevokeSyncDevice(device.id)
+                .then(loadDevices).catch(error => showNotice('设备管理', String(error)))
+            }}>撤销</button>
+          </div>)}
+          {!devices.length && <small>暂无设备，或尚未刷新。</small>}
+        </div>
+      </div>
+      <details className="pairing-approval">
+        <summary>账号二次验证</summary>
+        {!totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}
+        {totpSetup && <>
+          <label>验证器密钥<input readOnly value={totpSetup.secret} /></label>
+          <label>六位验证码<input inputMode="numeric" value={totpCode}
+            onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
+          <button className="secondary wide" onClick={() => void confirmTOTP()}>验证并启用</button>
+        </>}
+        {!!accountRecoveryCodes.length && <label>账号恢复码<textarea readOnly rows={6}
+          value={accountRecoveryCodes.join('\n')} /></label>}
+        {!!accountRecoveryCodes.length && <small className="hint full">
+          每条恢复码只能使用一次，可在登录时填到 “TOTP / 恢复码” 输入框里代替 6 位验证码。
+        </small>}
+      </details>
+      <details className="pairing-approval">
+        <summary>登录状态</summary>
+        <small className="hint full">
+          当前设备和用户名仅作展示，退出后可重新登录，已撤销设备也可再次登录并重新授权。
+        </small>
+      </details>
     </div>
-    <div className="form-grid">
-      <label className="wide">服务端地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
-      <label className="wide">账号<input value={username} onChange={e => setUsername(e.target.value)} /></label>
-      <label className="wide">密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-    </div>
-    <footer className="modal-actions">
-      <button onClick={onClose}>关闭</button>
-      <button className="secondary" onClick={() => void login()}>登录</button>
-      <button className="danger-button" onClick={() => void logout()}>退出登录</button>
-    </footer>
-    <details className="pairing-approval">
-      <summary>设备管理</summary>
-      <button className="secondary wide" onClick={() => void loadDevices()}>刷新设备</button>
-      <div className="device-list">
-        {devices.map(device => <div key={device.id}>
-          <span><strong>{device.name}</strong><small>
-            {device.revoked ? '已撤销' : device.approved ? '已授权' : '等待批准'}
-          </small></span>
-          {!device.revoked && <button onClick={() => {
-            if (!window.confirm(`确定撤销设备「${device.name}」？`)) return
-            void api.RevokeSyncDevice(device.id)
-              .then(loadDevices).catch(error => showNotice('设备管理', String(error)))
-          }}>撤销</button>}
-        </div>)}
-        {!devices.length && <small>暂无设备，或尚未刷新。</small>}
-      </div>
-    </details>
-    <details className="pairing-approval">
-      <summary>账号二次验证</summary>
-      {!totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}
-      {totpSetup && <>
-        <label>验证器密钥<input readOnly value={totpSetup.secret} /></label>
-        <label>六位验证码<input inputMode="numeric" value={totpCode}
-          onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
-        <button className="secondary wide" onClick={() => void confirmTOTP()}>验证并启用</button>
-      </>}
-      {!!accountRecoveryCodes.length && <label>账号恢复码<textarea readOnly rows={6}
-        value={accountRecoveryCodes.join('\n')} /></label>}
-    </details>
-    <details className="pairing-approval">
-      <summary>登录状态</summary>
-      <small className="hint full">
-        {loggedIn ? '账号已登录，TOTP、设备列表和撤销入口可用。' : '未登录时仍可填写服务端地址、账号和密码进行登录。'}
-      </small>
-    </details>
     {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
+    </section>
   </Modal>
 }
 
