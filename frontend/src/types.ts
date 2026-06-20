@@ -70,6 +70,8 @@ export type SyncSummary = {
   deviceName?: string
   deviceId?: string
   loggedIn?: boolean
+  serverInitialized: boolean
+  syncInitialized: boolean
   autoSyncEnabled: boolean
   lastSyncedAt?: string
   lastAttemptAt?: string
@@ -87,6 +89,9 @@ export type AccountSummary = {
   username?: string
   deviceName?: string
   deviceId?: string
+  configured?: boolean
+  serverInitialized: boolean
+  syncInitialized: boolean
   accessExpiresAt?: string
   refreshExpiresAt?: string
 }

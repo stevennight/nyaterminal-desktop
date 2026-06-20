@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -129,32 +130,44 @@ type SyncStatus struct {
 	Running       bool      `json:"running"`
 }
 
+type RemoteStatus struct {
+	ServerInitialized  bool      `json:"serverInitialized"`
+	SyncInitialized    bool      `json:"syncInitialized"`
+	RecoveryUpdatedAt  time.Time `json:"recoveryUpdatedAt,omitempty"`
+	RecoveryGeneration int64     `json:"recoveryGeneration,omitempty"`
+}
+
 type Summary struct {
-	Configured      bool      `json:"configured"`
-	ServerURL       string    `json:"serverUrl,omitempty"`
-	Username        string    `json:"username,omitempty"`
-	DeviceName      string    `json:"deviceName,omitempty"`
-	DeviceID        string    `json:"deviceId,omitempty"`
-	LoggedIn        bool      `json:"loggedIn"`
-	AutoSyncEnabled bool      `json:"autoSyncEnabled"`
-	LastSyncedAt    time.Time `json:"lastSyncedAt,omitempty"`
-	LastAttemptAt   time.Time `json:"lastAttemptAt,omitempty"`
-	LastSuccessAt   time.Time `json:"lastSuccessAt,omitempty"`
-	LastPushed      int       `json:"lastPushed,omitempty"`
-	LastPulled      int       `json:"lastPulled,omitempty"`
-	LastConflicts   int       `json:"lastConflicts,omitempty"`
-	LastError       string    `json:"lastError,omitempty"`
-	Running         bool      `json:"running"`
+	Configured        bool      `json:"configured"`
+	ServerURL         string    `json:"serverUrl,omitempty"`
+	Username          string    `json:"username,omitempty"`
+	DeviceName        string    `json:"deviceName,omitempty"`
+	DeviceID          string    `json:"deviceId,omitempty"`
+	LoggedIn          bool      `json:"loggedIn"`
+	ServerInitialized bool      `json:"serverInitialized"`
+	SyncInitialized   bool      `json:"syncInitialized"`
+	AutoSyncEnabled   bool      `json:"autoSyncEnabled"`
+	LastSyncedAt      time.Time `json:"lastSyncedAt,omitempty"`
+	LastAttemptAt     time.Time `json:"lastAttemptAt,omitempty"`
+	LastSuccessAt     time.Time `json:"lastSuccessAt,omitempty"`
+	LastPushed        int       `json:"lastPushed,omitempty"`
+	LastPulled        int       `json:"lastPulled,omitempty"`
+	LastConflicts     int       `json:"lastConflicts,omitempty"`
+	LastError         string    `json:"lastError,omitempty"`
+	Running           bool      `json:"running"`
 }
 
 type AccountSummary struct {
-	LoggedIn         bool      `json:"loggedIn"`
-	ServerURL        string    `json:"serverUrl,omitempty"`
-	Username         string    `json:"username,omitempty"`
-	DeviceID         string    `json:"deviceId"`
-	DeviceName       string    `json:"deviceName"`
-	AccessExpiresAt  time.Time `json:"accessExpiresAt,omitempty"`
-	RefreshExpiresAt time.Time `json:"refreshExpiresAt,omitempty"`
+	LoggedIn          bool      `json:"loggedIn"`
+	ServerURL         string    `json:"serverUrl,omitempty"`
+	Username          string    `json:"username,omitempty"`
+	DeviceID          string    `json:"deviceId"`
+	DeviceName        string    `json:"deviceName"`
+	Configured        bool      `json:"configured"`
+	ServerInitialized bool      `json:"serverInitialized"`
+	SyncInitialized   bool      `json:"syncInitialized"`
+	AccessExpiresAt   time.Time `json:"accessExpiresAt,omitempty"`
+	RefreshExpiresAt  time.Time `json:"refreshExpiresAt,omitempty"`
 }
 
 type PairingStart struct {
@@ -245,6 +258,93 @@ func (c *Client) BootstrapAccount(ctx context.Context, serverURL, username, pass
 		return TokenPair{}, err
 	}
 	return response, nil
+}
+
+func (c *Client) RemoteStatus(ctx context.Context, serverURL string) (RemoteStatus, error) {
+	serverURL, err := validateServerURL(serverURL)
+	if err != nil {
+		return RemoteStatus{}, err
+	}
+	statusCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var status RemoteStatus
+	if err := c.request(statusCtx, http.MethodGet, serverURL+"/api/v1/sync/status", "", nil, &status); err != nil {
+		return RemoteStatus{}, err
+	}
+	return status, nil
+}
+
+func (c *Client) InitializeSync(ctx context.Context, deviceName string) (SetupResult, error) {
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	if session.AccessToken == "" || session.RefreshToken == "" {
+		return SetupResult{}, errors.New("synchronization requires login")
+	}
+	deviceName = strings.TrimSpace(deviceName)
+	if deviceName == "" {
+		deviceName = strings.TrimSpace(session.DeviceName)
+	}
+	if deviceName == "" {
+		return SetupResult{}, errors.New("device name is required")
+	}
+	exchangePrivate, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	signingPublic, signingPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	syncRootKey := make([]byte, chacha20poly1305.KeySize)
+	if _, err := rand.Read(syncRootKey); err != nil {
+		return SetupResult{}, err
+	}
+	defer wipe(syncRootKey)
+	recoveryCode, bundle, err := createRecoveryBundle(syncRootKey, 1)
+	if err != nil {
+		return SetupResult{}, err
+	}
+	var response struct {
+		DeviceID string `json:"deviceId"`
+	}
+	if err := c.authorizedRequest(ctx, &session, http.MethodPost, "/api/v1/sync/initialize", map[string]any{
+		"deviceName":        deviceName,
+		"exchangePublicKey": exchangePrivate.PublicKey().Bytes(),
+		"signingPublicKey":  signingPublic,
+		"generation":        bundle["generation"],
+		"salt":              bundle["salt"],
+		"nonce":             bundle["nonce"],
+		"ciphertext":        bundle["ciphertext"],
+		"verifier":          bundle["verifier"],
+	}, &response); err != nil {
+		return SetupResult{}, err
+	}
+	profile := Profile{
+		ServerURL: session.ServerURL, Username: session.Username,
+		DeviceID: response.DeviceID, DeviceName: deviceName,
+		AutoSyncEnabled:    boolPtr(true),
+		ExchangePrivateKey: exchangePrivate.Bytes(),
+		ExchangePublicKey:  exchangePrivate.PublicKey().Bytes(),
+		SigningPrivateKey:  signingPrivate,
+		SigningPublicKey:   signingPublic,
+		SyncRootKey:        append([]byte(nil), syncRootKey...),
+	}
+	session.DeviceID = response.DeviceID
+	session.DeviceName = deviceName
+	if err := c.saveProfile(ctx, profile); err != nil {
+		return SetupResult{}, err
+	}
+	if err := c.saveAccountSession(ctx, session); err != nil {
+		return SetupResult{}, err
+	}
+	if err := c.vault.Put(ctx, store.TypeSyncState, stateID, State{
+		Records: map[string]RecordState{}, Deferred: map[string]serverRecord{},
+	}); err != nil {
+		return SetupResult{}, err
+	}
+	return SetupResult{DeviceID: response.DeviceID, RecoveryCode: recoveryCode}, nil
 }
 
 func (c *Client) Recover(
@@ -340,6 +440,24 @@ func (c *Client) Recover(
 		return SetupResult{}, err
 	}
 	return SetupResult{DeviceID: response.DeviceID}, nil
+}
+
+func (c *Client) ResetSync(
+	ctx context.Context,
+	password, totpCode string,
+) error {
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.authorizedRequest(ctx, &session, http.MethodDelete, "/api/v1/sync/reset", map[string]string{
+		"password": password,
+		"totpCode": strings.TrimSpace(totpCode),
+		"confirm":  "RESET SYNC",
+	}, nil); err != nil {
+		return err
+	}
+	return c.clearSyncConfiguration(ctx)
 }
 
 func (c *Client) RotateRecoveryCode(ctx context.Context) (string, error) {
@@ -635,7 +753,7 @@ func (c *Client) ClaimPairing(
 }
 
 func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -654,7 +772,7 @@ func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 }
 
 func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return err
 	}
@@ -668,7 +786,7 @@ func (c *Client) RevokeDevice(ctx context.Context, deviceID string) error {
 }
 
 func (c *Client) BeginTOTPSetup(ctx context.Context) (TOTPSetup, error) {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return TOTPSetup{}, err
 	}
@@ -684,7 +802,7 @@ func (c *Client) BeginTOTPSetup(ctx context.Context) (TOTPSetup, error) {
 func (c *Client) ConfirmTOTPSetup(
 	ctx context.Context, setupToken, code string,
 ) ([]string, error) {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -701,7 +819,7 @@ func (c *Client) ConfirmTOTPSetup(
 }
 
 func (c *Client) DisableTOTP(ctx context.Context, password, code string) error {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return err
 	}
@@ -885,57 +1003,99 @@ func (c *Client) AutoSyncEnabled(ctx context.Context) bool {
 }
 
 func (c *Client) Summary(ctx context.Context) (Summary, error) {
-	profile, session, state, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return Summary{}, err
 	}
+	profile, profileErr := c.loadProfile(ctx)
+	configured := profileErr == nil &&
+		profile.ServerURL != "" && profile.DeviceID != "" &&
+		len(profile.SyncRootKey) == chacha20poly1305.KeySize
 	autoSyncEnabled := true
-	if profile.AutoSyncEnabled != nil {
-		autoSyncEnabled = *profile.AutoSyncEnabled
+	serverURL := session.ServerURL
+	username := session.Username
+	deviceID := session.DeviceID
+	deviceName := session.DeviceName
+	if configured {
+		serverURL = profile.ServerURL
+		if profile.Username != "" {
+			username = profile.Username
+		}
+		deviceID = profile.DeviceID
+		deviceName = profile.DeviceName
+		if profile.AutoSyncEnabled != nil {
+			autoSyncEnabled = *profile.AutoSyncEnabled
+		}
 	}
-	return Summary{
-		Configured:      true,
-		ServerURL:       profile.ServerURL,
-		Username:        profile.Username,
-		DeviceName:      profile.DeviceName,
-		DeviceID:        profile.DeviceID,
+	summary := Summary{
+		Configured:      configured,
+		ServerURL:       serverURL,
+		Username:        username,
+		DeviceName:      deviceName,
+		DeviceID:        deviceID,
 		LoggedIn:        session.AccessToken != "" && session.RefreshToken != "",
 		AutoSyncEnabled: autoSyncEnabled,
-		LastSyncedAt:    state.LastSyncedAt,
-		LastAttemptAt:   state.Sync.LastAttemptAt,
-		LastSuccessAt:   state.Sync.LastSuccessAt,
-		LastPushed:      state.Sync.LastPushed,
-		LastPulled:      state.Sync.LastPulled,
-		LastConflicts:   state.Sync.LastConflicts,
-		LastError:       state.Sync.LastError,
-		Running:         state.Sync.Running,
-	}, nil
+	}
+	if summary.ServerURL != "" {
+		if remote, err := c.RemoteStatus(ctx, summary.ServerURL); err == nil {
+			summary.ServerInitialized = remote.ServerInitialized
+			summary.SyncInitialized = remote.SyncInitialized
+		}
+	}
+	if !configured {
+		return summary, nil
+	}
+	var state State
+	if err := c.vault.Get(ctx, store.TypeSyncState, stateID, &state); err != nil {
+		state = State{Records: map[string]RecordState{}, Deferred: map[string]serverRecord{}}
+	}
+	summary.LastSyncedAt = state.LastSyncedAt
+	summary.LastAttemptAt = state.Sync.LastAttemptAt
+	summary.LastSuccessAt = state.Sync.LastSuccessAt
+	summary.LastPushed = state.Sync.LastPushed
+	summary.LastPulled = state.Sync.LastPulled
+	summary.LastConflicts = state.Sync.LastConflicts
+	summary.LastError = state.Sync.LastError
+	summary.Running = state.Sync.Running
+	return summary, nil
 }
 
 func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
-	var session AccountSession
-	if err := c.vault.Get(ctx, store.TypeAccountSession, accountID, &session); err == nil {
-		return AccountSummary{
-			LoggedIn:         session.AccessToken != "" && session.RefreshToken != "",
-			ServerURL:        session.ServerURL,
-			Username:         session.Username,
-			DeviceID:         session.DeviceID,
-			DeviceName:       session.DeviceName,
-			AccessExpiresAt:  session.AccessExpiresAt,
-			RefreshExpiresAt: session.RefreshExpiresAt,
-		}, nil
+	session, err := c.loadAccountSession(ctx)
+	if err != nil {
+		return AccountSummary{}, err
 	}
-	var profile Profile
-	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err == nil {
-		return AccountSummary{
-			LoggedIn:   false,
-			ServerURL:  profile.ServerURL,
-			Username:   profile.Username,
-			DeviceID:   profile.DeviceID,
-			DeviceName: profile.DeviceName,
-		}, nil
+	summary := AccountSummary{
+		LoggedIn:         session.AccessToken != "" && session.RefreshToken != "",
+		ServerURL:        session.ServerURL,
+		Username:         session.Username,
+		DeviceID:         session.DeviceID,
+		DeviceName:       session.DeviceName,
+		AccessExpiresAt:  session.AccessExpiresAt,
+		RefreshExpiresAt: session.RefreshExpiresAt,
 	}
-	return AccountSummary{}, nil
+	if summary.ServerURL == "" {
+		if profile, err := c.loadProfile(ctx); err == nil {
+			summary.ServerURL = profile.ServerURL
+			if summary.Username == "" {
+				summary.Username = profile.Username
+			}
+			if summary.DeviceID == "" {
+				summary.DeviceID = profile.DeviceID
+			}
+			if summary.DeviceName == "" {
+				summary.DeviceName = profile.DeviceName
+			}
+		}
+	}
+	if summary.ServerURL != "" {
+		if remote, err := c.RemoteStatus(ctx, summary.ServerURL); err == nil {
+			summary.ServerInitialized = remote.ServerInitialized
+			summary.SyncInitialized = remote.SyncInitialized
+		}
+	}
+	summary.Configured = c.Configured(ctx)
+	return summary, nil
 }
 
 func (c *Client) SetDeviceName(ctx context.Context, deviceName string) error {
@@ -971,7 +1131,7 @@ func (c *Client) SetAutoSyncEnabled(ctx context.Context, enabled bool) error {
 }
 
 func (c *Client) Logout(ctx context.Context) error {
-	_, session, _, err := c.load(ctx)
+	session, err := c.loadAccountSession(ctx)
 	if err != nil {
 		return err
 	}
@@ -983,6 +1143,11 @@ func (c *Client) Logout(ctx context.Context) error {
 	session.AccessExpiresAt = time.Time{}
 	session.RefreshExpiresAt = time.Time{}
 	return c.saveAccountSession(ctx, session)
+}
+
+func (c *Client) LoggedIn(ctx context.Context) bool {
+	session, err := c.loadAccountSession(ctx)
+	return err == nil && session.AccessToken != "" && session.RefreshToken != ""
 }
 
 func (c *Client) pull(
@@ -1411,6 +1576,9 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 	}
 	if token != "" {
 		httpRequest.Header.Set("Authorization", "Bearer "+token)
+		if parsed, parseErr := url.Parse(endpoint); parseErr == nil && parsed.Scheme != "" && parsed.Host != "" {
+			httpRequest.Header.Set("Origin", parsed.Scheme+"://"+parsed.Host)
+		}
 		if method != http.MethodGet && method != http.MethodHead &&
 			method != http.MethodOptions {
 			nonce := make([]byte, 24)
@@ -1453,8 +1621,8 @@ func joinCloseError(err error, closer io.Closer) error {
 }
 
 func (c *Client) load(ctx context.Context) (Profile, AccountSession, State, error) {
-	var profile Profile
-	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err != nil {
+	profile, err := c.loadProfile(ctx)
+	if err != nil {
 		return Profile{}, AccountSession{}, State{}, errors.New("synchronization is not configured")
 	}
 	session, err := c.loadAccountSession(ctx)
@@ -1472,6 +1640,14 @@ func (c *Client) load(ctx context.Context) (Profile, AccountSession, State, erro
 		state.Deferred = map[string]serverRecord{}
 	}
 	return profile, session, state, nil
+}
+
+func (c *Client) loadProfile(ctx context.Context) (Profile, error) {
+	var profile Profile
+	if err := c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile); err != nil {
+		return Profile{}, err
+	}
+	return profile, nil
 }
 
 func (c *Client) saveProfile(ctx context.Context, profile Profile) error {
@@ -1502,6 +1678,38 @@ func (c *Client) loadAccountSession(ctx context.Context) (AccountSession, error)
 
 func (c *Client) saveAccountSession(ctx context.Context, session AccountSession) error {
 	return c.vault.Put(ctx, store.TypeAccountSession, accountID, session)
+}
+
+func (c *Client) clearSyncConfiguration(ctx context.Context) error {
+	var errs []error
+	if err := c.vault.Delete(ctx, profileID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		errs = append(errs, err)
+	}
+	if err := c.vault.Delete(ctx, stateID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		errs = append(errs, err)
+	}
+	if err := c.vault.Delete(ctx, pairingID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		errs = append(errs, err)
+	}
+	deletions, err := store.New(c.vault).ListDeletions(ctx)
+	if err == nil {
+		for _, deletion := range deletions {
+			if deleteErr := c.vault.Delete(ctx, deletion.ID); deleteErr != nil {
+				errs = append(errs, deleteErr)
+			}
+		}
+	} else {
+		errs = append(errs, err)
+	}
+	session, err := c.loadAccountSession(ctx)
+	if err == nil {
+		session.DeviceID = ""
+		session.DeviceName = ""
+		if saveErr := c.saveAccountSession(ctx, session); saveErr != nil {
+			errs = append(errs, saveErr)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func createRecoveryBundle(syncRootKey []byte, generation int64) (string, map[string]any, error) {

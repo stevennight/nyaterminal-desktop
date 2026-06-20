@@ -205,10 +205,8 @@ func (a *App) Bootstrap() (Bootstrap, error) {
 		result.Account = &account
 	}
 	result.SyncConfigured = a.sync.Configured(a.context())
-	if result.SyncConfigured {
-		if summary, err := a.sync.Summary(a.context()); err == nil {
-			result.SyncSummary = &summary
-		}
+	if summary, err := a.sync.Summary(a.context()); err == nil && (summary.ServerURL != "" || summary.Configured || summary.LoggedIn) {
+		result.SyncSummary = &summary
 	}
 	return result, nil
 }
@@ -559,12 +557,24 @@ func (a *App) BootstrapAccount(serverURL, username, password string) (syncclient
 	return a.sync.BootstrapAccount(a.context(), serverURL, username, password)
 }
 
+func (a *App) SyncServerStatus(serverURL string) (syncclient.RemoteStatus, error) {
+	return a.sync.RemoteStatus(a.context(), serverURL)
+}
+
+func (a *App) InitializeSync(deviceName string) (syncclient.SetupResult, error) {
+	return a.sync.InitializeSync(a.context(), deviceName)
+}
+
 func (a *App) LoginAccount(serverURL, username, password, deviceID, secondFactor string) error {
 	return a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID, secondFactor)
 }
 
 func (a *App) LogoutAccount() error {
 	return a.sync.Logout(a.context())
+}
+
+func (a *App) ResetSync(password, totpCode string) error {
+	return a.sync.ResetSync(a.context(), password, totpCode)
 }
 
 func (a *App) SyncNow(syncSecrets, syncHistory bool) (syncclient.SyncResult, error) {
@@ -708,6 +718,9 @@ func (a *App) runSyncOnce() {
 	}()
 
 	if a.vault == nil || !a.sync.AutoSyncEnabled(a.context()) {
+		return
+	}
+	if !a.sync.LoggedIn(a.context()) || !a.sync.Configured(a.context()) {
 		return
 	}
 	status, err := a.vault.Status(a.context())

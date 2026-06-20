@@ -70,6 +70,13 @@ type Backend = {
   DownloadFile(connectionId: string, remotePath: string, suggestedName: string): Promise<SFTPTransfer>
   BootstrapAccount(serverUrl: string, username: string, password: string):
     Promise<{ accessToken: string; refreshToken: string; accessExpiresAt: string; refreshExpiresAt: string }>
+  SyncServerStatus(serverUrl: string): Promise<{
+    serverInitialized: boolean
+    syncInitialized: boolean
+    recoveryUpdatedAt?: string
+    recoveryGeneration?: number
+  }>
+  InitializeSync(deviceName: string): Promise<{ deviceId: string; recoveryCode: string }>
   RecoverSync(
     serverUrl: string, username: string, password: string, totpCode: string,
     deviceName: string, recoveryCode: string
@@ -79,6 +86,7 @@ type Backend = {
     serverUrl: string, username: string, password: string, deviceId: string, secondFactor: string
   ): Promise<void>
   LogoutAccount(): Promise<void>
+  ResetSync(password: string, totpCode: string): Promise<void>
   SyncNow(syncSecrets: boolean, syncHistory: boolean):
     Promise<{ pushed: number; pulled: number; conflicts: number; cursor: number }>
   BeginDevicePairing(serverUrl: string, deviceName: string): Promise<{

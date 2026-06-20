@@ -312,12 +312,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .sync-button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .sync-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
 .pairing-card { display: flex; gap: 18px; align-items: center; margin-bottom: 14px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--bg); }
-.pairing-card canvas { width: 150px !important; height: 150px !important; padding: 5px; border-radius: 7px; background: white; image-rendering: pixelated; }
+.pairing-card canvas, .pairing-card img, .pairing-placeholder { width: 150px !important; height: 150px !important; padding: 5px; border-radius: 7px; background: white; image-rendering: pixelated; }
 .pairing-card > div { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .pairing-card small { color: var(--muted); }
 .pairing-card strong { color: var(--accent); font-size: 25px; letter-spacing: .18em; }
 .pairing-card p { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .pairing-card button { border: 1px solid var(--line); background: var(--panel2); color: var(--text); border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+.pairing-placeholder { display: grid; place-items: center; color: var(--muted); font-size: 10px; }
 .pairing-approval { margin: 4px 0 15px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; }
 .pairing-approval summary { cursor: pointer; color: var(--muted); font-size: 11px; margin-bottom: 10px; }
 .device-list { display: flex; flex-direction: column; gap: 5px; }
