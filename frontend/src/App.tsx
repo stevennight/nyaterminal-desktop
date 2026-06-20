@@ -729,6 +729,13 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
   const [deviceName, setDeviceName] = useState(syncSummary?.deviceName ?? '当前设备')
   const [recoveryCode, setRecoveryCode] = useState('')
+  const [joinPassword, setJoinPassword] = useState('')
+  const [joinTotpCode, setJoinTotpCode] = useState('')
+  const [syncRecoveryCode, setSyncRecoveryCode] = useState('')
+  const [pairing, setPairing] = useState<{
+    pairingId: string; deviceId: string; shortCode: string; qrPayload: string; expiresAt: string
+  }>()
+  const [pairingCodeUrl, setPairingCodeUrl] = useState('')
   const [resetPassword, setResetPassword] = useState('')
   const [resetTotpCode, setResetTotpCode] = useState('')
   const [resetConfirmText, setResetConfirmText] = useState('')
@@ -741,6 +748,21 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   useEffect(() => {
     setDeviceName(syncSummary?.deviceName ?? '当前设备')
   }, [syncSummary?.deviceName])
+
+  useEffect(() => {
+    let active = true
+    if (!pairing?.qrPayload) {
+      setPairingCodeUrl('')
+      return
+    }
+    void QRCode.toDataURL(pairing.qrPayload, {
+      margin: 1,
+      width: 150
+    }).then(url => {
+      if (active) setPairingCodeUrl(url)
+    }).catch(error => showNotice('设备加入', String(error)))
+    return () => { active = false }
+  }, [pairing?.qrPayload])
 
   const sections = [
     { id: 'appearance', label: '外观', icon: Paintbrush },
@@ -816,6 +838,78 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     }
   }
 
+  const recoverSync = async () => {
+    if (!syncSummary?.serverUrl || !syncSummary?.username) {
+      showNotice('设备加入', '请先登录服务端账号。')
+      return
+    }
+    onSyncBusyChange(true)
+    try {
+      await api.RecoverSync(
+        syncSummary.serverUrl,
+        syncSummary.username,
+        joinPassword,
+        joinTotpCode.trim(),
+        deviceName.trim(),
+        syncRecoveryCode.trim()
+      )
+      setSyncRecoveryCode('')
+      setJoinPassword('')
+      setJoinTotpCode('')
+      setPairing(undefined)
+      showNotice('设备加入', '本机已通过恢复码加入同步保险库。')
+      await onReload()
+    } catch (error) {
+      showNotice('设备加入', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const beginPairing = async () => {
+    if (!syncSummary?.serverUrl) {
+      showNotice('设备加入', '请先登录服务端账号。')
+      return
+    }
+    onSyncBusyChange(true)
+    try {
+      setPairing(await api.BeginDevicePairing(syncSummary.serverUrl, deviceName.trim()))
+      showNotice('设备加入', '请使用已加入同步的设备扫描二维码并批准。')
+    } catch (error) {
+      showNotice('设备加入', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const claimPairing = async () => {
+    if (!syncSummary?.username) {
+      showNotice('设备加入', '请先登录服务端账号。')
+      return
+    }
+    onSyncBusyChange(true)
+    try {
+      const result = await api.ClaimDevicePairing(
+        syncSummary.username,
+        joinPassword,
+        joinTotpCode.trim()
+      )
+      if (!result.approved) {
+        showNotice('设备加入', '设备加入请求还未批准。')
+        return
+      }
+      setPairing(undefined)
+      setJoinPassword('')
+      setJoinTotpCode('')
+      showNotice('设备加入', '本机已通过已授权设备批准加入同步。')
+      await onReload()
+    } catch (error) {
+      showNotice('设备加入', String(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
   const resetSync = async () => {
     if (!window.confirm('这会清空服务端同步保险库、设备和同步记录。确认继续？')) return
     onSyncBusyChange(true)
@@ -826,6 +920,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       setResetTotpCode('')
       setResetConfirmText('')
       setRecoveryCode('')
+      setSyncRecoveryCode('')
+      setJoinPassword('')
+      setJoinTotpCode('')
+      setPairing(undefined)
       showNotice('同步保险库已重置', '本机已退出同步配置，可重新初始化或使用恢复码加入。')
       await onReload()
     } catch (error) {
@@ -928,7 +1026,27 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
           onClick={() => void initializeSync()}>{syncBusy ? '处理中…' : '初始化同步保险库'}</button>
       </div>}
       {loggedIn && syncInitialized && !syncConfigured && <div className="pairing-approval">
-        <small className="hint full">服务端已有同步保险库，但本机还没加入。请在账号管理中使用恢复码加入，或通过已有设备批准加入。</small>
+        <label>设备名称<input value={deviceName} onChange={e => setDeviceName(e.target.value)} /></label>
+        <small className="hint full">服务端已有同步保险库，但本机还没加入。可以使用恢复码直接加入，或请求一台已加入的设备批准。</small>
+        <label>账号密码<input type="password" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} /></label>
+        <label>TOTP / 恢复码<input value={joinTotpCode} onChange={e => setJoinTotpCode(e.target.value.trim())} /></label>
+        <label>同步恢复码<input value={syncRecoveryCode} onChange={e => setSyncRecoveryCode(e.target.value)} /></label>
+        <button className="secondary wide" type="button" disabled={syncBusy || !joinPassword || !syncRecoveryCode.trim()}
+          onClick={() => void recoverSync()}>{syncBusy ? '处理中…' : '用恢复码加入'}</button>
+        <div className="settings-divider" />
+        {!pairing && <button className="secondary wide" type="button" disabled={syncBusy}
+          onClick={() => void beginPairing()}>{syncBusy ? '处理中…' : '请求已有设备批准'}</button>}
+        {!!pairing && <div className="pairing-card">
+          {pairingCodeUrl ? <img src={pairingCodeUrl} alt="配对二维码" /> : <div className="pairing-placeholder">生成二维码中…</div>}
+          <div>
+            <small>请在已加入同步的设备上批准</small>
+            <strong>{pairing.shortCode}</strong>
+            <p>核对短码后批准，批准完成后回到这里领取同步根密钥。</p>
+            <button disabled={syncBusy || !joinPassword} onClick={() => void claimPairing()}>
+              {syncBusy ? '处理中…' : '我已批准，继续加入'}
+            </button>
+          </div>
+        </div>}
       </div>}
       {!!recoveryCode && <div className="pairing-approval">
         <label>同步恢复码<textarea readOnly rows={3} value={recoveryCode} /></label>
@@ -999,12 +1117,6 @@ function AccountManagerDialog({ account, onClose, onReload }: {
   }>>([])
   const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
   const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
-  const [joinDeviceName, setJoinDeviceName] = useState(account?.deviceName ?? '当前设备')
-  const [syncRecoveryCode, setSyncRecoveryCode] = useState('')
-  const [pairing, setPairing] = useState<{
-    pairingId: string; deviceId: string; shortCode: string; qrPayload: string; expiresAt: string
-  }>()
-  const [pairingCodeUrl, setPairingCodeUrl] = useState('')
   useEffect(() => {
     if (account?.serverUrl) setServerUrl(account.serverUrl)
     if (account?.username) setUsername(account.username)
@@ -1012,25 +1124,10 @@ function AccountManagerDialog({ account, onClose, onReload }: {
     setDeviceId(account?.deviceId ?? '')
     setAccessExpiresAt(account?.accessExpiresAt ?? '')
     setRefreshExpiresAt(account?.refreshExpiresAt ?? '')
-    setJoinDeviceName(account?.deviceName ?? '当前设备')
-  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.accessExpiresAt, account?.refreshExpiresAt, account?.deviceName])
+  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.accessExpiresAt, account?.refreshExpiresAt])
   useEffect(() => {
     if (loggedIn) void loadDevices()
   }, [loggedIn])
-  useEffect(() => {
-    let active = true
-    if (!pairing?.qrPayload) {
-      setPairingCodeUrl('')
-      return
-    }
-    void QRCode.toDataURL(pairing.qrPayload, {
-      margin: 1,
-      width: 150
-    }).then(url => {
-      if (active) setPairingCodeUrl(url)
-    }).catch(error => showNotice('设备加入', String(error)))
-    return () => { active = false }
-  }, [pairing?.qrPayload])
   const showNotice = (title: string, message: string) => setNotice({ title, message })
   const login = async () => {
     try {
@@ -1070,38 +1167,6 @@ function AccountManagerDialog({ account, onClose, onReload }: {
       setAccountRecoveryCodes(await api.ConfirmSyncTOTPSetup(totpSetup.setupToken, totpCode))
       showNotice('TOTP 设置', 'TOTP 已启用。请离线保存账号恢复码。')
     } catch (error) { showNotice('TOTP 设置', String(error)) }
-  }
-  const recoverSync = async () => {
-    try {
-      await api.RecoverSync(
-        serverUrl, username, password, totpCode.trim(), joinDeviceName.trim(), syncRecoveryCode.trim()
-      )
-      showNotice('设备加入', '本机已通过恢复码加入同步保险库。')
-      setSyncRecoveryCode('')
-      setPassword('')
-      setTotpCode('')
-      await onReload()
-    } catch (error) { showNotice('设备加入', String(error)) }
-  }
-  const beginPairing = async () => {
-    try {
-      setPairing(await api.BeginDevicePairing(serverUrl, joinDeviceName.trim()))
-      showNotice('设备加入', '请使用已加入同步的设备扫描二维码并批准。')
-    } catch (error) { showNotice('设备加入', String(error)) }
-  }
-  const claimPairing = async () => {
-    try {
-      const result = await api.ClaimDevicePairing(username, password, totpCode.trim())
-      if (!result.approved) {
-        showNotice('设备加入', '设备加入请求还未批准。')
-        return
-      }
-      showNotice('设备加入', '本机已通过已授权设备批准加入同步。')
-      setPairing(undefined)
-      setPassword('')
-      setTotpCode('')
-      await onReload()
-    } catch (error) { showNotice('设备加入', String(error)) }
   }
   if (!loggedIn) {
     return <Modal title="账号管理" onClose={onClose} width="720px">
@@ -1154,26 +1219,6 @@ function AccountManagerDialog({ account, onClose, onReload }: {
           <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
         </div>
       </div>
-      {account?.syncInitialized && !account?.configured && <details className="pairing-approval" open>
-        <summary>加入同步保险库</summary>
-        <label>设备名称<input value={joinDeviceName} onChange={e => setJoinDeviceName(e.target.value)} /></label>
-        <label>账号密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-        <label>TOTP / 恢复码<input value={totpCode} onChange={e => setTotpCode(e.target.value.trim())} /></label>
-        <label>同步恢复码<input value={syncRecoveryCode} onChange={e => setSyncRecoveryCode(e.target.value)} /></label>
-        <button className="secondary wide" disabled={!password || !syncRecoveryCode.trim()}
-          onClick={() => void recoverSync()}>用恢复码加入</button>
-        <div className="settings-divider" />
-        {!pairing && <button className="secondary wide" onClick={() => void beginPairing()}>请求已有设备批准</button>}
-        {!!pairing && <div className="pairing-card">
-          {pairingCodeUrl ? <img src={pairingCodeUrl} alt="配对二维码" /> : <div className="pairing-placeholder">生成二维码中…</div>}
-          <div>
-            <small>请在已加入同步的设备上批准</small>
-            <strong>{pairing.shortCode}</strong>
-            <p>核对短码后批准，批准完成后回到这里领取同步根密钥。</p>
-            <button disabled={!password} onClick={() => void claimPairing()}>我已批准，继续加入</button>
-          </div>
-        </div>}
-      </details>}
       <div className="pairing-approval">
         <div className="device-list">
           {devices.map(device => <div key={device.id}>
