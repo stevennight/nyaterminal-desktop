@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
@@ -49,10 +50,8 @@ type GroupEditorState = {
   initial?: Group
   initialParentId?: string
 }
-type ContextMenuItem = {
-  label: string
-  danger?: boolean
-  onSelect: () => void | Promise<void>
+type TagEditorState = {
+  initial?: Tag
 }
 type ContextMenuState = {
   x: number
@@ -61,6 +60,7 @@ type ContextMenuState = {
 }
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
+const DEFAULT_TAG_COLOR = '#62D9CA'
 
 const emptyConnection: Connection = {
   id: '', name: '', remark: '', host: '', port: 22, username: 'root',
@@ -318,13 +318,28 @@ function normalizeHexColorInput(value: string) {
   return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed.toUpperCase() : undefined
 }
 
+function tagColor(value?: string) {
+  return normalizeHexColorInput(value ?? '') ?? DEFAULT_TAG_COLOR
+}
+
+function withHexAlpha(color: string, alpha: string) {
+  return `${tagColor(color)}${alpha}`
+}
+
+function tagChipStyle(color: string, active = false): CSSProperties {
+  return {
+    borderColor: active ? withHexAlpha(color, '72') : withHexAlpha(color, '46'),
+    background: active ? withHexAlpha(color, '28') : withHexAlpha(color, '12'),
+  }
+}
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap>()
   const [error, setError] = useState('')
   const [theme, setTheme] = useState<ThemeName>(() => getPreferredTheme())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
-  const [tagEditor, setTagEditor] = useState(false)
+  const [tagEditor, setTagEditor] = useState<TagEditorState>()
   const [accountManagerOpen, setAccountManagerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sftpWorkspace, setSftpWorkspace] = useState<Connection>()
@@ -522,6 +537,17 @@ export function App() {
     }
   }
 
+  const deleteTag = async (tag: Tag) => {
+    if (!window.confirm(`确定删除标签 ${tag.name}？`)) return
+    try {
+      await api.DeleteTag(tag.id)
+      setActiveTag(current => current === tag.id ? '' : current)
+      await reload()
+    } catch (reason) {
+      setError(localizeError(reason))
+    }
+  }
+
   const showGroupContextMenu = (event: React.MouseEvent, group: Group) => {
     event.preventDefault()
     setContextMenu({
@@ -571,6 +597,25 @@ export function App() {
           label: '删除',
           danger: true,
           onSelect: () => deleteConnection(connection)
+        },
+      ],
+    })
+  }
+
+  const showTagContextMenu = (event: React.MouseEvent, tag: Tag) => {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        {
+          label: '编辑',
+          onSelect: () => setTagEditor({ initial: tag })
+        },
+        {
+          label: '删除',
+          danger: true,
+          onSelect: () => deleteTag(tag)
         },
       ],
     })
@@ -652,25 +697,14 @@ export function App() {
         </nav>
         <div className="tag-section">
           <div className="section-heading"><span>标签</span>
-            <button title="新建标签" onClick={() => setTagEditor(true)}><Plus size={14} /></button></div>
+            <button title="新建标签" onClick={() => setTagEditor({})}><Plus size={14} /></button></div>
           <div className="tag-list">
             {(bootstrap.tags ?? []).map(tag => <button key={tag.id}
               className={activeTag === tag.id ? 'active' : ''}
+              style={tagChipStyle(tag.color, activeTag === tag.id)}
               onClick={() => setActiveTag(current => current === tag.id ? '' : tag.id)}
-              onContextMenu={event => {
-                event.preventDefault()
-                const name = window.prompt('修改标签名称；留空将删除标签', tag.name)
-                if (name === null) return
-                if (!name.trim()) {
-                  if (window.confirm(`确定删除标签 ${tag.name}？`)) {
-                    void api.DeleteTag(tag.id).then(reload).catch(reason => setError(localizeError(reason)))
-                  }
-                } else {
-                  void api.SaveTag({ ...tag, name: name.trim() }).then(reload)
-                    .catch(reason => setError(localizeError(reason)))
-                }
-              }}>
-              <i style={{ background: tag.color }} /><span>{tag.name}</span>
+              onContextMenu={event => showTagContextMenu(event, tag)}>
+              <i style={{ background: tagColor(tag.color) }} /><span>{tag.name}</span>
             </button>)}
           </div>
         </div>
@@ -818,8 +852,9 @@ export function App() {
         groups={bootstrap.groups ?? []}
         onClose={() => setGroupEditor(undefined)}
         onSaved={async _group => { setGroupEditor(undefined); await reload() }} />}
-      {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
-        onSaved={async () => { setTagEditor(false); await reload() }} />}
+      {tagEditor && <TagEditor initial={tagEditor.initial}
+        onClose={() => setTagEditor(undefined)}
+        onSaved={async () => { setTagEditor(undefined); await reload() }} />}
       {renamingTab && <RenameTabDialog
         value={renamingTab.value}
         placeholder={sessionLabel(sessions.find(item => item.id === renamingTab.id) ?? {
@@ -1149,58 +1184,6 @@ function Modal({ title, children, onClose, width = '520px', footer, bodyClassNam
   )
 }
 
-function ContextMenu({ x, y, items, onClose }: {
-  x: number
-  y: number
-  items: ContextMenuItem[]
-  onClose: () => void
-}) {
-  const menu = useRef<HTMLDivElement>(null)
-  const target = modalPortalTarget()
-
-  useEffect(() => {
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const targetNode = event.target as Node | null
-      if (menu.current?.contains(targetNode)) return
-      onClose()
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('pointerdown', closeOnPointerDown, true)
-    window.addEventListener('keydown', closeOnEscape)
-    window.addEventListener('resize', onClose)
-    window.addEventListener('scroll', onClose, true)
-    return () => {
-      window.removeEventListener('pointerdown', closeOnPointerDown, true)
-      window.removeEventListener('keydown', closeOnEscape)
-      window.removeEventListener('resize', onClose)
-      window.removeEventListener('scroll', onClose, true)
-    }
-  }, [onClose])
-
-  if (!target || typeof window === 'undefined') return null
-  const estimatedWidth = 180
-  const estimatedHeight = items.length * 34 + 14
-  const left = Math.max(12, Math.min(x, window.innerWidth - estimatedWidth - 12))
-  const top = Math.max(12, Math.min(y, window.innerHeight - estimatedHeight - 12))
-
-  return createPortal(
-    <div className="context-menu" ref={menu} style={{ left, top }}
-      onContextMenu={event => event.preventDefault()}>
-      {items.map((item, index) => <button key={`${item.label}-${index}`} type="button"
-        className={item.danger ? 'danger' : ''}
-        onClick={() => {
-          onClose()
-          void item.onSelect()
-        }}>
-        {item.label}
-      </button>)}
-    </div>,
-    target,
-  )
-}
-
 function GroupCascader({
   groups,
   value,
@@ -1393,9 +1376,10 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
       <div className="full connection-tags"><span>标签</span><div>
         {tags.map(tag => <button key={tag.id} type="button"
           className={value.tags.includes(tag.id) ? 'selected' : ''}
+          style={tagChipStyle(tag.color, value.tags.includes(tag.id))}
           onClick={() => update('tags', value.tags.includes(tag.id)
             ? value.tags.filter(id => id !== tag.id) : [...value.tags, tag.id])}>
-          <i style={{ background: tag.color }} />{tag.name}
+          <i style={{ background: tagColor(tag.color) }} />{tag.name}
         </button>)}
         {!tags.length && <small>可先在左侧创建标签</small>}
       </div></div>
@@ -1508,21 +1492,96 @@ function GroupEditor({ groups, initial, initialParentId = '', onClose, onSaved }
   </Modal>
 }
 
-function TagEditor({ onClose, onSaved }: {
-  onClose: () => void; onSaved: () => Promise<void>
+function TagEditor({ initial, onClose, onSaved }: {
+  initial?: Tag
+  onClose: () => void
+  onSaved: () => Promise<void>
 }) {
-  const [name, setName] = useState('')
-  const [color, setColor] = useState('#62d9ca')
-  return <Modal title="新建标签" onClose={onClose} footer={<>
+  const editing = Boolean(initial?.id)
+  const initialColor = tagColor(initial?.color)
+  const [name, setName] = useState(initial?.name ?? '')
+  const [color, setColor] = useState(initialColor)
+  const [colorInput, setColorInput] = useState(initialColor)
+  const [error, setError] = useState('')
+
+  const updateColorPicker = (value: string) => {
+    const next = tagColor(value)
+    setColor(next)
+    setColorInput(next)
+    setError('')
+  }
+
+  const updateColorText = (value: string) => {
+    const next = value.trim().toUpperCase()
+    setColorInput(next)
+    const normalized = normalizeHexColorInput(next)
+    if (normalized) {
+      setColor(normalized)
+      setError('')
+    }
+  }
+
+  const restoreDefaultColor = () => {
+    setColor(DEFAULT_TAG_COLOR)
+    setColorInput(DEFAULT_TAG_COLOR)
+    setError('')
+  }
+
+  const save = async () => {
+    const nextName = name.trim()
+    if (!nextName) {
+      setError('请输入标签名称。')
+      return
+    }
+    const nextColor = normalizeHexColorInput(colorInput)
+    if (!nextColor) {
+      setError('颜色需为 #RRGGBB，例如 #62D9CA。')
+      return
+    }
+    try {
+      setError('')
+      await api.SaveTag({
+        id: initial?.id ?? '',
+        name: nextName,
+        color: nextColor
+      })
+      await onSaved()
+    } catch (reason) {
+      setError(localizeError(reason))
+    }
+  }
+
+  return <Modal title={editing ? '编辑标签' : '新建标签'} onClose={onClose} footer={<>
     <button onClick={onClose}>取消</button>
-    <button className="primary" onClick={() => void api.SaveTag({
-      id: '', name, color
-    }).then(onSaved)}>创建</button>
+    <button className="primary" disabled={!name.trim()} onClick={() => void save()}>
+      {editing ? '保存' : '创建'}
+    </button>
   </>}>
-    <div className="form-grid">
-      <label className="wide">名称<input autoFocus value={name} onChange={e => setName(e.target.value)} /></label>
-      <label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label>
+    <div className="form-grid tag-editor-form">
+      <label className="full">名称<input autoFocus value={name} onChange={e => {
+        setName(e.target.value)
+        if (error) setError('')
+      }} /></label>
+      <label className="full tag-color-field">
+        <span>颜色</span>
+        <div className="tag-color-controls">
+          <input type="color" value={color} onChange={e => updateColorPicker(e.target.value)} />
+          <input className="tag-color-hex" value={colorInput} spellCheck={false}
+            placeholder={DEFAULT_TAG_COLOR}
+            onChange={e => updateColorText(e.target.value)} />
+          <button type="button" className="secondary" onClick={restoreDefaultColor}>恢复默认</button>
+        </div>
+      </label>
+      <div className="tag-preview-card full" style={tagChipStyle(color, true)}>
+        <i style={{ background: color }} />
+        <div>
+          <strong>{name.trim() || '标签预览'}</strong>
+          <small>{color}</small>
+        </div>
+      </div>
+      <small className="tag-preview-note full">颜色会显示在左侧标签筛选和连接表单里的标签按钮上。</small>
     </div>
+    {error && <div className="form-error">{error}</div>}
   </Modal>
 }
 

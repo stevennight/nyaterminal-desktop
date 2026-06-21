@@ -1,10 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowDownToLine, ArrowUpFromLine, Folder, FolderPlus, Maximize2,
   Pause, Pencil, Play, RefreshCw, Square, Trash2, X
 } from 'lucide-react'
 import { api } from './bridge'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
+
+type ContextMenuState = {
+  x: number
+  y: number
+  items: ContextMenuItem[]
+}
+
+type RenameState = {
+  entry: RemoteEntry
+  value: string
+}
 
 export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   connection: Connection
@@ -17,6 +30,8 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<RemoteEntry>()
   const [transfers, setTransfers] = useState<SFTPTransfer[]>([])
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>()
+  const [renaming, setRenaming] = useState<RenameState>()
 
   const load = async (next = remotePath) => {
     setBusy(true)
@@ -25,6 +40,8 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
       setEntries(await api.ListRemote(connection.id, next))
       setRemotePath(next)
       setSelected(undefined)
+      setContextMenu(undefined)
+      setRenaming(undefined)
     } catch (value) {
       setError(String(value))
     } finally {
@@ -44,26 +61,91 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
     return () => window.clearInterval(timer)
   }, [connection.id])
 
-  const createDirectory = async () => {
+  const createDirectory = async (basePath = remotePath) => {
     const name = window.prompt('新建远端目录名称')
     if (!name?.trim()) return
-    await api.CreateRemoteDirectory(connection.id, joinRemote(remotePath, name.trim()))
+    await api.CreateRemoteDirectory(connection.id, joinRemote(basePath, name.trim()))
     await load()
+  }
+  const openRenameDialog = (entry = selected) => {
+    if (!entry) return
+    setContextMenu(undefined)
+    setRenaming({ entry, value: entry.name })
   }
   const rename = async () => {
-    if (!selected) return
-    const name = window.prompt('新的名称', selected.name)
-    if (!name?.trim() || name.trim() === selected.name) return
-    await api.RenameRemote(connection.id, selected.path, joinRemote(remotePath, name.trim()))
+    if (!renaming) return
+    const name = renaming.value.trim()
+    if (!name || name === renaming.entry.name) {
+      setRenaming(undefined)
+      return
+    }
+    await api.RenameRemote(
+      connection.id,
+      renaming.entry.path,
+      joinRemote(parentRemote(renaming.entry.path), name),
+    )
     await load()
   }
-  const remove = async () => {
-    if (!selected || !window.confirm(`确定删除 ${selected.name}？`)) return
-    await api.DeleteRemote(connection.id, selected.path, selected.isDir)
+  const remove = async (entry = selected) => {
+    if (!entry || !window.confirm(`确定删除 ${entry.name}？`)) return
+    await api.DeleteRemote(connection.id, entry.path, entry.isDir)
     await load()
+  }
+  const download = async (entry = selected) => {
+    if (!entry) return
+    if (entry.isDir) {
+      setError('暂不支持直接下载目录，请进入目录后选择文件下载。')
+      return
+    }
+    await api.DownloadFile(connection.id, entry.path, entry.name)
+  }
+  const copyPath = async (entry = selected) => {
+    if (!entry) return
+    if (!navigator.clipboard?.writeText) {
+      setError('当前环境不支持复制到剪贴板。')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(entry.path)
+    } catch {
+      setError('复制路径失败，请稍后重试。')
+    }
+  }
+  const showEntryContextMenu = (event: MouseEvent<HTMLDivElement>, entry: RemoteEntry) => {
+    event.preventDefault()
+    setSelected(entry)
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        {
+          label: '重命名',
+          onSelect: () => openRenameDialog(entry),
+        },
+        {
+          label: '下载',
+          disabled: entry.isDir,
+          onSelect: () => download(entry),
+        },
+        {
+          label: entry.isDir ? '复制目录路径' : '复制文件路径',
+          onSelect: () => copyPath(entry),
+        },
+        {
+          label: entry.isDir ? '新建子目录' : '新建目录',
+          onSelect: () => createDirectory(entry.isDir ? entry.path : remotePath),
+        },
+        {
+          label: '删除',
+          danger: true,
+          onSelect: () => remove(entry),
+        },
+      ],
+    })
   }
 
   return (
+    <>
     <aside className="sftp-panel">
       <header>
         <strong>SFTP</strong>
@@ -76,7 +158,7 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
             <FolderPlus size={16} />
           </button>
           <button title="重命名" disabled={!selected}
-            onClick={() => void rename().catch(value => setError(String(value)))}>
+            onClick={() => openRenameDialog()}>
             <Pencil size={15} />
           </button>
           <button title="删除" disabled={!selected}
@@ -92,18 +174,30 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
         onChange={event => setRemotePath(event.target.value)}
         onKeyDown={event => event.key === 'Enter' && void load(remotePath)} />
       {error && <div className="inline-error">{error}</div>}
-      <div className="file-list">
+      <div className="file-list" onClick={event => {
+        if (event.target === event.currentTarget) {
+          setSelected(undefined)
+          setContextMenu(undefined)
+        }
+      }}>
         {busy && <div className="empty">正在读取目录…</div>}
         {!busy && entries.map(entry => (
           <div className={`file-row ${selected?.path === entry.path ? 'selected' : ''}`} key={entry.path}
-            onClick={() => setSelected(entry)}
+            onClick={() => {
+              setSelected(entry)
+              setContextMenu(undefined)
+            }}
+            onContextMenu={event => showEntryContextMenu(event, entry)}
             onDoubleClick={() => entry.isDir && void load(entry.path)}>
             {entry.isDir ? <Folder size={16} /> : <span className="file-dot" />}
             <span className="file-name">{entry.name}</span>
             <span className="file-size">{entry.isDir ? '' : formatSize(entry.size)}</span>
             {!entry.isDir && (
-              <button title="下载" onClick={() => void api.DownloadFile(connection.id, entry.path, entry.name)
-                .catch(value => setError(String(value)))}>
+              <button title="下载" onClick={event => {
+                event.stopPropagation()
+                setSelected(entry)
+                void download(entry).catch(value => setError(String(value)))
+              }}>
                 <ArrowDownToLine size={14} />
               </button>
             )}
@@ -136,6 +230,58 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
         </div>}
       </div>
     </aside>
+    {contextMenu && <ContextMenu
+      x={contextMenu.x}
+      y={contextMenu.y}
+      items={contextMenu.items}
+      onClose={() => setContextMenu(undefined)}
+    />}
+    {renaming && <RenameDialog
+      value={renaming.value}
+      entry={renaming.entry}
+      onChange={value => setRenaming(current => current ? { ...current, value } : current)}
+      onClose={() => setRenaming(undefined)}
+      onSave={() => void rename().catch(value => setError(String(value)))}
+    />}
+    </>
+  )
+}
+
+function RenameDialog({ value, entry, onChange, onClose, onSave }: {
+  value: string
+  entry: RemoteEntry
+  onChange: (value: string) => void
+  onClose: () => void
+  onSave: () => void
+}) {
+  const target = modalPortalTarget()
+  if (!target) return null
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+      <section className="modal" style={{ width: '420px' }}>
+        <header><h2>重命名{entry.isDir ? '目录' : '文件'}</h2><button onClick={onClose}><X size={18} /></button></header>
+        <div className="modal-body">
+          <div className="form-grid rename-tab-form">
+            <label className="full">名称
+              <input
+                autoFocus
+                value={value}
+                onChange={event => onChange(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') onSave()
+                }}
+              />
+            </label>
+            <small className="hint full">当前路径：{entry.path}</small>
+          </div>
+        </div>
+        <footer className="modal-actions">
+          <button onClick={onClose}>取消</button>
+          <button className="primary" onClick={onSave}>保存</button>
+        </footer>
+      </section>
+    </div>,
+    target,
   )
 }
 
@@ -153,6 +299,18 @@ function transferStatus(item: SFTPTransfer) {
 
 function joinRemote(parent: string, name: string) {
   return `${parent.replace(/\/+$/, '')}/${name}`.replace(/^\.\//, '')
+}
+
+function parentRemote(value: string) {
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
+  const index = normalized.lastIndexOf('/')
+  if (index < 0) return '.'
+  return normalized.slice(0, index) || '/'
+}
+
+function modalPortalTarget() {
+  if (typeof document === 'undefined') return null
+  return document.querySelector('.app-shell') ?? document.body
 }
 
 function formatSize(value: number) {

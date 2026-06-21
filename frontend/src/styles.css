@@ -45,7 +45,7 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .connection-tree { flex: 1; overflow: auto; padding: 0 8px; }
 .tag-section { max-height: 145px; overflow: hidden; padding-top: 8px; border-top: 1px solid var(--line); }
 .tag-list { max-height: 105px; overflow: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding: 0 12px 10px; }
-.tag-list button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; background: transparent; color: var(--muted); padding: 4px 8px; cursor: pointer; font-size: 10px; }
+.tag-list button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; background: transparent; color: var(--muted); padding: 4px 8px; cursor: pointer; font-size: 10px; transition: border-color .14s ease, background-color .14s ease, color .14s ease; }
 .tag-list button.active { border-color: var(--accent); color: var(--text); background: #62d9ca12; }
 .tag-list i, .connection-tags i { width: 7px; height: 7px; border-radius: 50%; }
 .group-row, .connection-row { width: 100%; border: 0; background: transparent; display: flex; align-items: center; text-align: left; cursor: default; border-radius: 8px; }
@@ -244,6 +244,9 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .file-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 7px; }
 .file-row { height: 35px; display: flex; align-items: center; gap: 8px; border-radius: 7px; padding: 0 5px; font-size: 11px; }
 .file-row:hover { background: var(--panel2); }
+.file-row.selected { background: #62d9ca19; outline: 1px solid #62d9ca40; }
+.file-row.selected .file-size { color: var(--accent); }
+.file-row.selected .file-dot { border-color: var(--accent); background: #62d9ca14; }
 .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { color: var(--muted); font-size: 9px; }
 .file-dot { width: 8px; height: 10px; border: 1px solid var(--muted); border-radius: 1px; }
@@ -324,6 +327,7 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .auth-card > p { text-align: center; color: var(--muted); margin: 0 0 26px; font-size: 13px; line-height: 1.6; }
 label { display: flex; flex-direction: column; gap: 7px; font-size: 11px; color: var(--muted, #8795a8); margin-bottom: 15px; }
 input, select, textarea { width: 100%; border: 1px solid var(--line, #263348); color: var(--text, #dce3ee); background: var(--bg, #0b1018); border-radius: 8px; padding: 9px 10px; outline: 0; resize: vertical; }
+input[type="color"] { padding: 4px; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca); box-shadow: 0 0 0 3px #62d9ca15; }
 .hint { display: block; margin: -6px 0 18px; color: #69778b; line-height: 1.5; }
 .unlock-icon { width: 55px; height: 55px; margin: -12px auto 20px; display: grid; place-items: center; border-radius: 50%; background: #62d9ca16; color: #62d9ca; }
@@ -358,13 +362,17 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
   text-align: left;
   padding: 0 10px;
 }
-.context-menu button:hover {
+.context-menu button:hover:not(:disabled) {
   background: var(--panel2);
+}
+.context-menu button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 .context-menu button.danger {
   color: #ff7d88;
 }
-.context-menu button.danger:hover {
+.context-menu button.danger:hover:not(:disabled) {
   background: #e44d5b22;
 }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 120px; column-gap: 10px; row-gap: 2px; }
@@ -373,8 +381,45 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .connection-tags { margin-bottom: 10px; }
 .connection-tags > span { color: var(--muted); font-size: 11px; }
 .connection-tags > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.connection-tags button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; background: var(--bg); color: var(--muted); padding: 5px 9px; cursor: pointer; font-size: 10px; }
+.connection-tags button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; background: var(--bg); color: var(--muted); padding: 5px 9px; cursor: pointer; font-size: 10px; transition: border-color .14s ease, background-color .14s ease, color .14s ease; }
 .connection-tags button.selected { border-color: var(--accent); color: var(--text); background: #62d9ca12; }
+.tag-editor-form { grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
+.tag-color-field { margin-bottom: 0; }
+.tag-color-controls { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.tag-color-controls input[type="color"] {
+  width: 56px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel2);
+  cursor: pointer;
+}
+.tag-color-controls input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.tag-color-controls input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 6px; }
+.tag-color-controls input[type="color"]::-moz-color-swatch { border: 0; border-radius: 6px; }
+.tag-color-hex { text-transform: uppercase; font-family: "Cascadia Mono", monospace; }
+.tag-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  margin-top: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.tag-preview-card i {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 4px #ffffff10;
+}
+.tag-preview-card > div { display: grid; gap: 3px; min-width: 0; }
+.tag-preview-card strong { color: var(--text); font-size: 12px; }
+.tag-preview-card small { color: var(--muted); font-size: 10px; }
+.tag-preview-note { margin-top: -2px; color: var(--muted); line-height: 1.5; }
 .check { flex-direction: row; align-items: center; }
 .check input { width: auto; }
 .modal-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 18px 20px 18px; background-color: var(--panel); }
