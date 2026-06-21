@@ -16,6 +16,13 @@ import (
 var assets embed.FS
 
 func main() {
+	if handled, exitCode, err := runHelloHelperIfRequested(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(exitCode)
+	}
+
 	dataDir, err := os.UserConfigDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot find configuration directory:", err)

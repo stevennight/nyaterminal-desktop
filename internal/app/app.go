@@ -254,9 +254,7 @@ func (a *App) UnlockWithSystem() error {
 		return err
 	}
 	defer a.finishUnlockAttempt()
-	err := a.withHelloPromptWindowWorkaround("UnlockWithSystem", func() error {
-		return a.vault.UnlockQuick(a.context(), "default")
-	})
+	err := a.vault.UnlockQuick(a.context(), "default")
 	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem UnlockQuick returned err=%v", err)
 	a.recordUnlockResult(err)
 	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem recordUnlockResult done err=%v", err)
@@ -301,9 +299,7 @@ func (a *App) recordUnlockResult(err error) {
 }
 
 func (a *App) EnableSystemUnlock() error {
-	return a.withHelloPromptWindowWorkaround("EnableSystemUnlock", func() error {
-		return a.vault.EnableQuickUnlock(a.context(), "default")
-	})
+	return a.vault.EnableQuickUnlock(a.context(), "default")
 }
 
 func (a *App) DisableSystemUnlock() error {
@@ -670,30 +666,6 @@ func (a *App) DisableSyncTOTP(password, code string) error {
 
 func (a *App) SetSyncAutoEnabled(enabled bool) error {
 	return a.sync.SetAutoSyncEnabled(a.context(), enabled)
-}
-
-func (a *App) withHelloPromptWindowWorkaround(operation string, action func() error) error {
-	ctx := a.context()
-	wasMinimised := runtime.WindowIsMinimised(ctx)
-	vault.AppendDiagnosticLogForApp(
-		a.dataDir,
-		"%s window workaround start wasMinimised=%t",
-		operation,
-		wasMinimised,
-	)
-	if !wasMinimised {
-		runtime.WindowMinimise(ctx)
-		vault.AppendDiagnosticLogForApp(a.dataDir, "%s window minimised before Windows Hello", operation)
-		time.Sleep(150 * time.Millisecond)
-		defer func() {
-			runtime.WindowUnminimise(ctx)
-			runtime.WindowShow(ctx)
-			vault.AppendDiagnosticLogForApp(a.dataDir, "%s window restored after Windows Hello", operation)
-		}()
-	}
-	err := action()
-	vault.AppendDiagnosticLogForApp(a.dataDir, "%s window workaround action returned err=%v", operation, err)
-	return err
 }
 
 func (a *App) context() context.Context {
