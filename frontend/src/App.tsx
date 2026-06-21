@@ -1065,6 +1065,16 @@ function GroupCascader({
     setActivePath(value ? groupPathIds(value, byId) : [])
   }, [open, value, byId])
 
+  const columns = useMemo(() => {
+    const result: Group[][] = [childrenByParent.get('') ?? []]
+    for (const parentId of activePath) {
+      const children = childrenByParent.get(parentId) ?? []
+      if (!children.length) break
+      result.push(children)
+    }
+    return result
+  }, [activePath, childrenByParent])
+
   useEffect(() => {
     if (!open) return
     const updatePanelPosition = () => {
@@ -1072,7 +1082,9 @@ function GroupCascader({
       if (!(trigger instanceof HTMLElement)) return
       const rect = trigger.getBoundingClientRect()
       const viewportWidth = window.innerWidth
-      const panelWidth = Math.min(560, viewportWidth - 32)
+      const columnCount = Math.max(columns.length, 1)
+      const columnWidth = 156
+      const panelWidth = Math.min(columnCount * columnWidth, viewportWidth - 32)
       const left = Math.min(rect.left, Math.max(16, viewportWidth - panelWidth - 16))
       setPanelStyle({
         position: 'fixed',
@@ -1101,17 +1113,7 @@ function GroupCascader({
       window.removeEventListener('pointerdown', closeOnOutside)
       window.removeEventListener('keydown', closeOnEscape)
     }
-  }, [open])
-
-  const columns = useMemo(() => {
-    const result: Group[][] = [childrenByParent.get('') ?? []]
-    for (const parentId of activePath) {
-      const children = childrenByParent.get(parentId) ?? []
-      if (!children.length) break
-      result.push(children)
-    }
-    return result
-  }, [activePath, childrenByParent])
+  }, [columns.length, open])
 
   return <div className="group-cascader" ref={host}>
     <button type="button" className={`group-cascader-trigger${open ? ' open' : ''}`}
