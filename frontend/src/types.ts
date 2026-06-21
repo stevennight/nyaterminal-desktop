@@ -27,6 +27,7 @@ export type Connection = {
   id: string
   groupId?: string
   name: string
+  remark?: string
   host: string
   port: number
   username: string
@@ -56,11 +57,38 @@ export type Settings = {
   theme: string
   fontFamily: string
   fontSize: number
+  terminalThemePreset: string
+  terminalThemeColors: TerminalThemeColors
   lockAfterMinutes: number
   disconnectOnLock: boolean
   syncCommandHistory: boolean
   syncSecretsByDefault: boolean
   sensitiveCommandRules: string[]
+}
+
+export type TerminalThemeColors = {
+  background: string
+  foreground: string
+  cursor: string
+  cursorAccent: string
+  selectionBackground: string
+  selectionForeground: string
+  black: string
+  red: string
+  green: string
+  yellow: string
+  blue: string
+  magenta: string
+  cyan: string
+  white: string
+  brightBlack: string
+  brightRed: string
+  brightGreen: string
+  brightYellow: string
+  brightBlue: string
+  brightMagenta: string
+  brightCyan: string
+  brightWhite: string
 }
 
 export type SyncSummary = {

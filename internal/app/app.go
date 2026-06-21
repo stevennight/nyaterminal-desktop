@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ type App struct {
 	challengeMu        sync.Mutex
 	challenges         map[string]chan challengeResponse
 	unlockMu           sync.Mutex
+	unlockInProgress   bool
 	unlockFailures     int
 	unlockBlockedUntil time.Time
 }
@@ -100,6 +102,9 @@ func (a *App) initialize() error {
 	a.ssh = sshManager
 	a.sftp = sftpclient.New(sshManager)
 	a.sync = syncclient.New(v)
+	a.sync.SetUnauthorizedHandler(func() {
+		runtime.EventsEmit(a.context(), "sync:logged-out")
+	})
 	a.zmodem = zmodemstore.New()
 	a.syncStop = make(chan struct{})
 	sshManager.SetInteractiveHandler(a.handleInteractiveChallenge)
@@ -205,9 +210,11 @@ func (a *App) Bootstrap() (Bootstrap, error) {
 	if account, err := a.sync.AccountSummary(a.context()); err == nil {
 		result.Account = &account
 	}
-	result.SyncConfigured = a.sync.Configured(a.context())
 	if summary, err := a.sync.Summary(a.context()); err == nil && (summary.ServerURL != "" || summary.Configured || summary.LoggedIn) {
+		result.SyncConfigured = summary.Configured
 		result.SyncSummary = &summary
+	} else {
+		result.SyncConfigured = a.sync.Configured(a.context())
 	}
 	return result, nil
 }
@@ -217,9 +224,10 @@ func (a *App) InitializeVault(password string) error {
 }
 
 func (a *App) Unlock(password string) error {
-	if err := a.allowUnlock(); err != nil {
+	if err := a.beginUnlockAttempt(); err != nil {
 		return err
 	}
+	defer a.finishUnlockAttempt()
 	err := a.vault.Unlock(a.context(), password)
 	if errors.Is(err, vault.ErrInvalidPassword) {
 		err = a.vault.UnlockWithLockPassword(a.context(), password)
@@ -229,21 +237,49 @@ func (a *App) Unlock(password string) error {
 }
 
 func (a *App) UnlockWithSystem() error {
-	if err := a.allowUnlock(); err != nil {
+	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem called")
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			vault.AppendDiagnosticLogForApp(
+				a.dataDir,
+				"UnlockWithSystem panic=%v stack=%s",
+				recovered,
+				string(debug.Stack()),
+			)
+			panic(recovered)
+		}
+	}()
+	if err := a.beginUnlockAttempt(); err != nil {
+		vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem beginUnlockAttempt error=%v", err)
 		return err
 	}
-	err := a.vault.UnlockQuick(a.context(), "default")
+	defer a.finishUnlockAttempt()
+	err := a.withHelloPromptWindowWorkaround("UnlockWithSystem", func() error {
+		return a.vault.UnlockQuick(a.context(), "default")
+	})
+	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem UnlockQuick returned err=%v", err)
 	a.recordUnlockResult(err)
+	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem recordUnlockResult done err=%v", err)
 	return err
 }
 
-func (a *App) allowUnlock() error {
+func (a *App) beginUnlockAttempt() error {
 	a.unlockMu.Lock()
 	defer a.unlockMu.Unlock()
 	if time.Now().Before(a.unlockBlockedUntil) {
 		return errors.New("too many unlock attempts; try again later")
 	}
+	if a.unlockInProgress {
+		return errors.New("an unlock attempt is already in progress")
+	}
+	a.unlockInProgress = true
 	return nil
+}
+
+func (a *App) finishUnlockAttempt() {
+	a.unlockMu.Lock()
+	a.unlockInProgress = false
+	a.unlockMu.Unlock()
 }
 
 func (a *App) recordUnlockResult(err error) {
@@ -265,7 +301,9 @@ func (a *App) recordUnlockResult(err error) {
 }
 
 func (a *App) EnableSystemUnlock() error {
-	return a.vault.EnableQuickUnlock(a.context(), "default")
+	return a.withHelloPromptWindowWorkaround("EnableSystemUnlock", func() error {
+		return a.vault.EnableQuickUnlock(a.context(), "default")
+	})
 }
 
 func (a *App) DisableSystemUnlock() error {
@@ -634,6 +672,30 @@ func (a *App) SetSyncAutoEnabled(enabled bool) error {
 	return a.sync.SetAutoSyncEnabled(a.context(), enabled)
 }
 
+func (a *App) withHelloPromptWindowWorkaround(operation string, action func() error) error {
+	ctx := a.context()
+	wasMinimised := runtime.WindowIsMinimised(ctx)
+	vault.AppendDiagnosticLogForApp(
+		a.dataDir,
+		"%s window workaround start wasMinimised=%t",
+		operation,
+		wasMinimised,
+	)
+	if !wasMinimised {
+		runtime.WindowMinimise(ctx)
+		vault.AppendDiagnosticLogForApp(a.dataDir, "%s window minimised before Windows Hello", operation)
+		time.Sleep(150 * time.Millisecond)
+		defer func() {
+			runtime.WindowUnminimise(ctx)
+			runtime.WindowShow(ctx)
+			vault.AppendDiagnosticLogForApp(a.dataDir, "%s window restored after Windows Hello", operation)
+		}()
+	}
+	err := action()
+	vault.AppendDiagnosticLogForApp(a.dataDir, "%s window workaround action returned err=%v", operation, err)
+	return err
+}
+
 func (a *App) context() context.Context {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -734,6 +796,9 @@ func (a *App) runSyncOnce() {
 		return
 	}
 	if !a.sync.LoggedIn(a.context()) || !a.sync.Configured(a.context()) {
+		return
+	}
+	if summary, err := a.sync.Summary(a.context()); err != nil || !summary.SyncInitialized || !summary.Configured {
 		return
 	}
 	status, err := a.vault.Status(a.context())

@@ -6,6 +6,6 @@ import "errors"
 
 const userPresenceMethod = "Touch ID / macOS authentication"
 
-func verifyUserPresence(string) error {
+func verifyUserPresence(string, string) error {
 	return errors.New("macOS native authentication requires a CGO-enabled build")
 }

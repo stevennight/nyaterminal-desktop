@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
   Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
@@ -9,9 +10,13 @@ import { api } from './bridge'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
+import {
+  TERMINAL_THEME_GROUPS, TERMINAL_THEME_PRESETS, cloneTerminalThemeColors,
+  resolveTerminalThemeColors, terminalChromeVariables,
+} from './terminalThemes'
 import type {
   AccountSummary, Bootstrap, Connection, Credential, Group, InteractiveChallenge,
-  PendingHostKey, Settings, SyncSummary, Tag
+  PendingHostKey, Settings, SyncSummary, Tag, TerminalThemeColors
 } from './types'
 
 type SessionTab = {
@@ -39,11 +44,12 @@ type SSHAuthPrompt = {
 
 type ThemeName = 'dark' | 'light'
 type RenameTabState = { id: string; value: string }
+type TerminalThemeField = keyof TerminalThemeColors
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 
 const emptyConnection: Connection = {
-  id: '', name: '', host: '', port: 22, username: 'root',
+  id: '', name: '', remark: '', host: '', port: 22, username: 'root',
   authentication: 'password', tags: [], encoding: 'utf-8',
   sortOrder: 0,
   keepAliveSeconds: 30, connectTimeoutSeconds: 15,
@@ -164,7 +170,10 @@ function localizeError(value: unknown) {
     ['interactive authentication cancelled', 'SSH 交互认证已取消。'],
     ['interactive authentication timed out', 'SSH 交互认证超时。'],
     ['ssh authentication challenge has expired', 'SSH 交互认证已过期。'],
+    ['an unlock attempt is already in progress', '已有一个解锁请求正在进行。'],
     ['too many unlock attempts; try again later', '解锁尝试过多，请稍后再试。'],
+    ['windows hello verification was cancelled', '已取消 Windows Hello 验证。'],
+    ['windows hello could not start a window-bound verification prompt:', 'Windows Hello 无法以附着到当前窗口的方式启动验证：'],
     ['zmodem chunk is too large', 'ZMODEM 分片过大。'],
     ['terminal input cannot be represented in selected encoding', '当前编码无法表示终端输入。'],
     ['application is not initialized', '应用尚未初始化。'],
@@ -212,6 +221,15 @@ function syncHeadline(syncSummary?: SyncSummary) {
   return '已加入同步'
 }
 
+function syncSummaryLabel(syncSummary?: SyncSummary) {
+  if (!syncSummary?.serverUrl) return '请先登录服务端账号'
+  if (!syncSummary.syncInitialized) {
+    return `${syncSummary.serverUrl} · ${syncSummary.username || '未填写账号'}`
+  }
+  const deviceLabel = displayDeviceLabel(syncSummary.deviceName, syncSummary.deviceId)
+  return `${syncSummary.serverUrl} · ${syncSummary.username}${deviceLabel ? ` · ${deviceLabel}` : ''}`
+}
+
 function displayDeviceLabel(deviceName?: string, deviceId?: string) {
   return deviceName || deviceId || ''
 }
@@ -222,6 +240,53 @@ function connectionLabel(connection: Connection) {
 
 function sessionLabel(session: Pick<SessionTab, 'title' | 'connection'>) {
   return session.title?.trim() || connectionLabel(session.connection)
+}
+
+function sortGroups(groups: Group[]) {
+  return [...groups].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+}
+
+function buildGroupIndex(groups: Group[]) {
+  const ordered = sortGroups(groups)
+  const byId = new Map(ordered.map(group => [group.id, group]))
+  const childrenByParent = new Map<string, Group[]>()
+  for (const group of ordered) {
+    const parentId = group.parentId ?? ''
+    const siblings = childrenByParent.get(parentId)
+    if (siblings) siblings.push(group)
+    else childrenByParent.set(parentId, [group])
+  }
+  return { byId, childrenByParent }
+}
+
+function groupPathIds(groupId: string, byId: Map<string, Group>) {
+  const path: string[] = []
+  const visited = new Set<string>()
+  let current = byId.get(groupId)
+  while (current && !visited.has(current.id)) {
+    path.unshift(current.id)
+    visited.add(current.id)
+    current = current.parentId ? byId.get(current.parentId) : undefined
+  }
+  return path
+}
+
+function groupPathLabel(groupId: string | undefined, byId: Map<string, Group>) {
+  if (!groupId) return ''
+  return groupPathIds(groupId, byId)
+    .map(id => byId.get(id)?.name)
+    .filter((value): value is string => Boolean(value))
+    .join(' / ')
+}
+
+function nextGroupSortOrder(groups: Group[], parentId: string) {
+  return groups.filter(group => (group.parentId ?? '') === parentId)
+    .reduce((maximum, group) => Math.max(maximum, group.sortOrder), -1) + 1
+}
+
+function normalizeHexColorInput(value: string) {
+  const trimmed = value.trim()
+  return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed.toUpperCase() : undefined
 }
 
 export function App() {
@@ -278,6 +343,12 @@ export function App() {
       setInteractiveChallenge(value as InteractiveChallenge)
     })
   }, [])
+
+  useEffect(() => {
+    return window.runtime?.EventsOn?.('sync:logged-out', () => {
+      void reload()
+    })
+  }, [reload])
 
   useEffect(() => {
     if (!tabMenuOpen) return
@@ -622,20 +693,21 @@ export function App() {
       {connectionEditor && (
         <ConnectionEditor initial={connectionEditor} groups={bootstrap.groups ?? []}
           tags={bootstrap.tags ?? []}
+          onGroupsUpdated={groups => setBootstrap(current => current ? { ...current, groups } : current)}
           onClose={() => setConnectionEditor(undefined)}
           onDeleted={async id => {
             await api.DeleteConnection(id)
             setConnectionEditor(undefined)
             await reload()
           }}
-          onSaved={async connection => {
+          onSaved={async (connection, connect) => {
             setConnectionEditor(undefined)
             await reload()
-            openConnection(connection)
+            if (connect) openConnection(connection)
           }} />
       )}
       {groupEditor && <GroupEditor groups={bootstrap.groups ?? []} onClose={() => setGroupEditor(false)}
-        onSaved={async () => { setGroupEditor(false); await reload() }} />}
+        onSaved={async _group => { setGroupEditor(false); await reload() }} />}
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
       {renamingTab && <RenameTabDialog
@@ -885,11 +957,30 @@ function VaultSetup({ theme, onComplete }: { theme: ThemeName; onComplete: () =>
 function Unlock({ theme, quickUnlock, onComplete }: { theme: ThemeName; quickUnlock: boolean; onComplete: () => Promise<void> }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [unlockBusy, setUnlockBusy] = useState(false)
+  const [systemUnlockBusy, setSystemUnlockBusy] = useState(false)
   const submit = async () => {
+    if (unlockBusy || systemUnlockBusy) return
+    setUnlockBusy(true)
     try {
+      setError('')
       await api.Unlock(password)
       await onComplete()
-    } catch { setError('主密码不正确') }
+    } catch (reason) { setError(localizeError(reason)) }
+    finally { setUnlockBusy(false) }
+  }
+  const unlockWithSystem = async () => {
+    if (unlockBusy || systemUnlockBusy) return
+    setSystemUnlockBusy(true)
+    try {
+      setError('')
+      await api.UnlockWithSystem()
+      await onComplete()
+    } catch (reason) {
+      setError(localizeError(reason))
+    } finally {
+      setSystemUnlockBusy(false)
+    }
   }
   return <CenteredCard theme={theme} title="欢迎回来" subtitle="保险库已锁定，请验证后继续。">
     <div className="unlock-icon"><LockKeyhole /></div>
@@ -897,10 +988,14 @@ function Unlock({ theme, quickUnlock, onComplete }: { theme: ThemeName; quickUnl
       onChange={event => setPassword(event.target.value)}
       onKeyDown={event => event.key === 'Enter' && void submit()} /></label>
     {error && <div className="form-error">{error}</div>}
-    <button className="primary wide" onClick={() => void submit()}>解锁</button>
-    {quickUnlock && <button className="system-unlock wide" onClick={() =>
-      void api.UnlockWithSystem().then(onComplete).catch(() => setError('系统快捷解锁不可用'))
-    }>使用系统凭据解锁</button>}
+    <button className="primary wide" disabled={unlockBusy || systemUnlockBusy} onClick={() => void submit()}>
+      {unlockBusy ? '解锁中…' : '解锁'}
+    </button>
+    {quickUnlock && <button
+      className="system-unlock wide"
+      disabled={unlockBusy || systemUnlockBusy}
+      onClick={() => void unlockWithSystem()}
+    >{systemUnlockBusy ? '等待系统验证…' : '使用系统凭据解锁'}</button>}
   </CenteredCard>
 }
 
@@ -920,8 +1015,9 @@ function modalPortalTarget() {
   return document.querySelector('.app-shell') ?? document.body
 }
 
-function Modal({ title, children, onClose, width = '520px' }: {
+function Modal({ title, children, onClose, width = '520px', footer, bodyClassName }: {
   title: string; children: React.ReactNode; onClose: () => void; width?: string
+  footer?: React.ReactNode; bodyClassName?: string
 }) {
   const target = modalPortalTarget()
   if (!target) return null
@@ -929,25 +1025,166 @@ function Modal({ title, children, onClose, width = '520px' }: {
     <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
       <section className="modal" style={{ width }}>
         <header><h2>{title}</h2><button onClick={onClose}><X size={18} /></button></header>
-        <div className="modal-body">{children}</div>
+        <div className={bodyClassName ? `modal-body ${bodyClassName}` : 'modal-body'}>{children}</div>
+        {footer && <footer className="modal-actions">{footer}</footer>}
       </section>
     </div>,
     target,
   )
 }
 
-function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }: {
-  initial: Connection; groups: Group[]; tags: Tag[]; onClose: () => void
-  onSaved: (value: Connection) => Promise<void>
+function GroupCascader({
+  groups,
+  value,
+  onChange,
+  rootLabel,
+  allowAdd = false,
+  disabledGroupIds = [],
+  onAddGroup,
+}: {
+  groups: Group[]
+  value?: string
+  onChange: (value: string) => void
+  rootLabel: string
+  allowAdd?: boolean
+  disabledGroupIds?: string[]
+  onAddGroup?: (parentId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [activePath, setActivePath] = useState<string[]>([])
+  const host = useRef<HTMLDivElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>()
+  const { byId, childrenByParent } = useMemo(() => buildGroupIndex(groups), [groups])
+  const selectedLabel = groupPathLabel(value, byId)
+  const disabled = useMemo(() => new Set(disabledGroupIds), [disabledGroupIds])
+  const target = modalPortalTarget()
+
+  useEffect(() => {
+    if (!open) return
+    setActivePath(value ? groupPathIds(value, byId) : [])
+  }, [open, value, byId])
+
+  useEffect(() => {
+    if (!open) return
+    const updatePanelPosition = () => {
+      const trigger = host.current?.querySelector('.group-cascader-trigger')
+      if (!(trigger instanceof HTMLElement)) return
+      const rect = trigger.getBoundingClientRect()
+      const viewportWidth = window.innerWidth
+      const panelWidth = Math.min(560, viewportWidth - 32)
+      const left = Math.min(rect.left, Math.max(16, viewportWidth - panelWidth - 16))
+      setPanelStyle({
+        position: 'fixed',
+        top: rect.bottom + 6,
+        left,
+        width: panelWidth,
+      })
+    }
+    updatePanelPosition()
+    const closeOnOutside = (event: PointerEvent) => {
+      const targetNode = event.target as Node | null
+      if (host.current?.contains(targetNode) || panel.current?.contains(targetNode)) return
+      setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    const closeOnScroll = () => updatePanelPosition()
+    window.addEventListener('resize', updatePanelPosition)
+    window.addEventListener('scroll', closeOnScroll, true)
+    window.addEventListener('pointerdown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('resize', updatePanelPosition)
+      window.removeEventListener('scroll', closeOnScroll, true)
+      window.removeEventListener('pointerdown', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  const columns = useMemo(() => {
+    const result: Group[][] = [childrenByParent.get('') ?? []]
+    for (const parentId of activePath) {
+      const children = childrenByParent.get(parentId) ?? []
+      if (!children.length) break
+      result.push(children)
+    }
+    return result
+  }, [activePath, childrenByParent])
+
+  return <div className="group-cascader" ref={host}>
+    <button type="button" className={`group-cascader-trigger${open ? ' open' : ''}`}
+      onClick={() => setOpen(current => !current)}>
+      <span>{selectedLabel || rootLabel}</span>
+      <ChevronDown size={16} />
+    </button>
+    {open && target && createPortal(<div className="group-cascader-panel" style={panelStyle} ref={panel}>
+      <div className="group-cascader-toolbar">
+        <button type="button" className={`group-cascader-root${!value ? ' selected' : ''}`}
+          onClick={() => {
+            onChange('')
+            setActivePath([])
+          }}>
+          {rootLabel}
+        </button>
+        {allowAdd && onAddGroup && <button type="button" className="group-cascader-add"
+          onClick={() => {
+            setOpen(false)
+            onAddGroup(activePath[activePath.length - 1] ?? value ?? '')
+          }}>
+          <FolderPlus size={14} />添加分组
+        </button>}
+      </div>
+      <div className="group-cascader-columns">
+        {!columns[0].length && <div className="group-cascader-empty">暂无分组</div>}
+        {columns.map((column, columnIndex) => <div key={columnIndex} className="group-cascader-column">
+          {column.map(group => {
+            const hasChildren = Boolean((childrenByParent.get(group.id) ?? []).length)
+            const path = groupPathIds(group.id, byId)
+            const isActive = activePath[columnIndex] === group.id
+            const isSelected = value === group.id
+            const isDisabled = disabled.has(group.id)
+            return <button key={group.id} type="button"
+              className={[
+                'group-cascader-option',
+                isActive ? 'active' : '',
+                isSelected ? 'selected' : '',
+              ].filter(Boolean).join(' ')}
+              disabled={isDisabled}
+              onClick={() => {
+                onChange(group.id)
+                setActivePath(path)
+              }}>
+              <span>{group.name}</span>
+              {hasChildren && <ChevronRight size={14} />}
+            </button>
+          })}
+        </div>)}
+      </div>
+    </div>, target)}
+  </div>
+}
+
+function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onSaved, onDeleted }: {
+  initial: Connection; groups: Group[]; tags: Tag[]; onGroupsUpdated?: (groups: Group[]) => void; onClose: () => void
+  onSaved: (value: Connection, connect: boolean) => Promise<void>
   onDeleted: (id: string) => Promise<void>
 }) {
   const [value, setValue] = useState(initial)
+  const [availableGroups, setAvailableGroups] = useState(groups)
+  const [groupEditorParentId, setGroupEditorParentId] = useState<string>()
   const [secret, setSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [error, setError] = useState('')
+  useEffect(() => { setAvailableGroups(groups) }, [groups])
   const update = <K extends keyof Connection>(key: K, next: Connection[K]) =>
     setValue(current => ({ ...current, [key]: next }))
-  const save = async () => {
+  const syncGroups = (nextGroups: Group[]) => {
+    setAvailableGroups(nextGroups)
+    onGroupsUpdated?.(nextGroups)
+  }
+  const save = async (connect: boolean) => {
     try {
       let credentialId = value.credentialId
       if (value.authentication !== 'agent' && (secret || !credentialId)) {
@@ -961,23 +1198,28 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }
         })
         credentialId = credential.id
       }
-      await onSaved(await api.SaveConnection({ ...value, credentialId }))
+      await onSaved(await api.SaveConnection({ ...value, credentialId }), connect)
     } catch (reason) { setError(localizeError(reason)) }
   }
-  return <Modal title={value.id ? '编辑 SSH 连接' : '新建 SSH 连接'} onClose={onClose}>
-    <div className="form-grid">
+  return <>
+    <Modal title={value.id ? '编辑 SSH 连接' : '新建 SSH 连接'} onClose={onClose} width="680px"
+      footer={<>
+        {value.id && <button className="danger-button modal-action-leading" onClick={() => {
+          if (window.confirm(`确定删除连接 ${value.name}？`)) void onDeleted(value.id)
+        }}>删除</button>}
+        <button onClick={onClose}>取消</button>
+        <button onClick={() => void save(false)}>保存</button>
+        <button className="primary" onClick={() => void save(true)}>保存并连接</button>
+      </>}>
+      <div className="form-grid">
       <label className="full">名称<input value={value.name} onChange={e => update('name', e.target.value)} /></label>
+      <label className="full">备注<textarea rows={3} value={value.remark ?? ''}
+        onChange={e => update('remark', e.target.value)} /></label>
       <label className="wide">主机<input value={value.host} onChange={e => update('host', e.target.value)} /></label>
       <label>端口<input type="number" value={value.port} onChange={e => update('port', Number(e.target.value))} /></label>
-      <label className="wide">用户名<input value={value.username} onChange={e => update('username', e.target.value)} /></label>
-      <label>分组<select value={value.groupId ?? ''} onChange={e => update('groupId', e.target.value)}>
-        <option value="">未分组</option>{groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
-      </select></label>
-      <label className="full">认证方式<select value={value.authentication}
-        onChange={e => update('authentication', e.target.value as Connection['authentication'])}>
-        <option value="password">密码</option><option value="private_key">私钥</option>
-        <option value="agent">SSH Agent</option><option value="interactive">键盘交互</option>
-      </select></label>
+      <label className="full">分组<GroupCascader groups={availableGroups} value={value.groupId} rootLabel="未分组"
+        onChange={groupId => update('groupId', groupId || undefined)}
+        allowAdd onAddGroup={parentId => setGroupEditorParentId(parentId)} /></label>
       <div className="full connection-tags"><span>标签</span><div>
         {tags.map(tag => <button key={tag.id} type="button"
           className={value.tags.includes(tag.id) ? 'selected' : ''}
@@ -987,6 +1229,12 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }
         </button>)}
         {!tags.length && <small>可先在左侧创建标签</small>}
       </div></div>
+      <label className="full">用户名<input value={value.username} onChange={e => update('username', e.target.value)} /></label>
+      <label className="full">认证方式<select value={value.authentication}
+        onChange={e => update('authentication', e.target.value as Connection['authentication'])}>
+        <option value="password">密码</option><option value="private_key">私钥</option>
+        <option value="agent">SSH Agent</option><option value="interactive">键盘交互</option>
+      </select></label>
       {value.authentication === 'password' && <label className="full">密码
         <input type="password" value={secret} placeholder={value.credentialId ? '留空则保持不变' : ''}
           onChange={e => setSecret(e.target.value)} /></label>}
@@ -1033,32 +1281,43 @@ function ConnectionEditor({ initial, groups, tags, onClose, onSaved, onDeleted }
         }} />允许旧版弱算法（不推荐，仅当前连接生效）</label>
     </div>
     {error && <div className="form-error">{error}</div>}
-    <footer className="modal-actions">
-      {value.id && <button className="danger-button" onClick={() => {
-        if (window.confirm(`确定删除连接 ${value.name}？`)) void onDeleted(value.id)
-      }}>删除</button>}
-      <button onClick={onClose}>取消</button>
-      <button className="primary" onClick={() => void save()}>保存并连接</button></footer>
-  </Modal>
+    </Modal>
+    {groupEditorParentId !== undefined && <GroupEditor groups={availableGroups}
+      initialParentId={groupEditorParentId}
+      onClose={() => setGroupEditorParentId(undefined)}
+      onSaved={async group => {
+        const nextGroups = await api.ListGroups()
+        syncGroups(nextGroups)
+        update('groupId', group.id)
+        setGroupEditorParentId(undefined)
+      }} />}
+  </>
 }
 
-function GroupEditor({ groups, onClose, onSaved }: {
-  groups: Group[]; onClose: () => void; onSaved: () => Promise<void>
+function GroupEditor({ groups, initialParentId = '', onClose, onSaved }: {
+  groups: Group[]; initialParentId?: string; onClose: () => void; onSaved: (group: Group) => Promise<void> | void
 }) {
   const [name, setName] = useState('')
-  const [parentId, setParentId] = useState('')
-  return <Modal title="新建分组" onClose={onClose}>
+  const [parentId, setParentId] = useState(initialParentId)
+  const [error, setError] = useState('')
+  const create = async () => {
+    try {
+      const result = await api.SaveGroup({
+        id: '', name, parentId, sortOrder: nextGroupSortOrder(groups, parentId)
+      })
+      await onSaved(result)
+    } catch (reason) { setError(localizeError(reason)) }
+  }
+  return <Modal title="新建分组" onClose={onClose} footer={<>
+    <button onClick={onClose}>取消</button>
+    <button className="primary" onClick={() => void create()}>创建</button>
+  </>}>
     <div className="form-grid">
       <label className="full">名称<input autoFocus value={name} onChange={e => setName(e.target.value)} /></label>
-      <label className="full">上级分组<select value={parentId} onChange={e => setParentId(e.target.value)}>
-        <option value="">无（顶级分组）</option>{groups.map(group =>
-          <option key={group.id} value={group.id}>{group.name}</option>)}
-      </select></label>
+      <label className="full">上级分组<GroupCascader groups={groups} value={parentId}
+        onChange={setParentId} rootLabel="无（顶级分组）" /></label>
     </div>
-    <footer className="modal-actions"><button onClick={onClose}>取消</button>
-      <button className="primary" onClick={() => void api.SaveGroup({
-        id: '', name, parentId, sortOrder: groups.length
-      }).then(onSaved)}>创建</button></footer>
+    {error && <div className="form-error">{error}</div>}
   </Modal>
 }
 
@@ -1067,15 +1326,16 @@ function TagEditor({ onClose, onSaved }: {
 }) {
   const [name, setName] = useState('')
   const [color, setColor] = useState('#62d9ca')
-  return <Modal title="新建标签" onClose={onClose}>
+  return <Modal title="新建标签" onClose={onClose} footer={<>
+    <button onClick={onClose}>取消</button>
+    <button className="primary" onClick={() => void api.SaveTag({
+      id: '', name, color
+    }).then(onSaved)}>创建</button>
+  </>}>
     <div className="form-grid">
       <label className="wide">名称<input autoFocus value={name} onChange={e => setName(e.target.value)} /></label>
       <label>颜色<input type="color" value={color} onChange={e => setColor(e.target.value)} /></label>
     </div>
-    <footer className="modal-actions"><button onClick={onClose}>取消</button>
-      <button className="primary" onClick={() => void api.SaveTag({
-        id: '', name, color
-      }).then(onSaved)}>创建</button></footer>
   </Modal>
 }
 
@@ -1084,7 +1344,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
   onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
-  const [next, setNext] = useState(value)
+  const [next, setNext] = useState<Settings>(() => ({
+    ...value,
+    terminalThemeColors: cloneTerminalThemeColors(resolveTerminalThemeColors(value)),
+  }))
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(syncSummary?.autoSyncEnabled ?? true)
   const [lockPassword, setLockPassword] = useState('')
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
@@ -1119,6 +1382,14 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
   }, [syncSummary?.autoSyncEnabled])
 
+  useEffect(() => {
+    setNext({
+      ...value,
+      terminalThemeColors: cloneTerminalThemeColors(resolveTerminalThemeColors(value)),
+    })
+    setSensitiveRules(value.sensitiveCommandRules.join('\n'))
+  }, [value])
+
   const sections = [
     { id: 'appearance', label: '外观', icon: Paintbrush },
     { id: 'terminal', label: '终端', icon: Monitor },
@@ -1127,6 +1398,40 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   ] as const
 
   const showNotice = (title: string, message: string) => setNotice({ title, message })
+  const terminalPreviewColors = resolveTerminalThemeColors(next)
+
+  const updateTerminalPreset = (presetId: string) => {
+    const preset = TERMINAL_THEME_PRESETS.find(item => item.id === presetId)
+    if (!preset) return
+    setNext(current => ({
+      ...current,
+      terminalThemePreset: presetId,
+      terminalThemeColors: cloneTerminalThemeColors(preset.colors),
+    }))
+  }
+
+  const updateTerminalColor = (key: TerminalThemeField, value: string) => {
+    const normalized = normalizeHexColorInput(value)
+    setNext(current => ({
+      ...current,
+      terminalThemePreset: 'custom',
+      terminalThemeColors: {
+        ...current.terminalThemeColors,
+        [key]: normalized ?? resolveTerminalThemeColors(current)[key],
+      },
+    }))
+  }
+
+  const editTerminalColorInput = (key: TerminalThemeField, value: string) => {
+    setNext(current => ({
+      ...current,
+      terminalThemePreset: 'custom',
+      terminalThemeColors: {
+        ...current.terminalThemeColors,
+        [key]: value,
+      },
+    }))
+  }
 
   const toggleSystemUnlock = async (enabled: boolean) => {
     try {
@@ -1145,8 +1450,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       if (oldMasterPassword || newMasterPassword) {
         await api.ChangeMasterPassword(oldMasterPassword, newMasterPassword)
       }
+      const terminalThemeColors = resolveTerminalThemeColors(next)
       await api.SaveSettings({
         ...next,
+        terminalThemeColors,
         sensitiveCommandRules: sensitiveRules.split('\n').map(rule => rule.trim()).filter(Boolean)
       })
       await onSaved()
@@ -1358,6 +1665,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const loggedIn = !!syncSummary?.loggedIn
   const syncInitialized = !!syncSummary?.syncInitialized
   const syncConfigured = !!syncSummary?.configured
+  const showSyncHistory = syncInitialized && syncConfigured
 
   let content
   if (activeSection === 'appearance') {
@@ -1377,10 +1685,91 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
         <label className="full">终端字体<input value={next.fontFamily}
           onChange={e => setNext({ ...next, fontFamily: e.target.value })} /></label>
       </div>
+      <div className="settings-divider" />
+      <div className="terminal-theme-section">
+        <div className="terminal-theme-header">
+          <div>
+            <strong>终端配色</strong>
+            <span>应用主题和终端配色彼此独立，方便单独调整。</span>
+          </div>
+          <button className="secondary" type="button" onClick={() => updateTerminalPreset('default')}>
+            恢复默认
+          </button>
+        </div>
+        <div className="terminal-theme-presets">
+          {TERMINAL_THEME_PRESETS.map(preset => <button
+            key={preset.id}
+            type="button"
+            className={next.terminalThemePreset === preset.id ? 'selected' : ''}
+            onClick={() => updateTerminalPreset(preset.id)}>
+            <div className="terminal-theme-preset-copy">
+              <strong>{preset.label}</strong>
+              <span>{preset.description}</span>
+            </div>
+            <div className="terminal-theme-swatches" aria-hidden="true">
+              {[preset.colors.background, preset.colors.blue, preset.colors.green, preset.colors.magenta, preset.colors.yellow].map(color =>
+                <i key={`${preset.id}:${color}`} style={{ background: color }} />
+              )}
+            </div>
+          </button>)}
+          <button
+            type="button"
+            className={next.terminalThemePreset === 'custom' ? 'selected custom' : 'custom'}
+            onClick={() => setNext(current => ({ ...current, terminalThemePreset: 'custom' }))}>
+            <div className="terminal-theme-preset-copy">
+              <strong>自定义</strong>
+              <span>按界面元素和 ANSI 颜色逐项编辑。</span>
+            </div>
+          </button>
+        </div>
+        <div
+          className="terminal-theme-preview"
+          style={terminalChromeVariables(terminalPreviewColors) as CSSProperties}>
+          <div className="terminal-theme-preview-toolbar">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="terminal-theme-preview-body">
+            <code><span style={{ color: terminalPreviewColors.green }}>$</span> ssh root@example.com</code>
+            <code><span style={{ color: terminalPreviewColors.blue }}>root@example.com</span>:<span style={{ color: terminalPreviewColors.yellow }}>~</span>$ ls</code>
+            <code>
+              <span style={{ color: terminalPreviewColors.blue }}>logs</span>{' '}
+              <span style={{ color: terminalPreviewColors.magenta }}>configs</span>{' '}
+              <span style={{ color: terminalPreviewColors.cyan }}>deploy.sh</span>
+            </code>
+            <code><span style={{ color: terminalPreviewColors.brightBlack }}>tail -f /var/log/app.log</span></code>
+          </div>
+        </div>
+        <div className="terminal-theme-groups">
+          {TERMINAL_THEME_GROUPS.map(group => <section key={group.title} className="terminal-theme-group">
+            <header>{group.title}</header>
+            <div className="terminal-theme-color-grid">
+              {group.fields.map(field => <label key={field.key} className="terminal-color-field">
+                <span>{field.label}</span>
+                <div>
+                  <input
+                    type="color"
+                    value={terminalPreviewColors[field.key]}
+                    onChange={event => updateTerminalColor(field.key, event.target.value)}
+                  />
+                  <input
+                    value={next.terminalThemeColors[field.key]}
+                    onChange={event => editTerminalColorInput(field.key, event.target.value)}
+                    onBlur={event => updateTerminalColor(field.key, event.target.value)}
+                    placeholder="#RRGGBB"
+                  />
+                </div>
+              </label>)}
+            </div>
+          </section>)}
+        </div>
+      </div>
     </div>
   } else if (activeSection === 'terminal') {
     content = <div className="settings-page">
       <h3>终端</h3>
+      <small className="hint">这里保留连接与会话行为设置；配色与字体放在“外观”里。</small>
       <div className="form-grid">
         <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
           onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
@@ -1425,17 +1814,17 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       <div className="sync-summary">
         <div>
           <strong>{syncHeadline(syncSummary)}</strong>
-          <span>{syncSummary?.serverUrl
-            ? `${syncSummary.serverUrl} · ${syncSummary.username}${displayDeviceLabel(syncSummary.deviceName, syncSummary.deviceId) ? ` · ${displayDeviceLabel(syncSummary.deviceName, syncSummary.deviceId)}` : ''}`
-            : '请先登录服务端账号'}</span>
+          <span>{syncSummaryLabel(syncSummary)}</span>
         </div>
         <div>
           <strong>{syncSummary?.running ? '同步中' : syncConfigured && syncSummary?.autoSyncEnabled === false ? '自动同步已关闭' : '同步待命'}</strong>
-          <span>{syncSummary?.lastSyncedAt ? `上次同步：${formatDateTime(syncSummary.lastSyncedAt)}` : '还没有同步记录'}</span>
+          <span>{showSyncHistory && syncSummary?.lastSyncedAt ? `上次同步：${formatDateTime(syncSummary.lastSyncedAt)}` : '还没有同步记录'}</span>
         </div>
         <div>
           <strong>{syncSummary?.lastError ? '最近失败' : '最近结果'}</strong>
-          <span>{syncSummary?.lastError ?? (syncSummary?.lastAttemptAt ? `上次尝试：${formatDateTime(syncSummary.lastAttemptAt)}` : '暂无')}</span>
+          <span>{showSyncHistory
+            ? syncSummary?.lastError ?? (syncSummary?.lastAttemptAt ? `上次尝试：${formatDateTime(syncSummary.lastAttemptAt)}` : '暂无')
+            : '暂无'}</span>
         </div>
       </div>
       {!loggedIn && <div className="pairing-approval">
@@ -1490,7 +1879,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     </div>
   }
 
-  return <Modal title="设置" onClose={onClose} width="920px">
+  return <Modal title="设置" onClose={onClose} width="920px" bodyClassName="settings-modal-body" footer={<>
+    <button onClick={onClose}>取消</button>
+    <button className="primary" onClick={() => void persist()}>保存</button>
+  </>}>
     <div className="settings-layout">
       <aside className="settings-nav">
         {sections.map(section => {
@@ -1506,8 +1898,6 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
         {content}
       </section>
     </div>
-    <footer className="modal-actions"><button onClick={onClose}>取消</button>
-      <button className="primary" onClick={() => void persist()}>保存</button></footer>
     {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
     {recoveryCodeModal && <RecoveryCodeDialog title={recoveryCodeModal.title} code={recoveryCodeModal.code}
       onClose={() => setRecoveryCodeModal(undefined)} />}
@@ -1578,6 +1968,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
   const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
   const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
   const [totpEnabled, setTotpEnabled] = useState(account?.totpEnabled ?? false)
+  const syncInitialized = !!account?.syncInitialized
   useEffect(() => {
     if (account?.serverUrl) setServerUrl(account.serverUrl)
     if (account?.username) setUsername(account.username)
@@ -1589,8 +1980,12 @@ function AccountManagerDialog({ account, onClose, onReload }: {
     setTotpEnabled(account?.totpEnabled ?? false)
   }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.deviceName, account?.accessExpiresAt, account?.refreshExpiresAt, account?.totpEnabled])
   useEffect(() => {
-    if (loggedIn) void loadDevices()
-  }, [loggedIn])
+    if (!loggedIn || !syncInitialized) {
+      setDevices([])
+      return
+    }
+    void loadDevices()
+  }, [loggedIn, syncInitialized])
   const showNotice = (title: string, message: string) => setNotice({ title, message })
   const login = async () => {
     try {
@@ -1686,15 +2081,15 @@ function AccountManagerDialog({ account, onClose, onReload }: {
         <span>{serverUrl ? `${serverUrl} · ${username}` : '同步信息尚未初始化'}</span>
       </div>
       <div className="account-panel-actions">
-        <button className="secondary" onClick={() => void loadDevices()}>刷新设备</button>
+        {syncInitialized && <button className="secondary" onClick={() => void loadDevices()}>刷新设备</button>}
         <button className="danger-button" onClick={() => void logout()}>退出登录</button>
       </div>
     </header>
     <div className="account-panel-body">
       <div className="sync-summary">
         <div>
-          <strong>{deviceId ? '当前设备' : '暂无设备编号'}</strong>
-          <span>{deviceName || deviceId || '设备编号会在首次登录时生成并保存。'}</span>
+          <strong>{syncInitialized && deviceId ? '当前同步设备' : '当前设备'}</strong>
+          <span>{syncInitialized ? (deviceName || deviceId || '设备编号会在首次登录时生成并保存。') : '服务端同步保险库未初始化时，本机不会显示旧的同步设备信息。'}</span>
         </div>
         <div>
           <strong>{account?.syncInitialized ? '远端同步已初始化' : '远端同步未初始化'}</strong>
@@ -1705,7 +2100,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
           <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
         </div>
       </div>
-      <div className="pairing-approval">
+      {syncInitialized && <div className="pairing-approval">
         <div className="form-grid">
           <label className="wide">当前设备名称<input
             value={deviceName}
@@ -1716,8 +2111,8 @@ function AccountManagerDialog({ account, onClose, onReload }: {
           </div>
         </div>
         <small className="hint full">未设置时，设备列表和同步状态会默认显示设备 ID。</small>
-      </div>
-      <div className="pairing-approval">
+      </div>}
+      {syncInitialized && <div className="pairing-approval">
         <div className="device-list">
           {devices.map(device => <div key={device.id}>
             <span><strong>{device.name || device.id}</strong><small>{device.id}</small></span>
@@ -1729,7 +2124,7 @@ function AccountManagerDialog({ account, onClose, onReload }: {
           </div>)}
           {!devices.length && <small>暂无设备，或尚未刷新。</small>}
         </div>
-      </div>
+      </div>}
       <details className="pairing-approval">
         <summary>账号二次验证</summary>
         {!totpEnabled && !totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}

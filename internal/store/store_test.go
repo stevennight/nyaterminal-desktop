@@ -85,3 +85,75 @@ func TestCommandSuggestionsIncludeGlobalHistory(t *testing.T) {
 		t.Fatalf("unexpected global history: %#v", global)
 	}
 }
+
+func TestPutConnectionTrimsRemark(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "server", Remark: "  primary bastion  ", Host: "example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connection.Remark != "primary bastion" {
+		t.Fatalf("unexpected remark after save: %q", connection.Remark)
+	}
+
+	stored, err := s.GetConnection(ctx, connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Remark != "primary bastion" {
+		t.Fatalf("unexpected persisted remark: %q", stored.Remark)
+	}
+}
+
+func TestSettingsNormalizeTerminalThemeColors(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+	err = s.PutSettings(ctx, model.Settings{
+		Theme:               "dark",
+		FontFamily:          "Cascadia Mono, monospace",
+		FontSize:            14,
+		TerminalThemePreset: "custom",
+		TerminalThemeColors: model.TerminalThemeColors{
+			Background: "#123456",
+			Foreground: "oops",
+		},
+		LockAfterMinutes:      15,
+		DisconnectOnLock:      false,
+		SyncCommandHistory:    false,
+		SyncSecretsByDefault:  false,
+		SensitiveCommandRules: []string{`(?i)secret=\S+`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := s.Settings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.TerminalThemeColors.Background != "#123456" {
+		t.Fatalf("background was not preserved: %#v", settings.TerminalThemeColors)
+	}
+	if settings.TerminalThemeColors.Foreground != model.DefaultTerminalThemeColors().Foreground {
+		t.Fatalf("invalid foreground was not normalized: %#v", settings.TerminalThemeColors)
+	}
+}

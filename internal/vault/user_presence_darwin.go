@@ -16,7 +16,7 @@ import (
 
 const userPresenceMethod = "Touch ID / macOS authentication"
 
-func verifyUserPresence(message string) error {
+func verifyUserPresence(_ string, message string) error {
 	reason := C.CString(message)
 	defer C.free(unsafe.Pointer(reason))
 	var errorMessage *C.char

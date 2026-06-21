@@ -32,9 +32,10 @@ const (
 )
 
 type Vault struct {
-	mu  sync.RWMutex
-	db  *sql.DB
-	key []byte
+	mu      sync.RWMutex
+	db      *sql.DB
+	dataDir string
+	key     []byte
 }
 
 type Status struct {
@@ -111,7 +112,7 @@ func Open(path string) (*Vault, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Vault{db: db}, nil
+	return &Vault{db: db, dataDir: filepath.Dir(path)}, nil
 }
 
 func (v *Vault) Close() error {
@@ -258,24 +259,30 @@ func (v *Vault) Lock() {
 }
 
 func (v *Vault) EnableQuickUnlock(ctx context.Context, profile string) error {
-	if err := verifyUserPresence("Enable Windows Hello unlock for NyaTerminal"); err != nil {
+	appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock start profile=%s", profile)
+	if err := verifyUserPresence(v.dataDir, "Enable Windows Hello unlock for NyaTerminal"); err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock verifyUserPresence error=%v", err)
 		return err
 	}
 	key, err := v.keyCopy()
 	if err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock keyCopy error=%v", err)
 		return err
 	}
 	defer wipe(key)
 	quickKey := make([]byte, chacha20poly1305.KeySize)
 	if _, err := rand.Read(quickKey); err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock rand error=%v", err)
 		return err
 	}
 	defer wipe(quickKey)
 	nonce, wrapped, err := seal(quickKey, key, []byte("nyaterminal:quick-unlock:v1:"+profile))
 	if err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock seal error=%v", err)
 		return err
 	}
 	if err := SaveQuickUnlock(profile, quickKey); err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock SaveQuickUnlock error=%v", err)
 		return err
 	}
 	_, err = v.db.ExecContext(ctx, `
@@ -285,15 +292,19 @@ func (v *Vault) EnableQuickUnlock(ctx context.Context, profile string) error {
 	if err != nil {
 		_ = DeleteQuickUnlock(profile)
 	}
+	appendDiagnosticLog(v.dataDir, "hello", "EnableQuickUnlock done error=%v", err)
 	return err
 }
 
 func (v *Vault) UnlockQuick(ctx context.Context, profile string) error {
-	if err := verifyUserPresence("Unlock NyaTerminal"); err != nil {
+	appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick start profile=%s", profile)
+	if err := verifyUserPresence(v.dataDir, "Unlock NyaTerminal"); err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick verifyUserPresence error=%v", err)
 		return err
 	}
 	quickKey, err := LoadQuickUnlock(profile)
 	if err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick LoadQuickUnlock error=%v", err)
 		return ErrInvalidPassword
 	}
 	defer wipe(quickKey)
@@ -301,17 +312,20 @@ func (v *Vault) UnlockQuick(ctx context.Context, profile string) error {
 	if err := v.db.QueryRowContext(ctx,
 		"SELECT nonce, wrapped_key FROM quick_unlock WHERE profile = ?", profile,
 	).Scan(&nonce, &wrapped); err != nil {
+		appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick query error=%v", err)
 		return ErrInvalidPassword
 	}
 	key, err := open(quickKey, nonce, wrapped, []byte("nyaterminal:quick-unlock:v1:"+profile))
 	if err != nil || len(key) != chacha20poly1305.KeySize {
 		wipe(key)
+		appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick unwrap error=%v keyLen=%d", err, len(key))
 		return ErrInvalidPassword
 	}
 	v.mu.Lock()
 	wipe(v.key)
 	v.key = key
 	v.mu.Unlock()
+	appendDiagnosticLog(v.dataDir, "hello", "UnlockQuick success profile=%s", profile)
 	return nil
 }
 

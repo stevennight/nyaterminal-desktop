@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -228,6 +229,205 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	}
 	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "new-refresh" {
 		t.Fatalf("refreshed tokens were not persisted: %#v", loaded)
+	}
+}
+
+func TestSummaryHidesLocalSyncWhenRemoteVaultIsNotInitialized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sync/status":
+			writeJSON(t, w, map[string]any{
+				"serverInitialized": true,
+				"syncInitialized":   false,
+			})
+		case "/api/v1/account":
+			writeJSON(t, w, map[string]any{"totpEnabled": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+
+	client := New(v)
+	profile := Profile{
+		ServerURL:   server.URL,
+		Username:    "owner",
+		DeviceID:    "device-a",
+		DeviceName:  "laptop",
+		SyncRootKey: make([]byte, 32),
+	}
+	session := AccountSession{
+		ServerURL:        server.URL,
+		Username:         "owner",
+		DeviceID:         "device-a",
+		DeviceName:       "laptop",
+		AccessToken:      "access",
+		RefreshToken:     "refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+	if err := client.saveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, store.TypeSyncState, stateID, State{
+		Records:      map[string]RecordState{},
+		LastSyncedAt: time.Now().UTC(),
+		Sync: SyncStatus{
+			LastAttemptAt: time.Now().UTC(),
+			LastError:     "old sync error",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := client.Summary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Configured {
+		t.Fatal("summary should hide local sync configuration when remote sync is not initialized")
+	}
+	if summary.DeviceID != "" || summary.DeviceName != "" {
+		t.Fatalf("summary exposed stale device info: %#v", summary)
+	}
+	if !summary.LoggedIn || !summary.ServerInitialized || summary.SyncInitialized {
+		t.Fatalf("unexpected summary state: %#v", summary)
+	}
+	if !summary.LastSyncedAt.IsZero() || summary.LastError != "" || !summary.LastAttemptAt.IsZero() {
+		t.Fatalf("summary exposed stale sync activity: %#v", summary)
+	}
+
+	account, err := client.AccountSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.Configured {
+		t.Fatal("account summary should hide local sync configuration when remote sync is not initialized")
+	}
+	if account.DeviceID != "" || account.DeviceName != "" {
+		t.Fatalf("account summary exposed stale device info: %#v", account)
+	}
+	if !account.LoggedIn || !account.ServerInitialized || account.SyncInitialized {
+		t.Fatalf("unexpected account summary state: %#v", account)
+	}
+}
+
+func TestAuthorizedRequestClearsSessionOnUnauthorized(t *testing.T) {
+	var unauthorizedCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/forbidden" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	client.SetUnauthorizedHandler(func() {
+		unauthorizedCalls++
+	})
+	session := AccountSession{
+		ServerURL: server.URL, Username: "owner", DeviceID: "device-a",
+		AccessToken: "old-access", RefreshToken: "old-refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	err = client.authorizedRequest(ctx, &session, http.MethodGet, "/forbidden", nil, nil)
+	if err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+	var statusErr *statusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized status error, got %v", err)
+	}
+	if session.AccessToken != "" || session.RefreshToken != "" {
+		t.Fatalf("session was not cleared in memory: %#v", session)
+	}
+	loaded, err := client.loadAccountSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "" || loaded.RefreshToken != "" {
+		t.Fatalf("session was not cleared from storage: %#v", loaded)
+	}
+	if unauthorizedCalls != 1 {
+		t.Fatalf("expected unauthorized handler to run once, got %d", unauthorizedCalls)
+	}
+}
+
+func TestAccountSummaryReflectsUnauthorizedLogout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/account":
+			http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+		case "/api/v1/sync/status":
+			writeJSON(t, w, RemoteStatus{ServerInitialized: true, SyncInitialized: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	session := AccountSession{
+		ServerURL: server.URL, Username: "owner", DeviceID: "device-a",
+		AccessToken: "expired-access", RefreshToken: "expired-refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := client.AccountSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.LoggedIn {
+		t.Fatalf("expected logged out summary after 401: %#v", summary)
+	}
+	loaded, err := client.loadAccountSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "" || loaded.RefreshToken != "" {
+		t.Fatalf("session was not cleared from storage: %#v", loaded)
 	}
 }
 

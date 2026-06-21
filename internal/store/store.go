@@ -183,11 +183,15 @@ func (s *Store) PutConnection(ctx context.Context, value model.Connection) (mode
 		value.SortOrder = maxOrder + 1
 	}
 	value.Name = strings.TrimSpace(value.Name)
+	value.Remark = strings.TrimSpace(value.Remark)
 	value.Host = strings.TrimSpace(value.Host)
 	value.Username = strings.TrimSpace(value.Username)
 	if value.Name == "" || value.Host == "" || value.Username == "" ||
 		value.Port < 1 || value.Port > 65535 {
 		return model.Connection{}, errors.New("invalid connection")
+	}
+	if len(value.Remark) > 2000 {
+		return model.Connection{}, errors.New("remark is too long")
 	}
 	if value.Encoding == "" {
 		value.Encoding = "utf-8"
@@ -285,11 +289,14 @@ func (s *Store) Settings(ctx context.Context) (model.Settings, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		value = model.DefaultSettings()
 		err = s.vault.Put(ctx, TypeSettings, "settings", value)
+	} else if err == nil {
+		value = model.NormalizeSettings(value)
 	}
 	return value, err
 }
 
 func (s *Store) PutSettings(ctx context.Context, value model.Settings) error {
+	value = model.NormalizeSettings(value)
 	if value.FontSize < 9 || value.FontSize > 40 ||
 		value.LockAfterMinutes < 0 || value.LockAfterMinutes > 24*60 {
 		return errors.New("invalid settings")

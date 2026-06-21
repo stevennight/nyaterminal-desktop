@@ -10,6 +10,7 @@ import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
 import { ZmodemAdapter } from './zmodem'
 import { clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
+import { resolveTerminalThemeColors, terminalChromeVariables, terminalXtermTheme } from './terminalThemes'
 import type { Connection, Settings } from './types'
 import type { CommandHistory } from './types'
 
@@ -36,6 +37,8 @@ export function TerminalView({
 }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const sessionIdRef = useRef('')
   const [status, setStatus] = useState('Connecting...')
   const [zmodemActive, setZmodemActive] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -50,6 +53,7 @@ export function TerminalView({
   const zmodemRef = useRef<ZmodemAdapter | undefined>(undefined)
   const searchRef = useRef<SearchAddon | undefined>(undefined)
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
+  const colors = resolveTerminalThemeColors(settings)
 
   useEffect(() => { suggestionsRef.current = suggestions }, [suggestions])
   useEffect(() => {
@@ -104,20 +108,11 @@ export function TerminalView({
       fontFamily: settings.fontFamily,
       fontSize: settings.fontSize,
       scrollback: 10000,
-      theme: {
-        background: '#0a0e16',
-        foreground: '#dce3ee',
-        cursor: '#77e4d4',
-        selectionBackground: '#325a6a88',
-        black: '#111827',
-        brightBlack: '#64748b',
-        green: '#70d6a1',
-        cyan: '#72d7e6',
-        brightCyan: '#9aeaf2'
-      }
+      theme: terminalXtermTheme(colors)
     })
     terminalRef.current = terminal
     const fit = new FitAddon()
+    fitRef.current = fit
     terminal.loadAddon(fit)
     const search = new SearchAddon()
     searchRef.current = search
@@ -200,6 +195,7 @@ export function TerminalView({
       }
       if (!result.session) throw new Error('SSH session was not created')
       sessionId = result.session.sessionId
+      sessionIdRef.current = sessionId
       onReady(sessionId)
       socket = new WebSocket(result.session.url)
       socketRef.current = socket
@@ -303,13 +299,34 @@ export function TerminalView({
       socketRef.current = undefined
       zmodemRef.current = undefined
       searchRef.current = undefined
+      fitRef.current = null
+      sessionIdRef.current = ''
       applySuggestionRef.current = () => undefined
       window.clearTimeout(suggestionTimer)
       if (sessionId) void api.CloseSSH(sessionId)
       terminal.dispose()
       onClose()
     }
-  }, [connection.id, credentialOverride?.password, credentialOverride?.privateKeyPem, credentialOverride?.passphrase])
+  }, [
+    connection.id,
+    credentialOverride?.password,
+    credentialOverride?.privateKeyPem,
+    credentialOverride?.passphrase,
+  ])
+
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    terminal.options.fontFamily = settings.fontFamily
+    terminal.options.fontSize = settings.fontSize
+    terminal.options.theme = terminalXtermTheme(colors)
+    fitRef.current?.fit()
+    if (sessionIdRef.current) void api.ResizeSSH(sessionIdRef.current, terminal.cols, terminal.rows)
+  }, [
+    colors,
+    settings.fontFamily,
+    settings.fontSize,
+  ])
 
   useEffect(() => {
     if (active) window.setTimeout(() => window.dispatchEvent(new Event('resize')), 0)
@@ -331,7 +348,9 @@ export function TerminalView({
   }, [active])
 
   return (
-    <section className={`terminal-pane ${active ? 'active' : ''}`}>
+    <section
+      className={`terminal-pane ${active ? 'active' : ''}`}
+      style={terminalChromeVariables(colors) as React.CSSProperties}>
       <div ref={host} className="terminal-host" onContextMenu={event => {
         event.preventDefault()
         setTerminalMenuReady(false)

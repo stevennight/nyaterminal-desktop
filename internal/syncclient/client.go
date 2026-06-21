@@ -34,8 +34,9 @@ const (
 )
 
 type Client struct {
-	vault *vault.Vault
-	http  *http.Client
+	vault               *vault.Vault
+	http                *http.Client
+	unauthorizedHandler func()
 }
 
 type Profile struct {
@@ -240,11 +241,24 @@ type serverRecord struct {
 	UpdatedAt     time.Time        `json:"updatedAt,omitempty"`
 }
 
+type statusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("sync server returned %d: %s", e.StatusCode, e.Body)
+}
+
 func New(v *vault.Vault) *Client {
 	return &Client{
 		vault: v,
 		http:  &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+func (c *Client) SetUnauthorizedHandler(handler func()) {
+	c.unauthorizedHandler = handler
 }
 
 func (c *Client) BootstrapAccount(ctx context.Context, serverURL, username, password string) (TokenPair, error) {
@@ -1017,7 +1031,11 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 func (c *Client) Configured(ctx context.Context) bool {
 	var profile Profile
 	return c.vault.Get(ctx, store.TypeSyncProfile, profileID, &profile) == nil &&
-		profile.ServerURL != "" && profile.DeviceID != "" &&
+		profileConfigured(profile)
+}
+
+func profileConfigured(profile Profile) bool {
+	return profile.ServerURL != "" && profile.DeviceID != "" &&
 		len(profile.SyncRootKey) == chacha20poly1305.KeySize
 }
 
@@ -1038,9 +1056,7 @@ func (c *Client) Summary(ctx context.Context) (Summary, error) {
 		return Summary{}, err
 	}
 	profile, profileErr := c.loadProfile(ctx)
-	configured := profileErr == nil &&
-		profile.ServerURL != "" && profile.DeviceID != "" &&
-		len(profile.SyncRootKey) == chacha20poly1305.KeySize
+	configured := profileErr == nil && profileConfigured(profile)
 	autoSyncEnabled := true
 	serverURL := session.ServerURL
 	username := session.Username
@@ -1070,9 +1086,15 @@ func (c *Client) Summary(ctx context.Context) (Summary, error) {
 		if remote, err := c.RemoteStatus(ctx, summary.ServerURL); err == nil {
 			summary.ServerInitialized = remote.ServerInitialized
 			summary.SyncInitialized = remote.SyncInitialized
+			if !remote.SyncInitialized {
+				summary.Configured = false
+				summary.DeviceID = ""
+				summary.DeviceName = ""
+				return summary, nil
+			}
 		}
 	}
-	if !configured {
+	if !summary.Configured {
 		return summary, nil
 	}
 	var state State
@@ -1095,6 +1117,8 @@ func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
 	if err != nil {
 		return AccountSummary{}, err
 	}
+	profile, profileErr := c.loadProfile(ctx)
+	configured := profileErr == nil && profileConfigured(profile)
 	summary := AccountSummary{
 		LoggedIn:         session.AccessToken != "" && session.RefreshToken != "",
 		ServerURL:        session.ServerURL,
@@ -1105,7 +1129,7 @@ func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
 		RefreshExpiresAt: session.RefreshExpiresAt,
 	}
 	if summary.ServerURL == "" {
-		if profile, err := c.loadProfile(ctx); err == nil {
+		if configured {
 			summary.ServerURL = profile.ServerURL
 			if summary.Username == "" {
 				summary.Username = profile.Username
@@ -1124,14 +1148,23 @@ func (c *Client) AccountSummary(ctx context.Context) (AccountSummary, error) {
 		}
 		if summary.LoggedIn {
 			_ = c.authorizedRequest(ctx, &session, http.MethodGet, "/api/v1/account", nil, &account)
+			summary.LoggedIn = session.AccessToken != "" && session.RefreshToken != ""
+			summary.AccessExpiresAt = session.AccessExpiresAt
+			summary.RefreshExpiresAt = session.RefreshExpiresAt
 			summary.TOTPEnabled = account.TOTPEnabled
 		}
 		if remote, err := c.RemoteStatus(ctx, summary.ServerURL); err == nil {
 			summary.ServerInitialized = remote.ServerInitialized
 			summary.SyncInitialized = remote.SyncInitialized
+			if !remote.SyncInitialized {
+				summary.Configured = false
+				summary.DeviceID = ""
+				summary.DeviceName = ""
+				return summary, nil
+			}
 		}
 	}
-	summary.Configured = c.Configured(ctx)
+	summary.Configured = configured
 	return summary, nil
 }
 
@@ -1589,6 +1622,9 @@ func (c *Client) authorizedRequest(ctx context.Context, session *AccountSession,
 		var tokens TokenPair
 		if err := c.request(ctx, http.MethodPost, session.ServerURL+"/api/v1/auth/refresh", "",
 			map[string]string{"refreshToken": session.RefreshToken}, &tokens); err != nil {
+			if clearErr := c.clearSessionOnUnauthorized(ctx, session, err); clearErr != nil {
+				return clearErr
+			}
 			return err
 		}
 		session.AccessToken = tokens.AccessToken
@@ -1599,7 +1635,11 @@ func (c *Client) authorizedRequest(ctx context.Context, session *AccountSession,
 			return err
 		}
 	}
-	return c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
+	err := c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
+	if clearErr := c.clearSessionOnUnauthorized(ctx, session, err); clearErr != nil {
+		return clearErr
+	}
+	return err
 }
 
 func (c *Client) request(ctx context.Context, method, endpoint, token string, request, response any) (err error) {
@@ -1650,12 +1690,36 @@ func (c *Client) request(ctx context.Context, method, endpoint, token string, re
 				httpResponse.StatusCode, readErr,
 			)
 		}
-		return fmt.Errorf("sync server returned %d: %s", httpResponse.StatusCode, strings.TrimSpace(string(data)))
+		return &statusError{
+			StatusCode: httpResponse.StatusCode,
+			Body:       strings.TrimSpace(string(data)),
+		}
 	}
 	if response == nil || httpResponse.StatusCode == http.StatusNoContent {
 		return nil
 	}
 	return json.NewDecoder(io.LimitReader(httpResponse.Body, 8<<20)).Decode(response)
+}
+
+func (c *Client) clearSessionOnUnauthorized(ctx context.Context, session *AccountSession, err error) error {
+	var statusErr *statusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		return nil
+	}
+	if session == nil || (session.AccessToken == "" && session.RefreshToken == "") {
+		return nil
+	}
+	session.AccessToken = ""
+	session.RefreshToken = ""
+	session.AccessExpiresAt = time.Time{}
+	session.RefreshExpiresAt = time.Time{}
+	if saveErr := c.saveAccountSession(ctx, *session); saveErr != nil {
+		return errors.Join(err, saveErr)
+	}
+	if c.unauthorizedHandler != nil {
+		c.unauthorizedHandler()
+	}
+	return nil
 }
 
 func joinCloseError(err error, closer io.Closer) error {
