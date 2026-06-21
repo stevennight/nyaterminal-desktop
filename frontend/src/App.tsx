@@ -2,7 +2,7 @@
 import type { CSSProperties } from 'react'
 import {
   ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
-  Moon, MoreHorizontal, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
+  Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
@@ -45,6 +45,20 @@ type SSHAuthPrompt = {
 type ThemeName = 'dark' | 'light'
 type RenameTabState = { id: string; value: string }
 type TerminalThemeField = keyof TerminalThemeColors
+type GroupEditorState = {
+  initial?: Group
+  initialParentId?: string
+}
+type ContextMenuItem = {
+  label: string
+  danger?: boolean
+  onSelect: () => void | Promise<void>
+}
+type ContextMenuState = {
+  x: number
+  y: number
+  items: ContextMenuItem[]
+}
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 
@@ -146,6 +160,10 @@ function localizeError(value: unknown) {
   const directMap: Array<[string, string]> = [
     ['synchronization requires login', '同步需要先登录。'],
     ['synchronization is not configured', '同步尚未配置。'],
+    ['group contains child groups', '当前分组下还有子分组，无法删除。'],
+    ['group contains connections', '当前分组下还有连接，无法删除。'],
+    ['group hierarchy contains a cycle', '上级分组不能选择当前分组或其子分组。'],
+    ['invalid group', '分组信息无效。'],
     ['recovery bundle changed during recovery', '恢复过程中恢复包已变化。'],
     ['recovery code is invalid', '恢复码无效。'],
     ['invalid pairing approval code', '批准串无效。'],
@@ -259,6 +277,17 @@ function buildGroupIndex(groups: Group[]) {
   return { byId, childrenByParent }
 }
 
+function collectDescendantGroupIds(groupId: string, childrenByParent: Map<string, Group[]>) {
+  const result: string[] = []
+  const queue = [...(childrenByParent.get(groupId) ?? [])]
+  while (queue.length) {
+    const group = queue.shift()!
+    result.push(group.id)
+    queue.push(...(childrenByParent.get(group.id) ?? []))
+  }
+  return result
+}
+
 function groupPathIds(groupId: string, byId: Map<string, Group>) {
   const path: string[] = []
   const visited = new Set<string>()
@@ -294,7 +323,7 @@ export function App() {
   const [error, setError] = useState('')
   const [theme, setTheme] = useState<ThemeName>(() => getPreferredTheme())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
-  const [groupEditor, setGroupEditor] = useState(false)
+  const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
   const [tagEditor, setTagEditor] = useState(false)
   const [accountManagerOpen, setAccountManagerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -309,6 +338,7 @@ export function App() {
   const [query, setQuery] = useState('')
   const [activeTag, setActiveTag] = useState('')
   const [syncBusy, setSyncBusy] = useState(false)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>()
   const activityTimer = useRef<number | undefined>(undefined)
   const searchInput = useRef<HTMLInputElement>(null)
   const tabScroll = useRef<HTMLDivElement>(null)
@@ -472,6 +502,80 @@ export function App() {
     })
   }
 
+  const deleteGroup = async (group: Group) => {
+    if (!window.confirm(`确定删除分组 ${group.name}？`)) return
+    try {
+      await api.DeleteGroup(group.id)
+      await reload()
+    } catch (reason) {
+      setError(localizeError(reason))
+    }
+  }
+
+  const deleteConnection = async (connection: Connection) => {
+    if (!window.confirm(`确定删除连接 ${connectionLabel(connection)}？`)) return
+    try {
+      await api.DeleteConnection(connection.id)
+      await reload()
+    } catch (reason) {
+      setError(localizeError(reason))
+    }
+  }
+
+  const showGroupContextMenu = (event: React.MouseEvent, group: Group) => {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        {
+          label: '新建分组',
+          onSelect: () => setGroupEditor({ initialParentId: group.id })
+        },
+        {
+          label: '新建 SSH',
+          onSelect: () => setConnectionEditor({ ...emptyConnection, groupId: group.id })
+        },
+        {
+          label: '编辑',
+          onSelect: () => setGroupEditor({ initial: group })
+        },
+        {
+          label: '删除',
+          danger: true,
+          onSelect: () => deleteGroup(group)
+        },
+      ],
+    })
+  }
+
+  const showConnectionContextMenu = (event: React.MouseEvent, connection: Connection) => {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        {
+          label: '连接',
+          onSelect: () => openConnection(connection)
+        },
+        {
+          label: '隐私连接',
+          onSelect: () => openConnection(connection, true)
+        },
+        {
+          label: '编辑',
+          onSelect: () => setConnectionEditor(connection)
+        },
+        {
+          label: '删除',
+          danger: true,
+          onSelect: () => deleteConnection(connection)
+        },
+      ],
+    })
+  }
+
   const openRenameTab = (tab: SessionTab) => {
     setRenamingTab({ id: tab.id, value: tab.title ?? '' })
     setTabMenuOpen(false)
@@ -535,13 +639,15 @@ export function App() {
         <div className="section-heading">
           <span>连接</span>
           <div>
-            <button title="新建分组" onClick={() => setGroupEditor(true)}><FolderPlus size={15} /></button>
+            <button title="新建分组" onClick={() => setGroupEditor({})}><FolderPlus size={15} /></button>
             <button title="新建连接" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
           </div>
         </div>
         <nav className="connection-tree">
           <GroupTree groups={bootstrap.groups ?? []} connections={filteredConnections}
-            onOpen={openConnection} onEdit={setConnectionEditor} onChanged={reload} />
+            onOpen={openConnection} onChanged={reload}
+            onGroupContextMenu={showGroupContextMenu}
+            onConnectionContextMenu={showConnectionContextMenu} />
           {!filteredConnections.length && <div className="empty-tree">还没有连接</div>}
         </nav>
         <div className="tag-section">
@@ -569,8 +675,9 @@ export function App() {
           </div>
         </div>
         <div className="sidebar-footer">
-          <button onClick={() => setSettingsOpen(true)}><SettingsIcon size={17} />设置</button>
-          <button><MoreHorizontal size={17} /></button>
+          <button className="settings-entry" onClick={() => setSettingsOpen(true)}>
+            <SettingsIcon size={17} />设置
+          </button>
         </div>
       </aside>
 
@@ -706,8 +813,11 @@ export function App() {
             if (connect) openConnection(connection)
           }} />
       )}
-      {groupEditor && <GroupEditor groups={bootstrap.groups ?? []} onClose={() => setGroupEditor(false)}
-        onSaved={async _group => { setGroupEditor(false); await reload() }} />}
+      {groupEditor && <GroupEditor initial={groupEditor.initial}
+        initialParentId={groupEditor.initialParentId}
+        groups={bootstrap.groups ?? []}
+        onClose={() => setGroupEditor(undefined)}
+        onSaved={async _group => { setGroupEditor(undefined); await reload() }} />}
       {tagEditor && <TagEditor onClose={() => setTagEditor(false)}
         onSaved={async () => { setTagEditor(false); await reload() }} />}
       {renamingTab && <RenameTabDialog
@@ -808,6 +918,8 @@ export function App() {
             setInteractiveChallenge(undefined)
           }} />
       )}
+      {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y}
+        items={contextMenu.items} onClose={() => setContextMenu(undefined)} />}
       {error && <div className="toast-error" onClick={() => setError('')}>{error}</div>}
       {bootstrap.vault.locked && (
         <div className="lock-overlay">
@@ -818,12 +930,13 @@ export function App() {
   )
 }
 
-function GroupTree({ groups, connections, onOpen, onEdit, onChanged }: {
+function GroupTree({ groups, connections, onOpen, onChanged, onGroupContextMenu, onConnectionContextMenu }: {
   groups: Group[]
   connections: Connection[]
   onOpen: (connection: Connection, privateSession?: boolean) => void
-  onEdit: (connection: Connection) => void
   onChanged: () => Promise<void>
+  onGroupContextMenu: (event: React.MouseEvent, group: Group) => void
+  onConnectionContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
   const orderedGroups = [...groups].sort((a, b) =>
     a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
@@ -850,21 +963,33 @@ function GroupTree({ groups, connections, onOpen, onEdit, onChanged }: {
   }
   return <>
     {roots.map(group => <GroupNode key={group.id} group={group} groups={groups}
-      connections={connections} onOpen={onOpen} onEdit={onEdit}
-      onChanged={onChanged} onDropInto={dropInto} />)}
+      connections={connections} onOpen={onOpen} onChanged={onChanged}
+      onDropInto={dropInto} onGroupContextMenu={onGroupContextMenu}
+      onConnectionContextMenu={onConnectionContextMenu} />)}
     <div className="ungrouped-drop" onDragOver={event => event.preventDefault()}
       onDrop={event => void dropInto(event, '')}>
     {ungrouped.map(connection => <ConnectionRow key={connection.id} value={connection}
-      onOpen={onOpen} onEdit={onEdit} />)}
+      onOpen={onOpen} onContextMenu={onConnectionContextMenu} />)}
     </div>
   </>
 }
 
-function GroupNode({ group, groups, connections, onOpen, onEdit, onChanged, onDropInto }: {
+function GroupNode({
+  group,
+  groups,
+  connections,
+  onOpen,
+  onChanged,
+  onDropInto,
+  onGroupContextMenu,
+  onConnectionContextMenu,
+}: {
   group: Group; groups: Group[]; connections: Connection[]
-  onOpen: (connection: Connection, privateSession?: boolean) => void; onEdit: (connection: Connection) => void
+  onOpen: (connection: Connection, privateSession?: boolean) => void
   onChanged: () => Promise<void>
   onDropInto: (event: React.DragEvent, parentId: string) => Promise<void>
+  onGroupContextMenu: (event: React.MouseEvent, group: Group) => void
+  onConnectionContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
   const [open, setOpen] = useState(true)
   const children = groups.filter(value => value.parentId === group.id)
@@ -877,44 +1002,35 @@ function GroupNode({ group, groups, connections, onOpen, onEdit, onChanged, onDr
       onDragOver={event => event.preventDefault()}
       onDrop={event => { event.stopPropagation(); void onDropInto(event, group.id) }}
       onClick={() => setOpen(value => !value)}
-      onContextMenu={event => {
-        event.preventDefault()
-        const name = window.prompt('修改分组名称；留空将删除分组', group.name)
-        if (name === null) return
-        if (!name.trim()) {
-          if (window.confirm(`确定删除空分组 ${group.name}？`)) {
-            void api.DeleteGroup(group.id).then(onChanged)
-          }
-        } else {
-          void api.SaveGroup({ ...group, name: name.trim() }).then(onChanged)
-        }
-      }}>
+      onContextMenu={event => onGroupContextMenu(event, group)}>
       {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       <Folder size={15} /><span>{group.name}</span>
       <small>{items.length}</small>
     </button>
     {open && <div className="group-children">
       {children.map(child => <GroupNode key={child.id} group={child} groups={groups}
-        connections={connections} onOpen={onOpen} onEdit={onEdit}
-        onChanged={onChanged} onDropInto={onDropInto} />)}
+        connections={connections} onOpen={onOpen} onChanged={onChanged}
+        onDropInto={onDropInto} onGroupContextMenu={onGroupContextMenu}
+        onConnectionContextMenu={onConnectionContextMenu} />)}
       {items.map(connection => <ConnectionRow key={connection.id} value={connection}
-        onOpen={onOpen} onEdit={onEdit} />)}
+        onOpen={onOpen} onContextMenu={onConnectionContextMenu} />)}
     </div>}
   </div>
 }
 
-function ConnectionRow({ value, onOpen, onEdit }: {
-  value: Connection; onOpen: (value: Connection, privateSession?: boolean) => void; onEdit: (value: Connection) => void
+function ConnectionRow({ value, onOpen, onContextMenu }: {
+  value: Connection
+  onOpen: (value: Connection, privateSession?: boolean) => void
+  onContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
   return <button className="connection-row" draggable
     onDragStart={event => event.dataTransfer.setData('application/x-nya-connection', value.id)}
-    title="双击连接；右键打开不记录历史的隐私会话"
+    title="双击连接；右键查看更多操作"
     onDoubleClick={() => onOpen(value)}
-    onContextMenu={event => { event.preventDefault(); onOpen(value, true) }}>
+    onContextMenu={event => onContextMenu(event, value)}>
     <span className="status-dot" /><span className="connection-copy">
       <strong>{value.name}</strong><small>{value.username}@{value.host}:{value.port}</small>
     </span>
-    <i onClick={event => { event.stopPropagation(); onEdit(value) }}><MoreHorizontal size={15} /></i>
   </button>
 }
 
@@ -1028,6 +1144,58 @@ function Modal({ title, children, onClose, width = '520px', footer, bodyClassNam
         <div className={bodyClassName ? `modal-body ${bodyClassName}` : 'modal-body'}>{children}</div>
         {footer && <footer className="modal-actions">{footer}</footer>}
       </section>
+    </div>,
+    target,
+  )
+}
+
+function ContextMenu({ x, y, items, onClose }: {
+  x: number
+  y: number
+  items: ContextMenuItem[]
+  onClose: () => void
+}) {
+  const menu = useRef<HTMLDivElement>(null)
+  const target = modalPortalTarget()
+
+  useEffect(() => {
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const targetNode = event.target as Node | null
+      if (menu.current?.contains(targetNode)) return
+      onClose()
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('pointerdown', closeOnPointerDown, true)
+    window.addEventListener('keydown', closeOnEscape)
+    window.addEventListener('resize', onClose)
+    window.addEventListener('scroll', onClose, true)
+    return () => {
+      window.removeEventListener('pointerdown', closeOnPointerDown, true)
+      window.removeEventListener('keydown', closeOnEscape)
+      window.removeEventListener('resize', onClose)
+      window.removeEventListener('scroll', onClose, true)
+    }
+  }, [onClose])
+
+  if (!target || typeof window === 'undefined') return null
+  const estimatedWidth = 180
+  const estimatedHeight = items.length * 34 + 14
+  const left = Math.max(12, Math.min(x, window.innerWidth - estimatedWidth - 12))
+  const top = Math.max(12, Math.min(y, window.innerHeight - estimatedHeight - 12))
+
+  return createPortal(
+    <div className="context-menu" ref={menu} style={{ left, top }}
+      onContextMenu={event => event.preventDefault()}>
+      {items.map((item, index) => <button key={`${item.label}-${index}`} type="button"
+        className={item.danger ? 'danger' : ''}
+        onClick={() => {
+          onClose()
+          void item.onSelect()
+        }}>
+        {item.label}
+      </button>)}
     </div>,
     target,
   )
@@ -1296,28 +1464,45 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
   </>
 }
 
-function GroupEditor({ groups, initialParentId = '', onClose, onSaved }: {
-  groups: Group[]; initialParentId?: string; onClose: () => void; onSaved: (group: Group) => Promise<void> | void
+function GroupEditor({ groups, initial, initialParentId = '', onClose, onSaved }: {
+  groups: Group[]
+  initial?: Group
+  initialParentId?: string
+  onClose: () => void
+  onSaved: (group: Group) => Promise<void> | void
 }) {
-  const [name, setName] = useState('')
-  const [parentId, setParentId] = useState(initialParentId)
+  const editing = Boolean(initial?.id)
+  const [name, setName] = useState(initial?.name ?? '')
+  const [parentId, setParentId] = useState(initial?.parentId ?? initialParentId)
   const [error, setError] = useState('')
-  const create = async () => {
+  const disabledGroupIds = useMemo(() => {
+    if (!initial?.id) return []
+    const { childrenByParent } = buildGroupIndex(groups)
+    return [initial.id, ...collectDescendantGroupIds(initial.id, childrenByParent)]
+  }, [groups, initial?.id])
+  const save = async () => {
     try {
+      const nextParentId = parentId.trim()
       const result = await api.SaveGroup({
-        id: '', name, parentId, sortOrder: nextGroupSortOrder(groups, parentId)
+        id: initial?.id ?? '',
+        name,
+        parentId: nextParentId,
+        sortOrder: initial && (initial.parentId ?? '') === nextParentId
+          ? initial.sortOrder
+          : nextGroupSortOrder(groups, nextParentId)
       })
       await onSaved(result)
     } catch (reason) { setError(localizeError(reason)) }
   }
-  return <Modal title="新建分组" onClose={onClose} footer={<>
+  return <Modal title={editing ? '编辑分组' : '新建分组'} onClose={onClose} footer={<>
     <button onClick={onClose}>取消</button>
-    <button className="primary" onClick={() => void create()}>创建</button>
+    <button className="primary" onClick={() => void save()}>{editing ? '保存' : '创建'}</button>
   </>}>
     <div className="form-grid">
       <label className="full">名称<input autoFocus value={name} onChange={e => setName(e.target.value)} /></label>
       <label className="full">上级分组<GroupCascader groups={groups} value={parentId}
-        onChange={setParentId} rootLabel="无（顶级分组）" /></label>
+        onChange={setParentId} rootLabel="无（顶级分组）"
+        disabledGroupIds={disabledGroupIds} /></label>
     </div>
     {error && <div className="form-error">{error}</div>}
   </Modal>

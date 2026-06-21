@@ -60,11 +60,19 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .connection-copy strong, .connection-copy small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .connection-copy strong { font-size: 13px; font-weight: 500; }
 .connection-copy small { color: var(--muted); font-size: 10px; }
-.connection-row i { opacity: 0; color: var(--muted); }
-.connection-row:hover i { opacity: 1; }
 .empty-tree { color: var(--muted); text-align: center; font-size: 12px; padding: 30px; }
-.sidebar-footer { border-top: 1px solid var(--line); display: flex; padding: 10px; justify-content: space-between; }
+.sidebar-footer { border-top: 1px solid var(--line); padding: 10px; }
 .sidebar-footer button { display: flex; gap: 8px; align-items: center; color: var(--muted); }
+.settings-entry {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+.settings-entry:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
 
 .workspace { min-width: 0; display: flex; flex-direction: column; position: relative; }
 .tabbar { height: 45px; display: flex; align-items: stretch; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -326,6 +334,38 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .modal > header { flex: 0 0 auto; height: 58px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 20px; background-color: var(--panel); }
 .modal h2 { font-size: 16px; margin: 0; }
 .modal > header button { border: 0; background: transparent; cursor: pointer; color: var(--muted); }
+.context-menu {
+  position: fixed;
+  z-index: 95;
+  width: 180px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  box-shadow: 0 18px 44px #0007;
+  backdrop-filter: blur(10px);
+}
+.context-menu button {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0 10px;
+}
+.context-menu button:hover {
+  background: var(--panel2);
+}
+.context-menu button.danger {
+  color: #ff7d88;
+}
+.context-menu button.danger:hover {
+  background: #e44d5b22;
+}
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 120px; column-gap: 10px; row-gap: 2px; }
 .form-grid .full { grid-column: 1 / -1; }
 .form-grid .wide { grid-column: span 2; }
