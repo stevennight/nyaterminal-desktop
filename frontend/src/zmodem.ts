@@ -12,6 +12,7 @@ const decoder = new TextDecoder('latin1')
 const encoder = new TextEncoder()
 const receiveHeaderPrefix = encoder.encode('**\x18B00')
 const sendHeaderPrefix = encoder.encode('**\x18B01')
+const fileSelectionCancelDelayMs = 150
 
 // zmodem2 deliberately exposes protocol state machines rather than terminal
 // detection. This adapter keeps the protocol isolated from the terminal and
@@ -161,9 +162,16 @@ export class ZmodemAdapter {
     input.hidden = true
     document.body.appendChild(input)
     let settled = false
+    let focusCancelTimer = 0
+    const clearFocusCancelTimer = () => {
+      if (!focusCancelTimer) return
+      window.clearTimeout(focusCancelTimer)
+      focusCancelTimer = 0
+    }
     const settle = (handler: () => void) => {
       if (settled) return
       settled = true
+      clearFocusCancelTimer()
       window.removeEventListener('focus', onFocus)
       this.selectingFile = false
       input.remove()
@@ -172,7 +180,10 @@ export class ZmodemAdapter {
     const cancelSelection = () => settle(() => { void this.cancel() })
     const onFocus = () => {
       window.removeEventListener('focus', onFocus)
-      if (!settled && !(input.files?.length ?? 0)) cancelSelection()
+      focusCancelTimer = window.setTimeout(() => {
+        focusCancelTimer = 0
+        if (!settled && !(input.files?.length ?? 0)) cancelSelection()
+      }, fileSelectionCancelDelayMs)
     }
     input.onchange = () => {
       const files = Array.from(input.files ?? [])

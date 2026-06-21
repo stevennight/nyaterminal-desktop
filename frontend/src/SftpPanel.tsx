@@ -113,7 +113,8 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
       <div className="panel-transfer-queue">
         <strong>传输队列</strong>
         {!transfers.length && <span>暂无任务</span>}
-        {transfers.slice(0, 5).map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
+        {!!transfers.length && <div className="panel-transfer-list">
+          {transfers.map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
           <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
           <span title={item.name}>{item.name}</span>
           <small>{transferStatus(item)}</small>
@@ -131,7 +132,8 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
                 <Square size={11} />
               </button>}
           </div>
-        </div>)}
+          </div>)}
+        </div>}
       </div>
     </aside>
   )

@@ -61,6 +61,34 @@ describe('ZmodemAdapter', () => {
     expect(onActive).toHaveBeenLastCalledWith(false)
     expect(toTerminal).not.toHaveBeenCalled()
   })
+
+  it('does not cancel if file selection finishes after window focus returns', async () => {
+    vi.useFakeTimers()
+    try {
+      const send = vi.fn()
+      const toTerminal = vi.fn()
+      const onStatus = vi.fn()
+      const onActive = vi.fn()
+      const adapter = new ZmodemAdapter({ send, toTerminal, onStatus, onActive })
+
+      adapter.consume(encoder.encode('**\x18B01payload'))
+      const input = getCreatedInput()
+      dispatchWindowEvent('focus')
+
+      input.files = createFakeFileList([new File(['hello'], 'demo.txt')])
+      input.onchange?.(new Event('change'))
+      await Promise.resolve()
+      await vi.runAllTimersAsync()
+
+      expect(onStatus).toHaveBeenCalledWith('检测到远端 rz，请选择要发送的文件')
+      expect(onStatus).not.toHaveBeenCalledWith('ZMODEM 传输已取消')
+      expect(onActive).toHaveBeenCalledWith(true)
+      expect(send).not.toHaveBeenCalledWith(expect.objectContaining(new Array(8).fill(0x18)))
+      expect(toTerminal).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 function concat(left: Uint8Array, right: Uint8Array) {
@@ -82,8 +110,10 @@ type FakeInput = {
 }
 
 let createdInput: FakeInput
+let windowListeners = new Map<string, Set<(event: Event) => void>>()
 
 function installFakeDom() {
+  windowListeners = new Map()
   createdInput = {
     type: '',
     multiple: false,
@@ -100,12 +130,42 @@ function installFakeDom() {
       createElement: vi.fn(() => createdInput)
     },
     window: {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn()
+      addEventListener: vi.fn((type: string, listener: (event: Event) => void) => {
+        const listeners = windowListeners.get(type) ?? new Set<(event: Event) => void>()
+        listeners.add(listener)
+        windowListeners.set(type, listeners)
+      }),
+      removeEventListener: vi.fn((type: string, listener: (event: Event) => void) => {
+        windowListeners.get(type)?.delete(listener)
+      }),
+      setTimeout,
+      clearTimeout
     }
   })
 }
 
 function getCreatedInput() {
   return createdInput
+}
+
+function dispatchWindowEvent(type: string) {
+  for (const listener of windowListeners.get(type) ?? []) listener(new Event(type))
+}
+
+function createFakeFileList(files: File[]) {
+  const fileList = {
+    length: files.length,
+    item: (index: number) => files[index] ?? null,
+    [Symbol.iterator]: function* () {
+      yield* files
+    }
+  } as FileList & Iterable<File>
+  files.forEach((file, index) => {
+    Object.defineProperty(fileList, index, {
+      value: file,
+      enumerable: true,
+      configurable: true
+    })
+  })
+  return fileList
 }
