@@ -25,6 +25,10 @@ type SessionTab = {
   connection: Connection
   title?: string
   attempt: number
+  reconnectAttempts: number
+  reconnecting: boolean
+  reconnectTimer?: number
+  reconnectMessage?: string
   sshSessionId?: string
   sftp: boolean
   privateSession: boolean
@@ -61,6 +65,8 @@ type ContextMenuState = {
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 const DEFAULT_TAG_COLOR = '#62D9CA'
+const AUTO_RECONNECT_LIMIT = 5
+const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
 
 const emptyConnection: Connection = {
   id: '', name: '', remark: '', host: '', port: 22, username: 'root',
@@ -256,6 +262,10 @@ function connectionLabel(connection: Connection) {
   return connection.name || connection.host || '未命名终端'
 }
 
+function resolvesAutoReconnect(connection: Connection, settings: Settings) {
+  return connection.autoReconnect ?? settings.autoReconnect
+}
+
 function sessionLabel(session: Pick<SessionTab, 'title' | 'connection'>) {
   return session.title?.trim() || connectionLabel(session.connection)
 }
@@ -355,6 +365,8 @@ export function App() {
   const [syncBusy, setSyncBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuState>()
   const activityTimer = useRef<number | undefined>(undefined)
+  const sessionsRef = useRef<SessionTab[]>([])
+  const closedTabsRef = useRef(new Set<string>())
   const searchInput = useRef<HTMLInputElement>(null)
   const tabScroll = useRef<HTMLDivElement>(null)
   const tabMenu = useRef<HTMLDivElement>(null)
@@ -371,6 +383,10 @@ export function App() {
   }, [])
 
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    sessionsRef.current = sessions
+  }, [sessions])
 
   useEffect(() => {
     const nextTheme = bootstrap?.settings?.theme
@@ -424,6 +440,12 @@ export function App() {
     setTabMenuOpen(false)
   }, [sessions.length])
 
+  useEffect(() => () => {
+    sessionsRef.current.forEach(tab => {
+      if (tab.reconnectTimer) window.clearTimeout(tab.reconnectTimer)
+    })
+  }, [])
+
   const resetActivity = useCallback(() => {
     if (activityTimer.current) window.clearTimeout(activityTimer.current)
     const minutes = bootstrap?.settings?.lockAfterMinutes ?? 0
@@ -466,6 +488,10 @@ export function App() {
     await api.Lock()
     void navigator.clipboard?.writeText('').catch(() => undefined)
     if (disconnect) {
+      sessionsRef.current.forEach(tab => closedTabsRef.current.add(tab.id))
+      sessionsRef.current.forEach(tab => {
+        if (tab.reconnectTimer) window.clearTimeout(tab.reconnectTimer)
+      })
       setSessions([])
       setActiveSession('')
     }
@@ -501,21 +527,116 @@ export function App() {
 
   const openConnection = (connection: Connection, privateSession = false) => {
     const id = crypto.randomUUID()
+    closedTabsRef.current.delete(id)
     setSessions(current => [...current, {
-      id, connection, title: undefined, attempt: 0, sftp: false, privateSession, credentialOverride: undefined
+      id,
+      connection,
+      title: undefined,
+      attempt: 0,
+      reconnectAttempts: 0,
+      reconnecting: false,
+      reconnectTimer: undefined,
+      reconnectMessage: undefined,
+      sftp: false,
+      privateSession,
+      credentialOverride: undefined
     }])
     setActiveSession(id)
   }
 
   const closeSession = (id: string) => {
+    closedTabsRef.current.add(id)
     setSessions(current => {
       const tab = current.find(item => item.id === id)
+      if (tab?.reconnectTimer) window.clearTimeout(tab.reconnectTimer)
       if (tab?.sshSessionId) void api.CloseSSH(tab.sshSessionId)
       const next = current.filter(item => item.id !== id)
       if (activeSession === id) setActiveSession(next.at(-1)?.id ?? '')
       return next
     })
   }
+
+  const retrySessionConnection = useCallback((tabId: string, delayMs: number, message: string) => {
+    setSessions(current => current.map(item => {
+      if (item.id !== tabId) return item
+      if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
+      const reconnectTimer = window.setTimeout(() => {
+        setSessions(inner => inner.map(tab =>
+          tab.id === tabId
+            ? {
+              ...tab,
+              reconnecting: false,
+              reconnectTimer: undefined,
+              reconnectMessage: undefined,
+              sshSessionId: undefined,
+              attempt: tab.attempt + 1,
+            }
+            : tab
+        ))
+      }, delayMs)
+      return {
+        ...item,
+        reconnecting: true,
+        reconnectTimer,
+        reconnectMessage: message,
+        sshSessionId: undefined,
+      }
+    }))
+  }, [])
+
+  const handleTerminalDisconnect = useCallback((tabId: string, reason: { message: string; retryable: boolean }) => {
+    if (closedTabsRef.current.has(tabId)) return
+    setSessions(current => {
+      const tab = current.find(item => item.id === tabId)
+      if (!tab) return current
+      const settings = bootstrap?.settings
+      if (!settings || !reason.retryable || !resolvesAutoReconnect(tab.connection, settings)) {
+        return current.map(item =>
+          item.id === tabId
+            ? {
+              ...item,
+              reconnecting: false,
+              reconnectTimer: undefined,
+              reconnectMessage: undefined,
+              sshSessionId: undefined,
+            }
+            : item
+        )
+      }
+      const nextAttempt = tab.reconnectAttempts + 1
+      if (nextAttempt > AUTO_RECONNECT_LIMIT) {
+        return current.map(item =>
+          item.id === tabId
+            ? {
+              ...item,
+              reconnecting: false,
+              reconnectTimer: undefined,
+              reconnectMessage: `重连失败，已达到最大重试次数。${reason.message ? ` ${reason.message}` : ''}`.trim(),
+              sshSessionId: undefined,
+            }
+            : item
+        )
+      }
+      return current.map(item =>
+        item.id === tabId
+          ? {
+            ...item,
+            reconnectAttempts: nextAttempt,
+            sshSessionId: undefined,
+          }
+          : item
+      )
+    })
+    const currentTab = sessionsRef.current.find(item => item.id === tabId)
+    const settings = bootstrap?.settings
+    if (!currentTab || !settings || !reason.retryable || !resolvesAutoReconnect(currentTab.connection, settings)) {
+      return
+    }
+    const nextAttempt = currentTab.reconnectAttempts + 1
+    if (nextAttempt > AUTO_RECONNECT_LIMIT) return
+    const delay = AUTO_RECONNECT_DELAYS_MS[Math.min(nextAttempt - 1, AUTO_RECONNECT_DELAYS_MS.length - 1)]
+    retrySessionConnection(tabId, delay, `连接已断开，${Math.round(delay / 1000)} 秒后自动重连 (${nextAttempt}/${AUTO_RECONNECT_LIMIT})`)
+  }, [bootstrap?.settings, retrySessionConnection])
 
   const deleteGroup = async (group: Group) => {
     if (!window.confirm(`确定删除分组 ${group.name}？`)) return
@@ -808,14 +929,48 @@ export function App() {
             <TerminalView key={`${tab.id}:${tab.attempt}`} connection={tab.connection}
               settings={settings} active={tab.id === activeSession}
               privateSession={tab.privateSession}
+              reconnectMessage={tab.reconnectMessage}
               credentialOverride={tab.credentialOverride}
               onReady={sessionId => setSessions(current => current.map(item =>
                 item.id === tab.id
-                  ? { ...item, sshSessionId: sessionId, credentialOverride: undefined }
+                  ? {
+                    ...item,
+                    sshSessionId: sessionId,
+                    credentialOverride: undefined,
+                    reconnectAttempts: 0,
+                    reconnecting: false,
+                    reconnectTimer: undefined,
+                    reconnectMessage: undefined,
+                  }
                   : item
               ))}
-              onHostKey={value => setHostKey({ tabId: tab.id, value })}
-              onAuthPrompt={value => setSSHAuthPrompt({ tabId: tab.id, connection: tab.connection, value })}
+              onRetryableDisconnect={reason => handleTerminalDisconnect(tab.id, reason)}
+              onHostKey={value => {
+                setSessions(current => current.map(item =>
+                  item.id === tab.id
+                    ? {
+                      ...item,
+                      reconnecting: false,
+                      reconnectTimer: undefined,
+                      reconnectMessage: undefined,
+                    }
+                    : item
+                ))
+                setHostKey({ tabId: tab.id, value })
+              }}
+              onAuthPrompt={value => {
+                setSessions(current => current.map(item =>
+                  item.id === tab.id
+                    ? {
+                      ...item,
+                      reconnecting: false,
+                      reconnectTimer: undefined,
+                      reconnectMessage: undefined,
+                    }
+                    : item
+                ))
+                setSSHAuthPrompt({ tabId: tab.id, connection: tab.connection, value })
+              }}
               onClose={() => undefined} />
           ))}
         </div>
@@ -883,7 +1038,16 @@ export function App() {
         }} onAccept={async () => {
           await api.AcceptHostKey(hostKey.value.id)
           setSessions(current => current.map(item =>
-            item.id === hostKey.tabId ? { ...item, attempt: item.attempt + 1 } : item
+            item.id === hostKey.tabId
+              ? {
+                ...item,
+                attempt: item.attempt + 1,
+                reconnectAttempts: 0,
+                reconnecting: false,
+                reconnectTimer: undefined,
+                reconnectMessage: undefined,
+              }
+              : item
           ))
           setHostKey(undefined)
         }} />
@@ -933,7 +1097,11 @@ export function App() {
                   ...item,
                   connection: nextConnection,
                   credentialOverride: payload.save ? undefined : credentialOverride,
-                  attempt: item.attempt + 1
+                  attempt: item.attempt + 1,
+                  reconnectAttempts: 0,
+                  reconnecting: false,
+                  reconnectTimer: undefined,
+                  reconnectMessage: undefined,
                 }
                 : item
             ))
@@ -1403,6 +1571,18 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
         onChange={e => update('keepAliveSeconds', Number(e.target.value))} /></label>
       <label>连接超时（秒）<input type="number" value={value.connectTimeoutSeconds}
         onChange={e => update('connectTimeoutSeconds', Number(e.target.value))} /></label>
+      <label className="full">断开后自动重连<select
+        value={value.autoReconnect === undefined ? 'default' : value.autoReconnect ? 'yes' : 'no'}
+        onChange={event => setValue(current => {
+          const next = { ...current }
+          if (event.target.value === 'default') delete next.autoReconnect
+          else next.autoReconnect = event.target.value === 'yes'
+          return next
+        })}>
+        <option value="default">跟随全局设置</option>
+        <option value="yes">在当前标签页自动重连</option>
+        <option value="no">断开后不自动重连</option>
+      </select></label>
       <label className="full">终端编码<select value={value.encoding}
         onChange={e => update('encoding', e.target.value)}>
         <option value="utf-8">UTF-8</option>
@@ -1598,10 +1778,9 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const [lockPassword, setLockPassword] = useState('')
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
   const [notice, setNotice] = useState<{ title: string; message: string }>()
-  const [oldMasterPassword, setOldMasterPassword] = useState('')
-  const [newMasterPassword, setNewMasterPassword] = useState('')
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
   const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
   const [recoveryCodeModal, setRecoveryCodeModal] = useState<{ title: string; code: string }>()
   const [joinPassword, setJoinPassword] = useState('')
   const [joinTotpCode, setJoinTotpCode] = useState('')
@@ -1693,9 +1872,6 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const persist = async () => {
     try {
       if (lockPassword) await api.SetLockPassword(lockPassword)
-      if (oldMasterPassword || newMasterPassword) {
-        await api.ChangeMasterPassword(oldMasterPassword, newMasterPassword)
-      }
       const terminalThemeColors = resolveTerminalThemeColors(next)
       await api.SaveSettings({
         ...next,
@@ -2015,25 +2191,62 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   } else if (activeSection === 'terminal') {
     content = <div className="settings-page">
       <h3>终端</h3>
-      <small className="hint">这里保留连接与会话行为设置；配色与字体放在“外观”里。</small>
-      <div className="form-grid">
-        <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
-          onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
-        <label className="check full"><input type="checkbox" checked={next.disconnectOnLock}
-          onChange={e => setNext({ ...next, disconnectOnLock: e.target.checked })} />锁屏时断开 SSH 会话</label>
+      <div className="settings-section-list">
+        <label className="setting-toggle-card">
+          <span className="setting-toggle-main">
+            <input type="checkbox" checked={next.autoReconnect}
+              onChange={e => setNext({ ...next, autoReconnect: e.target.checked })} />
+            <span className="setting-toggle-copy">
+              <strong>断开后在当前标签页自动重连</strong>
+              <small>仅对异常断开生效，不会恢复断线前的远端会话状态。</small>
+            </span>
+          </span>
+        </label>
       </div>
     </div>
   } else if (activeSection === 'security') {
     content = <div className="settings-page">
       <h3>安全</h3>
-      <div className="form-grid">
-        <label className="check full"><input type="checkbox" checked={quickUnlock}
-          onChange={e => void toggleSystemUnlock(e.target.checked)} />系统快速解锁</label>
-        <small className="hint full">
-          {quickUnlock
-            ? `${vault.quickUnlockMethod} 快速解锁已启用，解锁时需要操作系统用户验证。`
-            : `${vault.quickUnlockMethod} 快速解锁未启用。`}
-        </small>
+      <div className="settings-section-list">
+        <section className="setting-action-card">
+          <div>
+            <strong>修改主密码</strong>
+            <small>主密码用于保护本机保存的连接、凭据和设置数据。</small>
+          </div>
+          <button className="secondary" type="button" onClick={() => setShowChangePasswordModal(true)}>
+            修改主密码
+          </button>
+        </section>
+        <div className="form-grid">
+          <label>自动锁屏（分钟）<input type="number" value={next.lockAfterMinutes}
+            onChange={e => setNext({ ...next, lockAfterMinutes: Number(e.target.value) })} /></label>
+          <div className="full settings-card-stack">
+            <label className="setting-toggle-card">
+              <span className="setting-toggle-main">
+                <input type="checkbox" checked={next.disconnectOnLock}
+                  onChange={e => setNext({ ...next, disconnectOnLock: e.target.checked })} />
+                <span className="setting-toggle-copy">
+                  <strong>锁屏时断开 SSH 会话</strong>
+                  <small>自动锁屏是软件全局空闲计时，不是单个终端标签页的空闲计时。</small>
+                </span>
+              </span>
+            </label>
+            <label className="setting-toggle-card">
+              <span className="setting-toggle-main">
+                <input type="checkbox" checked={quickUnlock}
+                  onChange={e => void toggleSystemUnlock(e.target.checked)} />
+                <span className="setting-toggle-copy">
+                  <strong>系统快速解锁</strong>
+                  <small>
+                    {quickUnlock
+                      ? `${vault.quickUnlockMethod} 快速解锁已启用，解锁时需要操作系统用户验证。`
+                      : `${vault.quickUnlockMethod} 快速解锁未启用。`}
+                  </small>
+                </span>
+              </span>
+            </label>
+          </div>
+        </div>
         <label className="full">独立锁屏密码（可选）
           <input type="password" value={lockPassword} placeholder="至少 8 个字符；留空不修改"
             onChange={event => setLockPassword(event.target.value)} /></label>
@@ -2043,11 +2256,6 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
             .catch(error => showNotice('独立锁屏密码', localizeError(error)))}>
           清除独立锁屏密码
         </button>}
-        <label className="wide">当前主密码<input type="password" value={oldMasterPassword}
-          onChange={event => setOldMasterPassword(event.target.value)} /></label>
-        <label>新主密码<input type="password" value={newMasterPassword}
-          placeholder="至少 12 个字符"
-          onChange={event => setNewMasterPassword(event.target.value)} /></label>
         <label className="full">敏感命令过滤规则（每行一个正则）
           <textarea rows={4} value={sensitiveRules}
             onChange={event => setSensitiveRules(event.target.value)} />
@@ -2190,6 +2398,14 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       onTotpCodeChange={setLeaveTotpCode}
       onClose={() => setShowLeaveSyncModal(false)}
       onLeave={() => void leaveSync()}
+    />}
+    {showChangePasswordModal && <ChangePasswordDialog
+      onClose={() => setShowChangePasswordModal(false)}
+      onSubmit={async (oldPassword, newPassword) => {
+        await api.ChangeMasterPassword(oldPassword, newPassword)
+        setShowChangePasswordModal(false)
+        showNotice('主密码已更新', '新的主密码已经立即生效。')
+      }}
     />}
   </Modal>
 }
@@ -2580,6 +2796,67 @@ function LeaveSyncDialog({ syncBusy, password, totpCode, onPasswordChange, onTot
       <button onClick={onClose}>取消</button>
       <button className="danger-button" disabled={syncBusy || !password} onClick={onLeave}>
         {syncBusy ? '处理中…' : '退出同步保险库'}
+      </button>
+    </footer>
+  </Modal>
+}
+
+function ChangePasswordDialog({ onClose, onSubmit }: {
+  onClose: () => void
+  onSubmit: (oldPassword: string, newPassword: string) => Promise<void>
+}) {
+  const [oldPassword, setOldPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    if (!oldPassword) {
+      setError('请输入当前主密码。')
+      return
+    }
+    if (newPassword.length < 12) {
+      setError('新主密码至少需要 12 个字符。')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError('两次输入的新主密码不一致。')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSubmit(oldPassword, newPassword)
+    } catch (reason) {
+      setError(localizeError(reason))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Modal title="修改主密码" onClose={onClose} width="560px">
+    <div className="form-grid change-password-form">
+      <label className="full">当前主密码
+        <input autoFocus type="password" value={oldPassword}
+          onChange={event => setOldPassword(event.target.value)} />
+      </label>
+      <label className="full">新主密码
+        <input type="password" value={newPassword} placeholder="至少 12 个字符"
+          onChange={event => setNewPassword(event.target.value)} />
+      </label>
+      <label className="full">确认新主密码
+        <input type="password" value={confirmPassword}
+          onChange={event => setConfirmPassword(event.target.value)} />
+      </label>
+      <small className="hint full">确认后会立即修改，不需要再点击设置窗口里的保存按钮。</small>
+    </div>
+    {error && <div className="form-error">{error}</div>}
+    <footer className="modal-actions">
+      <button onClick={onClose}>取消</button>
+      <button className="primary" disabled={saving || !oldPassword || !newPassword || !confirmPassword}
+        onClick={() => void save()}>
+        {saving ? '修改中…' : '确认修改'}
       </button>
     </footer>
   </Modal>

@@ -38,6 +38,7 @@ export type Connection = {
   encoding: string
   keepAliveSeconds: number
   connectTimeoutSeconds: number
+  autoReconnect?: boolean
   legacyAlgorithms: boolean
   syncSecrets?: boolean
   commandHistory: boolean
@@ -61,6 +62,7 @@ export type Settings = {
   terminalThemeColors: TerminalThemeColors
   lockAfterMinutes: number
   disconnectOnLock: boolean
+  autoReconnect: boolean
   syncCommandHistory: boolean
   syncSecretsByDefault: boolean
   sensitiveCommandRules: string[]

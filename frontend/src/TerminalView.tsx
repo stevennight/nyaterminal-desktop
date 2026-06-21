@@ -19,6 +19,7 @@ type Props = {
   settings: Settings
   active: boolean
   privateSession: boolean
+  reconnectMessage?: string
   credentialOverride?: {
     name?: string
     type?: Connection['authentication']
@@ -27,13 +28,14 @@ type Props = {
     passphrase?: string
   }
   onReady: (sessionId: string) => void
+  onRetryableDisconnect: (reason: { message: string; retryable: boolean }) => void
   onHostKey: (pending: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['hostKey']>) => void
   onAuthPrompt: (prompt: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['authPrompt']>) => void
   onClose: () => void
 }
 
 export function TerminalView({
-  connection, settings, active, privateSession, credentialOverride, onReady, onHostKey, onAuthPrompt, onClose
+  connection, settings, active, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onClose
 }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
@@ -54,6 +56,17 @@ export function TerminalView({
   const searchRef = useRef<SearchAddon | undefined>(undefined)
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
   const colors = resolveTerminalThemeColors(settings)
+  const onReadyRef = useRef(onReady)
+  const onRetryableDisconnectRef = useRef(onRetryableDisconnect)
+  const onHostKeyRef = useRef(onHostKey)
+  const onAuthPromptRef = useRef(onAuthPrompt)
+  const onCloseRef = useRef(onClose)
+
+  onReadyRef.current = onReady
+  onRetryableDisconnectRef.current = onRetryableDisconnect
+  onHostKeyRef.current = onHostKey
+  onAuthPromptRef.current = onAuthPrompt
+  onCloseRef.current = onClose
 
   useEffect(() => { suggestionsRef.current = suggestions }, [suggestions])
   useEffect(() => {
@@ -98,6 +111,11 @@ export function TerminalView({
     terminal.selectAll()
     syncSelection()
   }
+
+  useEffect(() => {
+    if (!reconnectMessage) return
+    setStatus(reconnectMessage)
+  }, [reconnectMessage])
 
   useEffect(() => {
     if (!host.current) return
@@ -185,18 +203,18 @@ export function TerminalView({
       if (disposed) return
       if (result.hostKey) {
         setStatus(result.hostKey.changed ? 'Host key changed' : 'Host key confirmed')
-        onHostKey(result.hostKey)
+        onHostKeyRef.current(result.hostKey)
         return
       }
       if (result.authPrompt) {
         setStatus(result.authPrompt.message)
-        onAuthPrompt(result.authPrompt)
+        onAuthPromptRef.current(result.authPrompt)
         return
       }
       if (!result.session) throw new Error('SSH session was not created')
       sessionId = result.session.sessionId
       sessionIdRef.current = sessionId
-      onReady(sessionId)
+      onReadyRef.current(sessionId)
       socket = new WebSocket(result.session.url)
       socketRef.current = socket
       socket.binaryType = 'arraybuffer'
@@ -215,6 +233,7 @@ export function TerminalView({
       socket.onclose = () => {
         setStatus('Connection closed')
         terminal.write('\r\n\x1b[38;5;244m[Connection closed]\x1b[0m\r\n')
+        onRetryableDisconnectRef.current({ message: 'Connection closed', retryable: true })
       }
       applySuggestionRef.current = command => {
         const suffix = command.slice(line.length)
@@ -284,8 +303,11 @@ export function TerminalView({
     }
 
     connect().catch(error => {
-      setStatus(String(error))
-      terminal.write(`\r\n\x1b[31m${String(error)}\x1b[0m\r\n`)
+      const message = error instanceof Error ? error.message : String(error)
+      const retryable = !/host key|password is required|private key is required|rejected by the server|invalid|cancelled|timed out/i.test(message)
+      setStatus(message)
+      terminal.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`)
+      onRetryableDisconnectRef.current({ message, retryable })
     })
     const observer = new ResizeObserver(() => {
       if (active) fit.fit()
@@ -305,7 +327,7 @@ export function TerminalView({
       window.clearTimeout(suggestionTimer)
       if (sessionId) void api.CloseSSH(sessionId)
       terminal.dispose()
-      onClose()
+      onCloseRef.current()
     }
   }, [
     connection.id,

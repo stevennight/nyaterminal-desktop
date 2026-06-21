@@ -1,9 +1,56 @@
 ﻿:root {
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --ui-font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --content-font-family: "NyaEmoji", var(--ui-font-family);
+  font-family: var(--content-font-family);
   color: #dce3ee;
   background: #0a0e16;
   font-synthesis: none;
+  font-variant-emoji: emoji;
   text-rendering: geometricPrecision;
+}
+
+@font-face {
+  font-family: "NyaEmoji";
+  src: local("Segoe UI Emoji");
+  unicode-range:
+    U+200D,
+    U+2600-27BF,
+    U+FE0E-FE0F,
+    U+1F000-1FAFF,
+    U+1F1E6-1F1FF;
+}
+
+@font-face {
+  font-family: "NyaEmoji";
+  src: local("Apple Color Emoji");
+  unicode-range:
+    U+200D,
+    U+2600-27BF,
+    U+FE0E-FE0F,
+    U+1F000-1FAFF,
+    U+1F1E6-1F1FF;
+}
+
+@font-face {
+  font-family: "NyaEmoji";
+  src: local("Noto Color Emoji");
+  unicode-range:
+    U+200D,
+    U+2600-27BF,
+    U+FE0E-FE0F,
+    U+1F000-1FAFF,
+    U+1F1E6-1F1FF;
+}
+
+@font-face {
+  font-family: "NyaEmoji";
+  src: local("Twemoji Mozilla");
+  unicode-range:
+    U+200D,
+    U+2600-27BF,
+    U+FE0E-FE0F,
+    U+1F000-1FAFF,
+    U+1F1E6-1F1FF;
 }
 
 * { box-sizing: border-box; }
@@ -617,6 +664,59 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .settings-page h3 { margin: 0; font-size: 15px; color: var(--text); }
 .settings-page .hint { margin: -4px 0 0; }
 .settings-page .secondary { justify-self: start; }
+.settings-section-list { display: grid; gap: 12px; }
+.settings-card-stack { display: grid; gap: 10px; }
+.setting-action-card,
+.setting-toggle-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.setting-action-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+}
+.setting-action-card > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.setting-action-card strong,
+.setting-toggle-copy strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.setting-action-card small,
+.setting-toggle-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.setting-toggle-card {
+  display: block;
+  margin-bottom: 0;
+  padding: 12px 14px;
+  color: inherit;
+}
+.setting-toggle-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.setting-toggle-main > input {
+  width: auto;
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.setting-toggle-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.change-password-form { grid-template-columns: minmax(0, 1fr); }
 .settings-divider { height: 1px; background: var(--line); margin: 4px 0 15px; }
 .terminal-theme-section { display: flex; flex-direction: column; gap: 14px; }
 .terminal-theme-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
@@ -748,6 +848,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 @media (max-width: 760px) {
   .sync-action-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .setting-action-card {
+    align-items: stretch;
+    flex-direction: column;
   }
   .field-actions {
     align-items: stretch;

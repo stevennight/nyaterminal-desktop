@@ -139,6 +139,7 @@ func TestSettingsNormalizeTerminalThemeColors(t *testing.T) {
 		},
 		LockAfterMinutes:      15,
 		DisconnectOnLock:      false,
+		AutoReconnect:         true,
 		SyncCommandHistory:    false,
 		SyncSecretsByDefault:  false,
 		SensitiveCommandRules: []string{`(?i)secret=\S+`},
@@ -155,5 +156,12 @@ func TestSettingsNormalizeTerminalThemeColors(t *testing.T) {
 	}
 	if settings.TerminalThemeColors.Foreground != model.DefaultTerminalThemeColors().Foreground {
 		t.Fatalf("invalid foreground was not normalized: %#v", settings.TerminalThemeColors)
+	}
+}
+
+func TestDefaultSettingsEnableAutoReconnect(t *testing.T) {
+	settings := model.DefaultSettings()
+	if !settings.AutoReconnect {
+		t.Fatal("auto reconnect should be enabled by default")
 	}
 }

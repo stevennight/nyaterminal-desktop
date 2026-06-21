@@ -51,6 +51,7 @@ type Connection struct {
 	Encoding          string    `json:"encoding"`
 	KeepAliveSeconds  int       `json:"keepAliveSeconds"`
 	ConnectTimeoutSec int       `json:"connectTimeoutSeconds"`
+	AutoReconnect     *bool     `json:"autoReconnect,omitempty"`
 	LegacyAlgorithms  bool      `json:"legacyAlgorithms"`
 	SyncSecrets       *bool     `json:"syncSecrets,omitempty"`
 	CommandHistory    bool      `json:"commandHistory"`
@@ -99,6 +100,7 @@ type Settings struct {
 	TerminalThemeColors   TerminalThemeColors `json:"terminalThemeColors"`
 	LockAfterMinutes      int                 `json:"lockAfterMinutes"`
 	DisconnectOnLock      bool                `json:"disconnectOnLock"`
+	AutoReconnect         bool                `json:"autoReconnect"`
 	SyncCommandHistory    bool                `json:"syncCommandHistory"`
 	SyncSecretsByDefault  bool                `json:"syncSecretsByDefault"`
 	SensitiveCommandRules []string            `json:"sensitiveCommandRules"`
@@ -120,6 +122,7 @@ func DefaultSettings() Settings {
 		TerminalThemeColors:  DefaultTerminalThemeColors(),
 		LockAfterMinutes:     15,
 		DisconnectOnLock:     false,
+		AutoReconnect:        true,
 		SyncCommandHistory:   false,
 		SyncSecretsByDefault: false,
 		SensitiveCommandRules: []string{
@@ -166,6 +169,9 @@ func NormalizeSettings(value Settings) Settings {
 	}
 	if strings.TrimSpace(value.TerminalThemePreset) == "" {
 		value.TerminalThemePreset = defaults.TerminalThemePreset
+	}
+	if value.FontSize <= 0 {
+		value.FontSize = defaults.FontSize
 	}
 	value.TerminalThemeColors = normalizeTerminalThemeColors(value.TerminalThemeColors, defaults.TerminalThemeColors)
 	return value

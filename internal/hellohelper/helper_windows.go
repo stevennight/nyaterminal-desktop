@@ -27,7 +27,7 @@ import (
 const (
 	helperFlag       = "--hello-helper"
 	helperClassName  = "NyaHelloHelperWindow"
-	helperWindowText = "NyaTerminal Security Check"
+	helperWindowText = "NyaTerminal 安全验证"
 	wmHelperDone     = win32.WM_APP + 1
 
 	exitCodeVerified    = 0
@@ -36,8 +36,8 @@ const (
 	exitCodeFailed      = 12
 	exitCodeUsage       = 64
 
-	helperWindowWidth  = 420
-	helperWindowHeight = 168
+	helperWindowWidth  = 448
+	helperWindowHeight = 196
 )
 
 var (
@@ -47,12 +47,12 @@ var (
 	logMu            sync.Mutex
 	activeHelperDir  string
 	helperResultChan chan error
-	helperAccent     = win32.RGB(74, 144, 226)
-	helperBackground = win32.RGB(246, 248, 252)
+	helperAccent     = win32.RGB(63, 127, 214)
+	helperBackground = win32.RGB(244, 247, 251)
 	helperPanel      = win32.RGB(255, 255, 255)
-	helperText       = win32.RGB(28, 33, 40)
-	helperMutedText  = win32.RGB(102, 112, 122)
-	helperBorder     = win32.RGB(220, 226, 234)
+	helperText       = win32.RGB(24, 30, 38)
+	helperMutedText  = win32.RGB(98, 108, 118)
+	helperBorder     = win32.RGB(228, 233, 240)
 )
 
 type helperMode string
@@ -714,7 +714,7 @@ func createUIFont(pointSize int32, weight int32) win32.HFONT {
 		uint32(win32.CLIP_DEFAULT_PRECIS),
 		uint32(win32.CLEARTYPE_QUALITY),
 		uint32(win32.DEFAULT_PITCH)|uint32(win32.FF_DONTCARE),
-		win32.StrToPwstr("Segoe UI"),
+		win32.StrToPwstr("Microsoft YaHei UI"),
 	)
 }
 
@@ -742,12 +742,16 @@ func paintHelperWindow(hwnd win32.HWND) {
 	panelBrush := win32.CreateSolidBrush(helperPanel)
 	accentBrush := win32.CreateSolidBrush(helperAccent)
 	borderBrush := win32.CreateSolidBrush(helperBorder)
-	titleFont := createUIFont(18, 700)
+	labelFont := createUIFont(9, 600)
+	titleFont := createUIFont(16, 700)
 	bodyFont := createUIFont(10, 400)
 	defer win32.DeleteObject(win32.HGDIOBJ(backgroundBrush))
 	defer win32.DeleteObject(win32.HGDIOBJ(panelBrush))
 	defer win32.DeleteObject(win32.HGDIOBJ(accentBrush))
 	defer win32.DeleteObject(win32.HGDIOBJ(borderBrush))
+	if labelFont != 0 {
+		defer win32.DeleteObject(win32.HGDIOBJ(labelFont))
+	}
 	if titleFont != 0 {
 		defer win32.DeleteObject(win32.HGDIOBJ(titleFont))
 	}
@@ -757,10 +761,10 @@ func paintHelperWindow(hwnd win32.HWND) {
 
 	win32.FillRect(hdc, &rect, backgroundBrush)
 
-	panelRect := win32.RECT{Left: 14, Top: 16, Right: rect.Right - 14, Bottom: rect.Bottom - 16}
+	panelRect := win32.RECT{Left: 16, Top: 18, Right: rect.Right - 16, Bottom: rect.Bottom - 18}
 	win32.FillRect(hdc, &panelRect, panelBrush)
 
-	accentRect := win32.RECT{Left: panelRect.Left, Top: panelRect.Top, Right: panelRect.Left + 6, Bottom: panelRect.Bottom}
+	accentRect := win32.RECT{Left: panelRect.Left, Top: panelRect.Top, Right: panelRect.Left + 5, Bottom: panelRect.Bottom}
 	win32.FillRect(hdc, &accentRect, accentBrush)
 
 	topBorder := win32.RECT{Left: panelRect.Left, Top: panelRect.Top, Right: panelRect.Right, Bottom: panelRect.Top + 1}
@@ -774,19 +778,36 @@ func paintHelperWindow(hwnd win32.HWND) {
 
 	win32.SetBkMode(hdc, win32.TRANSPARENT)
 
-	titleRect := win32.RECT{Left: panelRect.Left + 24, Top: panelRect.Top + 22, Right: panelRect.Right - 24, Bottom: panelRect.Top + 56}
-	bodyRect1 := win32.RECT{Left: panelRect.Left + 24, Top: panelRect.Top + 62, Right: panelRect.Right - 24, Bottom: panelRect.Top + 88}
-	bodyRect2 := win32.RECT{Left: panelRect.Left + 24, Top: panelRect.Top + 88, Right: panelRect.Right - 24, Bottom: panelRect.Top + 114}
+	contentLeft := panelRect.Left + 24
+	contentRight := panelRect.Right - 24
+	labelRect := win32.RECT{Left: contentLeft, Top: panelRect.Top + 18, Right: contentRight, Bottom: panelRect.Top + 36}
+	titleRect := win32.RECT{Left: contentLeft, Top: panelRect.Top + 42, Right: contentRight, Bottom: panelRect.Top + 78}
+	bodyRect := win32.RECT{Left: contentLeft, Top: panelRect.Top + 86, Right: contentRight, Bottom: panelRect.Bottom - 20}
+
+	if labelFont != 0 {
+		oldFont := win32.SelectObject(hdc, win32.HGDIOBJ(labelFont))
+		win32.SetTextColor(hdc, helperAccent)
+		win32.DrawTextW(
+			hdc,
+			win32.StrToPwstr("Windows Hello"),
+			-1,
+			&labelRect,
+			win32.DT_LEFT|win32.DT_TOP|win32.DT_SINGLELINE,
+		)
+		if oldFont != 0 {
+			win32.SelectObject(hdc, oldFont)
+		}
+	}
 
 	if titleFont != 0 {
 		oldFont := win32.SelectObject(hdc, win32.HGDIOBJ(titleFont))
 		win32.SetTextColor(hdc, helperText)
 		win32.DrawTextW(
 			hdc,
-			win32.StrToPwstr("Security verification in progress"),
+			win32.StrToPwstr("请完成安全验证"),
 			-1,
 			&titleRect,
-			win32.DT_LEFT|win32.DT_VCENTER|win32.DT_SINGLELINE,
+			win32.DT_LEFT|win32.DT_TOP|win32.DT_SINGLELINE,
 		)
 		if oldFont != 0 {
 			win32.SelectObject(hdc, oldFont)
@@ -798,17 +819,10 @@ func paintHelperWindow(hwnd win32.HWND) {
 		win32.SetTextColor(hdc, helperMutedText)
 		win32.DrawTextW(
 			hdc,
-			win32.StrToPwstr("Use Windows Hello to continue unlocking NyaTerminal."),
+			win32.StrToPwstr("请在弹出的 Windows Hello 窗口中使用 PIN、指纹或人脸完成验证。\n\n验证完成后会自动返回 NyaTerminal。"),
 			-1,
-			&bodyRect1,
-			win32.DT_LEFT|win32.DT_VCENTER|win32.DT_SINGLELINE,
-		)
-		win32.DrawTextW(
-			hdc,
-			win32.StrToPwstr("A Windows Hello prompt should appear above this app."),
-			-1,
-			&bodyRect2,
-			win32.DT_LEFT|win32.DT_VCENTER|win32.DT_SINGLELINE,
+			&bodyRect,
+			win32.DT_LEFT|win32.DT_TOP|win32.DT_WORDBREAK,
 		)
 		if oldFont != 0 {
 			win32.SelectObject(hdc, oldFont)
