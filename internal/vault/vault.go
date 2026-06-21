@@ -1,3 +1,4 @@
+// noinspection SqlNoDataSourceInspection
 package vault
 
 import (
@@ -104,12 +105,16 @@ func Open(path string) (*Vault, error) {
 		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
-			db.Close()
+			if closeErr := db.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
 			return nil, err
 		}
 	}
 	if err := hardenFile(path); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return &Vault{db: db, dataDir: filepath.Dir(path)}, nil
@@ -453,7 +458,7 @@ func (v *Vault) Get(ctx context.Context, recordType, id string, target any) erro
 	return json.Unmarshal(plain, target)
 }
 
-func (v *Vault) List(ctx context.Context, recordType string, constructor func() any) ([]any, error) {
+func (v *Vault) List(ctx context.Context, recordType string, constructor func() any) (result []any, err error) {
 	key, err := v.keyCopy()
 	if err != nil {
 		return nil, err
@@ -465,8 +470,7 @@ func (v *Vault) List(ctx context.Context, recordType string, constructor func() 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var result []any
+	defer closeRows(rows, &err)
 	for rows.Next() {
 		var id string
 		var nonce, ciphertext []byte
@@ -486,7 +490,11 @@ func (v *Vault) List(ctx context.Context, recordType string, constructor func() 
 		}
 		result = append(result, value)
 	}
-	return result, rows.Err()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		err = rowsErr
+		return nil, err
+	}
+	return result, nil
 }
 
 func (v *Vault) Delete(ctx context.Context, id string) error {
@@ -512,7 +520,7 @@ func (v *Vault) RecordType(ctx context.Context, id string) (string, error) {
 // cannot leave a deletion without a corresponding tombstone.
 func (v *Vault) DeleteAndPut(
 	ctx context.Context, deletedID, recordType, id string, value any,
-) error {
+) (err error) {
 	key, err := v.keyCopy()
 	if err != nil {
 		return err
@@ -532,7 +540,7 @@ func (v *Vault) DeleteAndPut(
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, &err)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO encrypted_records(id, record_type, nonce, ciphertext, updated_at)
 		VALUES(?, ?, ?, ?, ?)
@@ -551,7 +559,9 @@ func (v *Vault) DeleteAndPut(
 	return tx.Commit()
 }
 
-func (v *Vault) ExportRecords(ctx context.Context, allowedTypes map[string]bool) ([]ExportedRecord, error) {
+func (v *Vault) ExportRecords(
+	ctx context.Context, allowedTypes map[string]bool,
+) (result []ExportedRecord, err error) {
 	key, err := v.keyCopy()
 	if err != nil {
 		return nil, err
@@ -563,8 +573,7 @@ func (v *Vault) ExportRecords(ctx context.Context, allowedTypes map[string]bool)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var result []ExportedRecord
+	defer closeRows(rows, &err)
 	for rows.Next() {
 		var record ExportedRecord
 		var nonce, ciphertext []byte
@@ -587,7 +596,11 @@ func (v *Vault) ExportRecords(ctx context.Context, allowedTypes map[string]bool)
 		}
 		result = append(result, record)
 	}
-	return result, rows.Err()
+	if rowsErr := rows.Err(); rowsErr != nil {
+		err = rowsErr
+		return nil, err
+	}
+	return result, nil
 }
 
 func (v *Vault) PutJSON(ctx context.Context, recordType, id string, data []byte) error {
@@ -641,5 +654,17 @@ func open(key, nonce, ciphertext, aad []byte) ([]byte, error) {
 func wipe(value []byte) {
 	for index := range value {
 		value[index] = 0
+	}
+}
+
+func closeRows(rows *sql.Rows, errp *error) {
+	if closeErr := rows.Close(); closeErr != nil {
+		*errp = errors.Join(*errp, closeErr)
+	}
+}
+
+func rollbackTx(tx *sql.Tx, errp *error) {
+	if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+		*errp = errors.Join(*errp, rollbackErr)
 	}
 }

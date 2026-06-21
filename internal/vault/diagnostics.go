@@ -29,8 +29,11 @@ func appendDiagnosticLog(dataDir, component, format string, args ...any) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
-	_, _ = file.WriteString(line)
+	if _, err := file.WriteString(line); err != nil {
+		_ = file.Close()
+		return
+	}
+	_ = file.Close()
 }
 
 func AppendDiagnosticLogForApp(dataDir, format string, args ...any) {

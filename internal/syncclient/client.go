@@ -1598,9 +1598,7 @@ func mergeJSONFields(
 			if value, exists := localObject[name]; exists && len(localClock.Hash) > 0 {
 				result[name] = value
 			}
-			if hasLocalClock {
-				fields[name] = localClock
-			}
+			fields[name] = localClock
 		}
 	}
 	merged, err := json.Marshal(result)

@@ -456,7 +456,10 @@ func appendLineToEdit(line string) {
 		return
 	}
 	text := strings.ReplaceAll(line, "\n", " ")
-	utf16 := syscall.StringToUTF16(text + "\r\n")
+	utf16, err := syscall.UTF16FromString(text + "\r\n")
+	if err != nil {
+		return
+	}
 	length, _ := win32.GetWindowTextLengthW(logEdit)
 	_, _ = win32.SendMessageW(logEdit, win32.EM_SETSEL, win32.WPARAM(length), win32.WPARAM(length))
 	_, _ = win32.SendMessageW(

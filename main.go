@@ -18,18 +18,20 @@ var assets embed.FS
 func main() {
 	if handled, exitCode, err := runHelloHelperIfRequested(os.Args[1:]); handled {
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			_, _ = fmt.Fprintln(os.Stderr, err)
 		}
 		os.Exit(exitCode)
 	}
 
 	dataDir, err := os.UserConfigDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot find configuration directory:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "cannot find configuration directory:", err)
 		os.Exit(1)
 	}
 	application := app.New(filepath.Join(dataDir, "NyaTerminal"))
-	defer application.Close()
+	defer func() {
+		_ = application.Close()
+	}()
 
 	err = wails.Run(&options.App{
 		Title:     "NyaTerminal",
@@ -46,7 +48,7 @@ func main() {
 		Bind:             []interface{}{application},
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "application error:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "application error:", err)
 		os.Exit(1)
 	}
 }

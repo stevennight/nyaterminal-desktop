@@ -27,7 +27,7 @@ func TestPasswordSSHRequiresHostTrustAndDetectsChangedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	ctx := context.Background()
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestPasswordSSHRequiresHostTrustAndDetectsChangedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	closeManagerOnCleanup(t, manager)
 
 	_, err = manager.Start(ctx, StartRequest{ConnectionID: connection.ID, Columns: 80, Rows: 24})
 	var hostKeyError HostKeyError
@@ -111,7 +111,7 @@ func TestPasswordConnectionWithoutStoredCredentialRequestsAuthPrompt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	ctx := context.Background()
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestPasswordConnectionWithoutStoredCredentialRequestsAuthPrompt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	closeManagerOnCleanup(t, manager)
 
 	_, err = manager.Start(ctx, StartRequest{ConnectionID: connection.ID, Columns: 80, Rows: 24})
 	var prompt AuthPromptError
@@ -191,7 +191,9 @@ func serveTestSSHConnection(raw net.Conn, config *ssh.ServerConfig) {
 		_ = raw.Close()
 		return
 	}
-	defer connection.Close()
+	defer func() {
+		_ = connection.Close()
+	}()
 	go ssh.DiscardRequests(requests)
 	for incoming := range channels {
 		if incoming.ChannelType() != "session" {
@@ -203,7 +205,9 @@ func serveTestSSHConnection(raw net.Conn, config *ssh.ServerConfig) {
 			continue
 		}
 		go func() {
-			defer channel.Close()
+			defer func() {
+				_ = channel.Close()
+			}()
 			for request := range requests {
 				switch request.Type {
 				case "pty-req", "shell":
@@ -214,4 +218,22 @@ func serveTestSSHConnection(raw net.Conn, config *ssh.ServerConfig) {
 			}
 		}()
 	}
+}
+
+func closeVaultOnCleanup(t *testing.T, v *vault.Vault) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close vault: %v", err)
+		}
+	})
+}
+
+func closeManagerOnCleanup(t *testing.T, manager *Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Errorf("close SSH manager: %v", err)
+		}
+	})
 }

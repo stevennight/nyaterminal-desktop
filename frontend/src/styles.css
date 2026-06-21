@@ -1,7 +1,7 @@
 ﻿:root {
   --ui-font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --content-font-family: "NyaEmoji", var(--ui-font-family);
-  font-family: var(--content-font-family);
+  font-family: var(--content-font-family), sans-serif;
   color: #dce3ee;
   background: #0a0e16;
   font-synthesis: none;

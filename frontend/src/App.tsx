@@ -759,7 +759,7 @@ export function App() {
     const container = event.currentTarget
     if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
     if (container.scrollWidth <= container.clientWidth) return
-    container.scrollLeft += event.deltaY
+    container.scrollBy({ left: event.deltaY })
     event.preventDefault()
   }, [])
 
@@ -2000,9 +2000,10 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   }
 
   const approvePairing = async () => {
-    let parsedShortCode = ''
+    let parsedShortCode: string
     try {
-      parsedShortCode = JSON.parse(decodeBase64Url(approveCode)).shortCode ?? ''
+      const parsed = JSON.parse(decodeBase64Url(approveCode)) as { shortCode?: unknown }
+      parsedShortCode = typeof parsed.shortCode === 'string' ? parsed.shortCode : ''
     } catch {
       parsedShortCode = ''
     }
@@ -2087,6 +2088,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const loggedIn = !!syncSummary?.loggedIn
   const syncInitialized = !!syncSummary?.syncInitialized
   const syncConfigured = !!syncSummary?.configured
+  const autoSyncDisabled = syncConfigured ? syncSummary?.autoSyncEnabled === false : false
   const showSyncHistory = syncInitialized && syncConfigured
 
   let content
@@ -2271,7 +2273,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
           <span>{syncSummaryLabel(syncSummary)}</span>
         </div>
         <div>
-          <strong>{syncSummary?.running ? '同步中' : syncConfigured && syncSummary?.autoSyncEnabled === false ? '自动同步已关闭' : '同步待命'}</strong>
+          <strong>{syncSummary?.running ? '同步中' : autoSyncDisabled ? '自动同步已关闭' : '同步待命'}</strong>
           <span>{showSyncHistory && syncSummary?.lastSyncedAt ? `上次同步：${formatDateTime(syncSummary.lastSyncedAt)}` : '还没有同步记录'}</span>
         </div>
         <div>
@@ -2422,7 +2424,6 @@ function AccountManagerDialog({ account, onClose, onReload }: {
   const [deviceId, setDeviceId] = useState(account?.deviceId ?? '')
   const [deviceName, setDeviceName] = useState(account?.deviceName ?? '')
   const [accessExpiresAt, setAccessExpiresAt] = useState(account?.accessExpiresAt ?? '')
-  const [refreshExpiresAt, setRefreshExpiresAt] = useState(account?.refreshExpiresAt ?? '')
   const [devices, setDevices] = useState<Array<{
     id: string; name: string; approved: boolean; revoked: boolean
     createdAt: string; lastSeenAt: string
@@ -2438,9 +2439,8 @@ function AccountManagerDialog({ account, onClose, onReload }: {
     setDeviceId(account?.deviceId ?? '')
     setDeviceName(account?.deviceName ?? '')
     setAccessExpiresAt(account?.accessExpiresAt ?? '')
-    setRefreshExpiresAt(account?.refreshExpiresAt ?? '')
     setTotpEnabled(account?.totpEnabled ?? false)
-  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.deviceName, account?.accessExpiresAt, account?.refreshExpiresAt, account?.totpEnabled])
+  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.deviceName, account?.accessExpiresAt, account?.totpEnabled])
   useEffect(() => {
     if (!loggedIn || !syncInitialized) {
       setDevices([])

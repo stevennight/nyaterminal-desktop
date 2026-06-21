@@ -17,7 +17,7 @@ func TestDeleteCreatesEncryptedSynchronizationTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestCommandSuggestionsIncludeGlobalHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestPutConnectionTrimsRemark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestSettingsNormalizeTerminalThemeColors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	closeVaultOnCleanup(t, v)
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
@@ -164,4 +164,13 @@ func TestDefaultSettingsEnableAutoReconnect(t *testing.T) {
 	if !settings.AutoReconnect {
 		t.Fatal("auto reconnect should be enabled by default")
 	}
+}
+
+func closeVaultOnCleanup(t *testing.T, v *vault.Vault) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close vault: %v", err)
+		}
+	})
 }

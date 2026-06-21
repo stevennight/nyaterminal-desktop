@@ -339,7 +339,7 @@ func createHelperWindow(hInstance win32.HMODULE, topmost bool) (win32.HWND, erro
 	}
 
 	disableCloseButton(hwnd)
-	win32.SetWindowTextW(hwnd, win32.StrToPwstr(helperWindowText))
+	_, _ = win32.SetWindowTextW(hwnd, win32.StrToPwstr(helperWindowText))
 
 	if topmost {
 		_, _ = win32.SetWindowPos(
@@ -353,9 +353,9 @@ func createHelperWindow(hInstance win32.HMODULE, topmost bool) (win32.HWND, erro
 		)
 	}
 	win32.ShowWindow(hwnd, win32.SW_SHOW)
-	win32.BringWindowToTop(hwnd)
+	_, _ = win32.BringWindowToTop(hwnd)
 	win32.SetForegroundWindow(hwnd)
-	win32.SetActiveWindow(hwnd)
+	_, _ = win32.SetActiveWindow(hwnd)
 	win32.UpdateWindow(hwnd)
 
 	return hwnd, nil
@@ -403,7 +403,7 @@ func windowProc(hwnd win32.HWND, msg win32.UINT, wParam win32.WPARAM, lParam win
 		return 0
 	case wmHelperDone:
 		appendDiagnosticLog(activeHelperDir, "hello-helper", "wmHelperDone received hwnd=0x%X", uintptr(hwnd))
-		win32.DestroyWindow(hwnd)
+		_, _ = win32.DestroyWindow(hwnd)
 		return 0
 	case win32.WM_CLOSE:
 		appendDiagnosticLog(activeHelperDir, "hello-helper", "WM_CLOSE ignored hwnd=0x%X", uintptr(hwnd))
@@ -682,13 +682,11 @@ func appendDiagnosticLog(dataDir, component, format string, args ...any) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
-	_, _ = file.WriteString(line)
-}
-
-func setDefaultFont(hwnd win32.HWND) {
-	font := win32.GetStockObject(win32.DEFAULT_GUI_FONT)
-	_, _ = win32.SendMessageW(hwnd, win32.WM_SETFONT, win32.WPARAM(font), 1)
+	if _, err := file.WriteString(line); err != nil {
+		_ = file.Close()
+		return
+	}
+	_ = file.Close()
 }
 
 func createUIFont(pointSize int32, weight int32) win32.HFONT {
