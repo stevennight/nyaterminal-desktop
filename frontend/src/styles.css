@@ -74,8 +74,8 @@ button:not(:disabled) { cursor: pointer; }
   --text: #17202d; --muted: #66758a; --accent: #168f84; --accent2: #bce9e4; --accent-contrast: #f8fffd;
 }
 
-.sidebar { display: flex; flex-direction: column; min-width: 0; background: var(--panel); border-right: 1px solid var(--line); }
-.brand-row { display: flex; align-items: center; gap: 11px; height: 72px; padding: 0 16px; }
+.sidebar { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--panel); border-right: 1px solid var(--line); }
+.brand-row { flex: 0 0 72px; display: flex; align-items: center; gap: 11px; height: 72px; padding: 0 16px; }
 .brand-row > div:nth-child(2) { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-row small { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .brand-row .icon-button { margin-left: 0; }
@@ -83,14 +83,14 @@ button:not(:disabled) { cursor: pointer; }
 .brand-mark.large { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
 .icon-button { margin-left: auto; background: transparent; border: 0; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--muted); }
 .icon-button:hover { background: var(--panel2); color: var(--text); }
-.search-box { margin: 0 13px 16px; height: 38px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); }
+.search-box { flex: 0 0 auto; margin: 0 13px 16px; height: 38px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); }
 .search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); }
 kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; color: var(--muted); font-size: 10px; }
-.section-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 17px 8px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.section-heading { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 0 17px 8px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .section-heading button, .sidebar-footer button, .icon-actions button, .file-row button { border: 0; background: transparent; cursor: pointer; padding: 5px; border-radius: 6px; }
 .section-heading button:hover, .icon-actions button:hover, .file-row button:hover { background: var(--panel2); color: var(--accent); }
-.connection-tree { flex: 1; overflow: auto; padding: 0 8px; }
-.tag-section { max-height: 145px; overflow: hidden; padding-top: 8px; border-top: 1px solid var(--line); }
+.connection-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; }
+.tag-section { flex: 0 0 auto; max-height: 145px; overflow: hidden; padding-top: 8px; border-top: 1px solid var(--line); }
 .tag-list { max-height: 105px; overflow: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding: 0 12px 10px; }
 .tag-list button { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 15px; background: transparent; color: var(--muted); padding: 4px 8px; cursor: pointer; font-size: 10px; transition: border-color .14s ease, background-color .14s ease, color .14s ease; }
 .tag-list button.active { border-color: var(--accent); color: var(--text); background: #62d9ca12; }
@@ -108,7 +108,7 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .connection-copy strong { font-size: 13px; font-weight: 500; }
 .connection-copy small { color: var(--muted); font-size: 10px; }
 .empty-tree { color: var(--muted); text-align: center; font-size: 12px; padding: 30px; }
-.sidebar-footer { border-top: 1px solid var(--line); padding: 10px; }
+.sidebar-footer { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 10px; }
 .sidebar-footer button { display: flex; gap: 8px; align-items: center; color: var(--muted); }
 .settings-entry {
   width: 100%;
