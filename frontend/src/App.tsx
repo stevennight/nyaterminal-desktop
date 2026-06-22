@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ChevronDown, ChevronRight, Folder, FolderPlus, LockKeyhole, Monitor,
+  ChevronDown, ChevronRight, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
@@ -50,6 +50,19 @@ type SSHAuthPrompt = {
 type ThemeName = 'dark' | 'light'
 type RenameTabState = { id: string; value: string }
 type TerminalThemeField = keyof TerminalThemeColors
+type SettingsSectionId = 'appearance' | 'terminal' | 'security' | 'sync' | 'about'
+type AppLibraryDeclaration = {
+  name: string
+  version: string
+  source: 'frontend' | 'go'
+}
+type AppBuildInfo = {
+  name: string
+  version: string
+  buildNumber: string
+  buildDateTime: string
+  libraries: AppLibraryDeclaration[]
+}
 type GroupEditorState = {
   initial?: Group
   initialParentId?: string
@@ -67,6 +80,12 @@ const THEME_STORAGE_KEY = 'nyaterminal.theme'
 const DEFAULT_TAG_COLOR = '#62D9CA'
 const AUTO_RECONNECT_LIMIT = 5
 const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
+declare const __APP_INFO__: AppBuildInfo
+const APP_INFO = __APP_INFO__
+const LIBRARY_SOURCE_LABELS: Record<AppLibraryDeclaration['source'], string> = {
+  frontend: '前端',
+  go: '桌面端',
+}
 
 const emptyConnection: Connection = {
   id: '', name: '', remark: '', host: '', port: 22, username: 'root',
@@ -92,7 +111,9 @@ function getPreferredTheme(): ThemeName {
 }
 
 function formatDateTime(value?: string) {
-  return value ? new Date(value).toLocaleString() : '暂无'
+  if (!value) return '暂无'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
 function decodeBase64Url(value: string) {
@@ -1779,7 +1800,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
   const [notice, setNotice] = useState<{ title: string; message: string }>()
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
-  const [activeSection, setActiveSection] = useState<'appearance' | 'terminal' | 'security' | 'sync'>('appearance')
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
   const [recoveryCodeModal, setRecoveryCodeModal] = useState<{ title: string; code: string }>()
   const [joinPassword, setJoinPassword] = useState('')
@@ -1819,8 +1840,9 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     { id: 'appearance', label: '外观', icon: Paintbrush },
     { id: 'terminal', label: '终端', icon: Monitor },
     { id: 'security', label: '安全', icon: Shield },
-    { id: 'sync', label: '同步', icon: SlidersHorizontal }
-  ] as const
+    { id: 'sync', label: '同步', icon: SlidersHorizontal },
+    { id: 'about', label: '关于', icon: Info }
+  ] satisfies ReadonlyArray<{ id: SettingsSectionId; label: string; icon: typeof Paintbrush }>
 
   const showNotice = (title: string, message: string) => setNotice({ title, message })
   const terminalPreviewColors = resolveTerminalThemeColors(next)
@@ -2264,7 +2286,7 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
         </label>
       </div>
     </div>
-  } else {
+  } else if (activeSection === 'sync') {
     content = <div className="settings-page">
       <h3>同步</h3>
       <div className="sync-summary">
@@ -2332,6 +2354,56 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
           disabled={syncBusy || !resetPassword || resetConfirmText.trim() !== 'RESET SYNC'}
           onClick={() => void resetSync()}>{syncBusy ? '处理中…' : '重置同步保险库'}</button>
       </details>}
+    </div>
+  } else {
+    content = <div className="settings-page">
+      <h3>关于</h3>
+      <div className="settings-section-list">
+        <section className="setting-about-card">
+          <div className="setting-about-header">
+            <div>
+              <strong>{APP_INFO.name}</strong>
+              <small>{APP_INFO.version}</small>
+            </div>
+            <span className="setting-about-badge">构建 {APP_INFO.buildNumber}</span>
+          </div>
+          <div className="setting-about-grid">
+            <div>
+              <small>软件名称</small>
+              <strong>{APP_INFO.name}</strong>
+            </div>
+            <div>
+              <small>版本</small>
+              <strong>{APP_INFO.version}</strong>
+            </div>
+            <div>
+              <small>构建号</small>
+              <strong>{APP_INFO.buildNumber}</strong>
+            </div>
+            <div>
+              <small>构建时间</small>
+              <strong>{formatDateTime(APP_INFO.buildDateTime)}</strong>
+            </div>
+          </div>
+        </section>
+        <section className="setting-about-card">
+          <div className="setting-about-header stack">
+            <div>
+              <strong>使用的库声明</strong>
+              <small>前端依赖和桌面端直接依赖会随着构建自动更新。</small>
+            </div>
+          </div>
+          <div className="library-declaration-list">
+            {APP_INFO.libraries.map(library => <div key={`${library.source}:${library.name}`} className="library-declaration-row">
+              <div>
+                <strong>{library.name}</strong>
+                <small>{LIBRARY_SOURCE_LABELS[library.source]}</small>
+              </div>
+              <code>{library.version}</code>
+            </div>)}
+          </div>
+        </section>
+      </div>
     </div>
   }
 
