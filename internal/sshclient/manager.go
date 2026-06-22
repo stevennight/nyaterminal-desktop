@@ -30,6 +30,8 @@ import (
 
 var ErrPortForwardingReserved = errors.New("SSH port forwarding is reserved for a future release")
 
+const terminalWebSocketReadLimit = 1024 * 1024
+
 type Manager struct {
 	mu                 sync.RWMutex
 	store              *store.Store
@@ -581,6 +583,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
+	connection.SetReadLimit(terminalWebSocketReadLimit)
 
 	ctx := r.Context()
 	readDone := make(chan error, 1)

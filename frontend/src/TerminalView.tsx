@@ -9,7 +9,7 @@ import { ClipboardCopy, ClipboardPaste, TextSelect } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
 import { ZmodemAdapter } from './zmodem'
-import { clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
+import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
 import { resolveTerminalThemeColors, terminalChromeVariables, terminalXtermTheme } from './terminalThemes'
 import type { Connection, Settings } from './types'
 import type { CommandHistory } from './types'
@@ -243,7 +243,7 @@ export function TerminalView({
         clearSuggestions()
       }
       terminal.onData(data => {
-        socket?.send(data)
+        for (const chunk of chunkTerminalInput(data)) socket?.send(chunk)
         for (const char of data) {
           if (char === '\r') {
             if (lineReliable && line.trim()) {

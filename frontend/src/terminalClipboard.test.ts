@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
+import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
 
 describe('terminalClipboard', () => {
   it('maps Ctrl+Shift+C to copy', () => {
@@ -20,6 +20,13 @@ describe('terminalClipboard', () => {
 
   it('places the menu above the cursor when near the bottom edge', () => {
     expect(clampTerminalMenuPosition(40, 230, 320, 240)).toEqual({ left: 40, top: 128 })
+  })
+
+  it('chunks large pasted input below the websocket message limit', () => {
+    const input = `${'a'.repeat(9)}你${'b'.repeat(8)}`
+    const chunks = chunkTerminalInput(input, 10)
+    expect(chunks.join('')).toBe(input)
+    expect(chunks.map(chunk => new TextEncoder().encode(chunk).length)).toEqual([9, 10, 1])
   })
 })
 
