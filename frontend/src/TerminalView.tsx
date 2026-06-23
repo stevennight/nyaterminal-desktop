@@ -10,6 +10,7 @@ import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
 import { ZmodemAdapter } from './zmodem'
 import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
+import { TerminalEchoGuard } from './terminalEchoGuard'
 import { resolveTerminalThemeColors, terminalChromeVariables, terminalXtermTheme } from './terminalThemes'
 import type { Connection, Settings } from './types'
 import type { CommandHistory } from './types'
@@ -159,14 +160,17 @@ export function TerminalView({
 
     let socket: WebSocket | undefined
     let sessionId = ''
-    let line = ''
-    let lineReliable = true
     let suggestionTimer = 0
     let suggestionRequest = 0
     let disposed = false
+    const echoGuard = new TerminalEchoGuard()
     const outputDecoder = connection.encoding && connection.encoding.toLowerCase() !== 'utf-8'
       ? new TextDecoder(connection.encoding)
       : undefined
+    const terminalDecoder = outputDecoder ?? new TextDecoder()
+    const addCommandHistory = (command: string) => {
+      void api.AddCommandHistory(connection.id, command, privateSession)
+    }
     const clearSuggestions = () => {
       suggestionRequest++
       window.clearTimeout(suggestionTimer)
@@ -175,7 +179,7 @@ export function TerminalView({
     }
     const scheduleSuggestions = (prefix: string) => {
       window.clearTimeout(suggestionTimer)
-      if (!lineReliable || prefix.trim().length < 2) {
+      if (!echoGuard.canSuggest() || prefix.trim().length < 2) {
         clearSuggestions()
         return
       }
@@ -219,9 +223,14 @@ export function TerminalView({
       socketRef.current = socket
       socket.binaryType = 'arraybuffer'
       const zmodem = new ZmodemAdapter({
-        toTerminal: data => terminal.write(outputDecoder
-          ? outputDecoder.decode(data, { stream: true })
-          : data),
+        toTerminal: data => {
+          const text = terminalDecoder.decode(data, { stream: true })
+          for (const command of echoGuard.observeOutput(text)) addCommandHistory(command)
+          terminal.write(text)
+          lineRef.current = echoGuard.line
+          if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
+          else clearSuggestions()
+        },
         send: data => socket?.send(data),
         onStatus: setStatus,
         onActive: setZmodemActive
@@ -236,9 +245,9 @@ export function TerminalView({
         onRetryableDisconnectRef.current({ message: 'Connection closed', retryable: true })
       }
       applySuggestionRef.current = command => {
-        const suffix = command.slice(line.length)
+        const suffix = command.slice(echoGuard.line.length)
         if (suffix) socket?.send(suffix)
-        line = command
+        echoGuard.appendInput(suffix)
         lineRef.current = command
         clearSuggestions()
       }
@@ -246,27 +255,22 @@ export function TerminalView({
         for (const chunk of chunkTerminalInput(data)) socket?.send(chunk)
         for (const char of data) {
           if (char === '\r') {
-            if (lineReliable && line.trim()) {
-              void api.AddCommandHistory(connection.id, line, privateSession)
-            }
-            line = ''
-            lineReliable = true
-            lineRef.current = ''
+            const command = echoGuard.submit()
+            if (command) addCommandHistory(command)
           } else if (char === '\x7f') {
-            line = line.slice(0, -1)
-            lineRef.current = line
+            echoGuard.backspace()
           } else if (char === '\t') {
             // Tab completion changes the remote shell buffer in a way the
             // terminal cannot reconstruct reliably.
-            lineReliable = false
+            echoGuard.markUnreliable()
           } else if (char < ' ' || char === '\x1b') {
-            lineReliable = false
+            echoGuard.markUnreliable()
           } else if (char >= ' ') {
-            line += char
-            lineRef.current = line
+            echoGuard.appendInput(char)
           }
         }
-        if (lineReliable) scheduleSuggestions(line)
+        lineRef.current = echoGuard.line
+        if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
         else clearSuggestions()
       })
       terminal.attachCustomKeyEventHandler(event => {
