@@ -347,8 +347,7 @@ export function TerminalView({
         for (const chunk of chunkTerminalInput(data)) socket?.send(chunk)
         for (const char of data) {
           if (char === '\r') {
-            const command = echoGuard.submit()
-            if (command) addCommandHistory(command)
+            echoGuard.submit()
           } else if (char === '\x7f') {
             echoGuard.backspace()
           } else if (char === '\t') {
