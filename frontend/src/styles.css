@@ -87,8 +87,10 @@ button:not(:disabled) { cursor: pointer; }
 .search-box input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); }
 kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 5px; color: var(--muted); font-size: 10px; }
 .section-heading { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 0 17px 8px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.section-heading-actions { display: flex; align-items: center; gap: 2px; }
 .section-heading button, .sidebar-footer button, .icon-actions button, .file-row button { border: 0; background: transparent; cursor: pointer; padding: 5px; border-radius: 6px; }
 .section-heading button:hover, .icon-actions button:hover, .file-row button:hover { background: var(--panel2); color: var(--accent); }
+.section-heading button.active { background: #62d9ca12; color: var(--accent); }
 .connection-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 8px; }
 .tag-section { flex: 0 0 auto; max-height: 145px; overflow: hidden; padding-top: 8px; border-top: 1px solid var(--line); }
 .tag-list { max-height: 105px; overflow: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding: 0 12px 10px; }

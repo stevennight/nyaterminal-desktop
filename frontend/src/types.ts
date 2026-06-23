@@ -42,6 +42,8 @@ export type Connection = {
   legacyAlgorithms: boolean
   syncSecrets?: boolean
   commandHistory: boolean
+  createdAt?: string
+  updatedAt?: string
 }
 
 export type Credential = {

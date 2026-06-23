@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ChevronDown, ChevronRight, Folder, FolderPlus, Info, LockKeyhole, Monitor,
+  ArrowUpDown, ChevronDown, ChevronRight, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   Shield, SlidersHorizontal, Sun, TerminalSquare, X
 } from 'lucide-react'
@@ -48,6 +48,7 @@ type SSHAuthPrompt = {
 }
 
 type ThemeName = 'dark' | 'light'
+type ConnectionSortMode = 'default' | 'natural' | 'recent'
 type RenameTabState = { id: string; value: string }
 type TerminalThemeField = keyof TerminalThemeColors
 type SettingsSectionId = 'appearance' | 'terminal' | 'security' | 'sync' | 'about'
@@ -77,15 +78,27 @@ type ContextMenuState = {
 }
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
+const CONNECTION_SORT_STORAGE_KEY = 'nyaterminal.connectionSortMode'
 const DEFAULT_TAG_COLOR = '#62D9CA'
 const AUTO_RECONNECT_LIMIT = 5
 const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
+const NATURAL_SORTER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 declare const __APP_INFO__: AppBuildInfo
 const APP_INFO = __APP_INFO__
 const LIBRARY_SOURCE_LABELS: Record<AppLibraryDeclaration['source'], string> = {
   frontend: '前端',
   go: '桌面端',
 }
+const CONNECTION_SORT_LABELS: Record<ConnectionSortMode, string> = {
+  default: '默认排序',
+  natural: '自然排序',
+  recent: '最近更新',
+}
+const CONNECTION_SORT_OPTIONS: ReadonlyArray<{ mode: ConnectionSortMode; label: string }> = [
+  { mode: 'default', label: '默认排序（添加顺序）' },
+  { mode: 'natural', label: '自然排序（按名称）' },
+  { mode: 'recent', label: '最近更新' },
+]
 
 const emptyConnection: Connection = {
   id: '', name: '', remark: '', host: '', port: 22, username: 'root',
@@ -99,6 +112,10 @@ function isThemeName(value: string | null | undefined): value is ThemeName {
   return value === 'dark' || value === 'light'
 }
 
+function isConnectionSortMode(value: string | null | undefined): value is ConnectionSortMode {
+  return value === 'default' || value === 'natural' || value === 'recent'
+}
+
 function getPreferredTheme(): ThemeName {
   if (typeof window === 'undefined') return 'dark'
   try {
@@ -108,6 +125,17 @@ function getPreferredTheme(): ThemeName {
     // Ignore storage failures and fall back to system preference.
   }
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
+function getPreferredConnectionSortMode(): ConnectionSortMode {
+  if (typeof window === 'undefined') return 'default'
+  try {
+    const stored = window.localStorage.getItem(CONNECTION_SORT_STORAGE_KEY)
+    if (isConnectionSortMode(stored)) return stored
+  } catch {
+    // Ignore storage failures and fall back to the saved order.
+  }
+  return 'default'
 }
 
 function formatDateTime(value?: string) {
@@ -295,6 +323,55 @@ function sortGroups(groups: Group[]) {
   return [...groups].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
 }
 
+type TreeSortable = {
+  id: string
+  sortOrder: number
+  createdAt?: string
+  updatedAt?: string
+}
+
+function compareNaturalText(left: string, right: string) {
+  return NATURAL_SORTER.compare(left, right)
+}
+
+function sortTimestamp(value: TreeSortable) {
+  const raw = value.updatedAt || value.createdAt
+  if (!raw) return 0
+  const timestamp = new Date(raw).getTime()
+  return Number.isNaN(timestamp) ? 0 : timestamp
+}
+
+function compareSavedOrder<T extends TreeSortable>(left: T, right: T, label: (value: T) => string) {
+  return left.sortOrder - right.sortOrder ||
+    compareNaturalText(label(left), label(right)) ||
+    left.id.localeCompare(right.id)
+}
+
+function compareTreeItems<T extends TreeSortable>(
+  mode: ConnectionSortMode,
+  label: (value: T) => string,
+) {
+  return (left: T, right: T) => {
+    if (mode === 'natural') {
+      return compareNaturalText(label(left), label(right)) ||
+        compareSavedOrder(left, right, label)
+    }
+    if (mode === 'recent') {
+      return sortTimestamp(right) - sortTimestamp(left) ||
+        compareSavedOrder(left, right, label)
+    }
+    return compareSavedOrder(left, right, label)
+  }
+}
+
+function sortGroupsForTree(groups: Group[], mode: ConnectionSortMode) {
+  return [...groups].sort(compareTreeItems(mode, group => group.name))
+}
+
+function sortConnectionsForTree(connections: Connection[], mode: ConnectionSortMode) {
+  return [...connections].sort(compareTreeItems(mode, connectionLabel))
+}
+
 function buildGroupIndex(groups: Group[]) {
   const ordered = sortGroups(groups)
   const byId = new Map(ordered.map(group => [group.id, group]))
@@ -368,6 +445,8 @@ export function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap>()
   const [error, setError] = useState('')
   const [theme, setTheme] = useState<ThemeName>(() => getPreferredTheme())
+  const [connectionSortMode, setConnectionSortMode] =
+    useState<ConnectionSortMode>(() => getPreferredConnectionSortMode())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
   const [tagEditor, setTagEditor] = useState<TagEditorState>()
@@ -419,6 +498,14 @@ export function App() {
       // Ignore storage failures; the in-memory theme still updates.
     }
   }, [bootstrap?.settings?.theme])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CONNECTION_SORT_STORAGE_KEY, connectionSortMode)
+    } catch {
+      // Ignore storage failures; the in-memory sort still updates.
+    }
+  }, [connectionSortMode])
 
   useEffect(() => {
     return window.runtime?.EventsOn?.('ssh:interactive-challenge', value => {
@@ -690,6 +777,19 @@ export function App() {
     }
   }
 
+  const showConnectionSortMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    setContextMenu({
+      x: rect.left,
+      y: rect.bottom + 6,
+      items: CONNECTION_SORT_OPTIONS.map(option => ({
+        label: `${connectionSortMode === option.mode ? '当前 - ' : ''}${option.label}`,
+        onSelect: () => setConnectionSortMode(option.mode),
+      })),
+    })
+  }
+
   const showGroupContextMenu = (event: React.MouseEvent, group: Group) => {
     event.preventDefault()
     setContextMenu({
@@ -825,14 +925,17 @@ export function App() {
         </div>
         <div className="section-heading">
           <span>连接</span>
-          <div>
+          <div className="section-heading-actions">
+            <button className={connectionSortMode !== 'default' ? 'active' : ''}
+              title={`排序方式：${CONNECTION_SORT_LABELS[connectionSortMode]}`}
+              onClick={showConnectionSortMenu}><ArrowUpDown size={15} /></button>
             <button title="新建分组" onClick={() => setGroupEditor({})}><FolderPlus size={15} /></button>
             <button title="新建连接" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
           </div>
         </div>
         <nav className="connection-tree">
           <GroupTree groups={bootstrap.groups ?? []} connections={filteredConnections}
-            onOpen={openConnection} onChanged={reload}
+            sortMode={connectionSortMode} onOpen={openConnection} onChanged={reload}
             onGroupContextMenu={showGroupContextMenu}
             onConnectionContextMenu={showConnectionContextMenu} />
           {!filteredConnections.length && <div className="empty-tree">还没有连接</div>}
@@ -1154,18 +1257,17 @@ export function App() {
   )
 }
 
-function GroupTree({ groups, connections, onOpen, onChanged, onGroupContextMenu, onConnectionContextMenu }: {
+function GroupTree({ groups, connections, sortMode, onOpen, onChanged, onGroupContextMenu, onConnectionContextMenu }: {
   groups: Group[]
   connections: Connection[]
+  sortMode: ConnectionSortMode
   onOpen: (connection: Connection, privateSession?: boolean) => void
   onChanged: () => Promise<void>
   onGroupContextMenu: (event: React.MouseEvent, group: Group) => void
   onConnectionContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
-  const orderedGroups = [...groups].sort((a, b) =>
-    a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-  const roots = orderedGroups.filter(group => !group.parentId)
-  const ungrouped = connections.filter(connection => !connection.groupId)
+  const roots = sortGroupsForTree(groups.filter(group => !group.parentId), sortMode)
+  const ungrouped = sortConnectionsForTree(connections.filter(connection => !connection.groupId), sortMode)
   const dropInto = async (event: React.DragEvent, parentId: string) => {
     event.preventDefault()
     const connectionId = event.dataTransfer.getData('application/x-nya-connection')
@@ -1187,7 +1289,7 @@ function GroupTree({ groups, connections, onOpen, onChanged, onGroupContextMenu,
   }
   return <>
     {roots.map(group => <GroupNode key={group.id} group={group} groups={groups}
-      connections={connections} onOpen={onOpen} onChanged={onChanged}
+      connections={connections} sortMode={sortMode} onOpen={onOpen} onChanged={onChanged}
       onDropInto={dropInto} onGroupContextMenu={onGroupContextMenu}
       onConnectionContextMenu={onConnectionContextMenu} />)}
     <div className="ungrouped-drop" onDragOver={event => event.preventDefault()}
@@ -1202,6 +1304,7 @@ function GroupNode({
   group,
   groups,
   connections,
+  sortMode,
   onOpen,
   onChanged,
   onDropInto,
@@ -1209,6 +1312,7 @@ function GroupNode({
   onConnectionContextMenu,
 }: {
   group: Group; groups: Group[]; connections: Connection[]
+  sortMode: ConnectionSortMode
   onOpen: (connection: Connection, privateSession?: boolean) => void
   onChanged: () => Promise<void>
   onDropInto: (event: React.DragEvent, parentId: string) => Promise<void>
@@ -1216,10 +1320,8 @@ function GroupNode({
   onConnectionContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
   const [open, setOpen] = useState(true)
-  const children = groups.filter(value => value.parentId === group.id)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-  const items = connections.filter(value => value.groupId === group.id)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+  const children = sortGroupsForTree(groups.filter(value => value.parentId === group.id), sortMode)
+  const items = sortConnectionsForTree(connections.filter(value => value.groupId === group.id), sortMode)
   return <div className="group-node">
     <button className="group-row" draggable
       onDragStart={event => event.dataTransfer.setData('application/x-nya-group', group.id)}
@@ -1233,7 +1335,7 @@ function GroupNode({
     </button>
     {open && <div className="group-children">
       {children.map(child => <GroupNode key={child.id} group={child} groups={groups}
-        connections={connections} onOpen={onOpen} onChanged={onChanged}
+        connections={connections} sortMode={sortMode} onOpen={onOpen} onChanged={onChanged}
         onDropInto={onDropInto} onGroupContextMenu={onGroupContextMenu}
         onConnectionContextMenu={onConnectionContextMenu} />)}
       {items.map(connection => <ConnectionRow key={connection.id} value={connection}
