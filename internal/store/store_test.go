@@ -86,6 +86,60 @@ func TestCommandSuggestionsIncludeGlobalHistory(t *testing.T) {
 	}
 }
 
+func TestDeleteCommandHistoryRemovesCurrentAndGlobalOnly(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVaultOnCleanup(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "server", Host: "example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.PutConnection(ctx, model.Connection{
+		Name: "other", Host: "other.example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, connection.ID, "ls -la", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, other.ID, "ls -la", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteCommandHistory(ctx, connection.ID, "ls -la"); err != nil {
+		t.Fatal(err)
+	}
+	history, err := s.SuggestCommands(ctx, connection.ID, "ls", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("deleted command still suggested for connection: %#v", history)
+	}
+	history, err = s.SuggestCommands(ctx, other.ID, "ls", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Command != "ls -la" || history[0].ConnectionID != other.ID {
+		t.Fatalf("other connection history was not preserved: %#v", history)
+	}
+	var global model.CommandHistory
+	if err := v.Get(ctx, TypeHistory, commandHistoryID("", "ls -la"), &global); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("global history was not deleted: %#v, err=%v", global, err)
+	}
+}
+
 func TestPutConnectionTrimsRemark(t *testing.T) {
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))

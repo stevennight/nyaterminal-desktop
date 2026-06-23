@@ -419,6 +419,14 @@ func (a *App) AddCommandHistory(connectionID, command string, private bool) erro
 	return nil
 }
 
+func (a *App) DeleteCommandHistory(connectionID, command string) error {
+	if err := a.store.DeleteCommandHistory(a.context(), connectionID, command); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
+}
+
 func (a *App) SuggestCommands(connectionID, prefix string) ([]model.CommandHistory, error) {
 	return a.store.SuggestCommands(a.context(), connectionID, prefix, 20)
 }

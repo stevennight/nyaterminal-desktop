@@ -5,12 +5,18 @@ import { SearchAddon } from '@xterm/addon-search'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { ClipboardCopy, ClipboardPaste, TextSelect } from 'lucide-react'
+import { ClipboardCopy, ClipboardPaste, TextSelect, Trash2 } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
 import { ZmodemAdapter } from './zmodem'
 import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
 import { TerminalEchoGuard } from './terminalEchoGuard'
+import {
+  directSuggestionShortcutIndex,
+  isSuggestionDeleteKey,
+  isSuggestionDismissKey,
+  nextSuggestionIndex,
+} from './terminalSuggestions'
 import { resolveTerminalThemeColors, terminalChromeVariables, terminalXtermTheme } from './terminalThemes'
 import type { Connection, Settings } from './types'
 import type { CommandHistory } from './types'
@@ -38,6 +44,7 @@ type Props = {
 export function TerminalView({
   connection, settings, active, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onClose
 }: Props) {
+  const paneRef = useRef<HTMLElement>(null)
   const host = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -50,12 +57,16 @@ export function TerminalView({
   const [terminalMenu, setTerminalMenu] = useState<{ left: number; top: number } | null>(null)
   const [terminalMenuReady, setTerminalMenuReady] = useState(false)
   const [suggestions, setSuggestions] = useState<CommandHistory[]>([])
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const [suggestionPosition, setSuggestionPosition] = useState<{ left: number; top: number; width: number } | null>(null)
   const suggestionsRef = useRef<CommandHistory[]>([])
+  const suggestionIndexRef = useRef(0)
   const lineRef = useRef('')
   const socketRef = useRef<WebSocket | undefined>(undefined)
   const zmodemRef = useRef<ZmodemAdapter | undefined>(undefined)
   const searchRef = useRef<SearchAddon | undefined>(undefined)
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
+  const deleteSuggestionRef = useRef<(index: number) => void>(() => undefined)
   const colors = resolveTerminalThemeColors(settings)
   const onReadyRef = useRef(onReady)
   const onRetryableDisconnectRef = useRef(onRetryableDisconnect)
@@ -69,7 +80,17 @@ export function TerminalView({
   onAuthPromptRef.current = onAuthPrompt
   onCloseRef.current = onClose
 
-  useEffect(() => { suggestionsRef.current = suggestions }, [suggestions])
+  useEffect(() => {
+    suggestionsRef.current = suggestions
+    if (!suggestions.length) {
+      suggestionIndexRef.current = 0
+      setSuggestionIndex(0)
+      setSuggestionPosition(null)
+    } else if (suggestionIndexRef.current >= suggestions.length) {
+      suggestionIndexRef.current = 0
+      setSuggestionIndex(0)
+    }
+  }, [suggestions])
   useEffect(() => {
     if (!active) setTerminalMenu(null)
   }, [active])
@@ -163,6 +184,7 @@ export function TerminalView({
     let suggestionTimer = 0
     let suggestionRequest = 0
     let disposed = false
+    const hiddenSuggestionCommands = new Set<string>()
     const echoGuard = new TerminalEchoGuard()
     const outputDecoder = connection.encoding && connection.encoding.toLowerCase() !== 'utf-8'
       ? new TextDecoder(connection.encoding)
@@ -171,11 +193,72 @@ export function TerminalView({
     const addCommandHistory = (command: string) => {
       void api.AddCommandHistory(connection.id, command, privateSession)
     }
+    const updateSuggestionPosition = (count = suggestionsRef.current.length) => {
+      const pane = paneRef.current
+      const hostElement = host.current
+      const terminalElement = terminal.element
+      if (!pane || !hostElement || !terminalElement || count < 1) {
+        setSuggestionPosition(null)
+        return
+      }
+      const paneRect = pane.getBoundingClientRect()
+      const screen = terminalElement.querySelector('.xterm-screen') as HTMLElement | null
+      const screenRect = (screen ?? hostElement).getBoundingClientRect()
+      if (screenRect.width <= 0 || screenRect.height <= 0 || paneRect.width <= 0 || paneRect.height <= 0) {
+        return
+      }
+      const width = suggestionPopupWidth(paneRect.width, suggestionsRef.current)
+      const height = Math.min(count, 5) * 30 + 10
+      const cellWidth = screenRect.width / Math.max(terminal.cols, 1)
+      const cellHeight = screenRect.height / Math.max(terminal.rows, 1)
+      const cursorX = terminal.buffer.active.cursorX
+      const cursorY = terminal.buffer.active.cursorY
+      const rawLeft = screenRect.left - paneRect.left + cursorX * cellWidth
+      const belowTop = screenRect.top - paneRect.top + (cursorY + 1) * cellHeight + 4
+      const aboveTop = screenRect.top - paneRect.top + cursorY * cellHeight - height - 4
+      const maxBottom = paneRect.height - 28
+      const top = belowTop + height <= maxBottom ? belowTop : Math.max(6, aboveTop)
+      const maxLeft = Math.max(6, paneRect.width - width - 6)
+      const left = Math.max(6, Math.min(rawLeft, maxLeft))
+      setSuggestionPosition(current => {
+        if (current && current.left === left && current.top === top && current.width === width) {
+          return current
+        }
+        return { left, top, width }
+      })
+    }
+    const setActiveSuggestion = (index: number, count = suggestionsRef.current.length) => {
+      const next = count < 1 ? 0 : ((index % count) + count) % count
+      suggestionIndexRef.current = next
+      setSuggestionIndex(next)
+    }
     const clearSuggestions = () => {
       suggestionRequest++
       window.clearTimeout(suggestionTimer)
       suggestionTimer = 0
+      suggestionsRef.current = []
+      setActiveSuggestion(0, 0)
+      setSuggestionPosition(null)
       setSuggestions(current => current.length ? [] : current)
+    }
+    const deleteSuggestion = (index: number) => {
+      const target = suggestionsRef.current[index]
+      if (!target) return
+      hiddenSuggestionCommands.add(target.command)
+      suggestionRequest++
+      window.clearTimeout(suggestionTimer)
+      suggestionTimer = 0
+      const next = suggestionsRef.current.filter(suggestion => suggestion.command !== target.command)
+      suggestionsRef.current = next
+      setSuggestions(next)
+      setActiveSuggestion(Math.min(index, Math.max(next.length - 1, 0)), next.length)
+      if (next.length) updateSuggestionPosition(next.length)
+      else setSuggestionPosition(null)
+      void api.DeleteCommandHistory(connection.id, target.command).catch(error => {
+        hiddenSuggestionCommands.delete(target.command)
+        const message = error instanceof Error ? error.message : String(error)
+        setStatus(`Delete history failed: ${message}`)
+      })
     }
     const scheduleSuggestions = (prefix: string) => {
       window.clearTimeout(suggestionTimer)
@@ -188,7 +271,13 @@ export function TerminalView({
         void api.SuggestCommands(connection.id, prefix)
           .then(values => {
             if (disposed || request !== suggestionRequest || lineRef.current !== prefix) return
-            setSuggestions(values.slice(0, 5))
+            const next = values
+              .filter(value => !hiddenSuggestionCommands.has(value.command))
+              .slice(0, 5)
+            suggestionsRef.current = next
+            setActiveSuggestion(0, next.length)
+            setSuggestions(next)
+            updateSuggestionPosition(next.length)
           })
           .catch(() => {
             if (!disposed && request === suggestionRequest) clearSuggestions()
@@ -228,6 +317,7 @@ export function TerminalView({
           for (const command of echoGuard.observeOutput(text)) addCommandHistory(command)
           terminal.write(text)
           lineRef.current = echoGuard.line
+          updateSuggestionPosition()
           if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
           else clearSuggestions()
         },
@@ -249,8 +339,10 @@ export function TerminalView({
         if (suffix) socket?.send(suffix)
         echoGuard.appendInput(suffix)
         lineRef.current = command
+        setActiveSuggestion(0, 0)
         clearSuggestions()
       }
+      deleteSuggestionRef.current = deleteSuggestion
       terminal.onData(data => {
         for (const chunk of chunkTerminalInput(data)) socket?.send(chunk)
         for (const char of data) {
@@ -270,6 +362,7 @@ export function TerminalView({
           }
         }
         lineRef.current = echoGuard.line
+        updateSuggestionPosition()
         if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
         else clearSuggestions()
       })
@@ -287,12 +380,31 @@ export function TerminalView({
           return false
         }
         if (!suggestionsRef.current.length) return true
+        if (isSuggestionDismissKey(event)) {
+          clearSuggestions()
+          event.preventDefault()
+          return false
+        }
+        if (isSuggestionDeleteKey(event)) {
+          deleteSuggestion(suggestionIndexRef.current)
+          event.preventDefault()
+          return false
+        }
+        if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey &&
+          (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          setActiveSuggestion(nextSuggestionIndex(
+            suggestionIndexRef.current,
+            suggestionsRef.current.length,
+            event.key === 'ArrowDown' ? 1 : -1
+          ))
+          event.preventDefault()
+          return false
+        }
         let index = -1
         if (event.key === 'Tab') {
-          index = 0
-        } else if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-          const digit = Number(event.key)
-          if (digit >= 2 && digit <= 5) index = digit - 1
+          index = suggestionIndexRef.current
+        } else {
+          index = directSuggestionShortcutIndex(event, suggestionsRef.current.length)
         }
         if (index < 0 || !suggestionsRef.current[index]) return true
         const command = suggestionsRef.current[index].command
@@ -303,6 +415,7 @@ export function TerminalView({
       terminal.onSelectionChange(syncSelection)
       terminal.onResize(size => {
         if (sessionId) void api.ResizeSSH(sessionId, size.cols, size.rows)
+        updateSuggestionPosition()
       })
     }
 
@@ -314,7 +427,10 @@ export function TerminalView({
       onRetryableDisconnectRef.current({ message, retryable })
     })
     const observer = new ResizeObserver(() => {
-      if (active) fit.fit()
+      if (active) {
+        fit.fit()
+        updateSuggestionPosition()
+      }
     })
     observer.observe(host.current)
     return () => {
@@ -328,6 +444,7 @@ export function TerminalView({
       fitRef.current = null
       sessionIdRef.current = ''
       applySuggestionRef.current = () => undefined
+      deleteSuggestionRef.current = () => undefined
       window.clearTimeout(suggestionTimer)
       if (sessionId) void api.CloseSSH(sessionId)
       terminal.dispose()
@@ -375,6 +492,7 @@ export function TerminalView({
 
   return (
     <section
+      ref={paneRef}
       className={`terminal-pane ${active ? 'active' : ''}`}
       style={terminalChromeVariables(colors) as React.CSSProperties}>
       <div ref={host} className="terminal-host" onContextMenu={event => {
@@ -446,15 +564,36 @@ export function TerminalView({
         <button onClick={() => searchRef.current?.findNext(searchQuery)}>Next</button>
         <button onClick={() => setSearchOpen(false)}>Close</button>
       </div>}
-      {!!suggestions.length && <div className="command-suggestions">
-        {suggestions.map((suggestion, index) => <button key={suggestion.id}
-          onMouseDown={event => {
-            event.preventDefault()
-            applySuggestionRef.current(suggestion.command)
+      {!!suggestions.length && <div className="command-suggestions"
+        style={suggestionPosition ?? { left: 12, bottom: 30 }}>
+        {suggestions.map((suggestion, index) => <div key={suggestion.id}
+          className="command-suggestion-row"
+          data-active={index === suggestionIndex ? 'true' : 'false'}
+          onMouseEnter={() => {
+            setSuggestionIndex(index)
+            suggestionIndexRef.current = index
           }}>
-          <kbd>{index === 0 ? 'Tab' : `Alt+${index + 1}`}</kbd><span>{suggestion.command}</span>
-          <small>{suggestion.useCount}x</small>
-        </button>)}
+          <button type="button" className="command-suggestion-apply"
+            onMouseDown={event => {
+              event.preventDefault()
+              setSuggestionIndex(index)
+              suggestionIndexRef.current = index
+              applySuggestionRef.current(suggestion.command)
+            }}>
+            <kbd>{index === suggestionIndex ? 'Tab' : `Alt+${index + 1}`}</kbd><span>{suggestion.command}</span>
+            <small>{suggestion.useCount}x</small>
+          </button>
+          <button type="button" className="command-suggestion-delete" title="删除历史"
+            onMouseDown={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              setSuggestionIndex(index)
+              suggestionIndexRef.current = index
+              deleteSuggestionRef.current(index)
+            }}>
+            <Trash2 size={12} />
+          </button>
+        </div>)}
       </div>}
       <div className="terminal-status">
         {status}
@@ -463,4 +602,15 @@ export function TerminalView({
       </div>
     </section>
   )
+}
+
+function suggestionPopupWidth(paneWidth: number, suggestions: CommandHistory[]) {
+  const longest = suggestions.reduce((value, suggestion) =>
+    Math.max(value, textWidthUnits(suggestion.command)), 0)
+  return Math.max(220, Math.min(420, paneWidth - 12, Math.ceil(longest * 7 + 140)))
+}
+
+function textWidthUnits(value: string) {
+  return Array.from(value).reduce((sum, char) =>
+    sum + ((char.codePointAt(0) ?? 0) > 0x7f ? 2 : 1), 0)
 }

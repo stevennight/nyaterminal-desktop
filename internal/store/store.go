@@ -344,6 +344,25 @@ func (s *Store) AddCommand(ctx context.Context, connectionID, command string, pr
 	return s.upsertCommandHistory(ctx, commandHistoryID("", command), "", command, now)
 }
 
+func (s *Store) DeleteCommandHistory(ctx context.Context, connectionID, command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+	values, err := s.vault.List(ctx, TypeHistory, func() any { return &model.CommandHistory{} })
+	if err != nil {
+		return err
+	}
+	for _, value := range valuesAs[model.CommandHistory](values) {
+		if value.Command == command && (value.ConnectionID == connectionID || value.ConnectionID == "") {
+			if err := s.Delete(ctx, value.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) SuggestCommands(ctx context.Context, connectionID, prefix string, limit int) ([]model.CommandHistory, error) {
 	connection, err := s.GetConnection(ctx, connectionID)
 	if err != nil {

@@ -28,6 +28,7 @@ type Backend = {
   GetSettings(): Promise<Settings>
   SaveSettings(value: Settings): Promise<void>
   AddCommandHistory(connectionId: string, command: string, privateSession: boolean): Promise<void>
+  DeleteCommandHistory(connectionId: string, command: string): Promise<void>
   SuggestCommands(connectionId: string, prefix: string): Promise<CommandHistory[]>
   StartSSH(request: {
     connectionId: string

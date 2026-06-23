@@ -229,9 +229,13 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .terminal-menu button:hover:not(:disabled) { background: var(--terminal-hover); }
 .terminal-menu button:disabled { opacity: .35; cursor: not-allowed; }
 .terminal-menu span { flex: 1; }
-.command-suggestions { position: absolute; left: 12px; bottom: 30px; z-index: 4; width: min(560px, calc(100% - 24px)); padding: 5px; border: 1px solid var(--terminal-line); border-radius: 9px; background: color-mix(in srgb, var(--terminal-panel) 92%, transparent); box-shadow: 0 16px 45px var(--terminal-shadow); backdrop-filter: blur(8px); }
-.command-suggestions button { width: 100%; height: 30px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 50px; align-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--terminal-fg); text-align: left; cursor: pointer; }
-.command-suggestions button:first-child, .command-suggestions button:hover { background: var(--terminal-hover); }
+.command-suggestions { position: absolute; z-index: 4; width: min(420px, calc(100% - 24px)); padding: 5px; border: 1px solid var(--terminal-line); border-radius: 9px; background: color-mix(in srgb, var(--terminal-panel) 92%, transparent); box-shadow: 0 16px 45px var(--terminal-shadow); backdrop-filter: blur(8px); }
+.command-suggestion-row { height: 30px; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; border-radius: 5px; }
+.command-suggestion-row[data-active=true], .command-suggestion-row:hover { background: var(--terminal-hover); }
+.command-suggestion-apply { width: 100%; height: 30px; display: grid; grid-template-columns: 48px minmax(0, 1fr) 50px; align-items: center; border: 0; background: transparent; color: var(--terminal-fg); text-align: left; cursor: pointer; }
+.command-suggestion-delete { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 5px; background: transparent; color: var(--terminal-muted); cursor: pointer; }
+.command-suggestion-delete:hover { color: var(--terminal-danger); background: color-mix(in srgb, var(--terminal-danger) 12%, transparent); }
+.command-suggestions kbd { justify-self: center; }
 .command-suggestions span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px "Cascadia Mono", monospace; }
 .command-suggestions small { color: var(--terminal-muted); text-align: right; padding-right: 5px; font-size: 9px; }
 .xterm { height: 100%; padding: 5px; }
