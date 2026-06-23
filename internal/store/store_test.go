@@ -140,6 +140,60 @@ func TestDeleteCommandHistoryRemovesCurrentAndGlobalOnly(t *testing.T) {
 	}
 }
 
+func TestListAndDeleteCommandHistoryRecords(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVaultOnCleanup(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "server", Host: "example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, connection.ID, "alpha", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddCommand(ctx, connection.ID, "beta", false); err != nil {
+		t.Fatal(err)
+	}
+	history, err := s.ListCommandHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 4 {
+		t.Fatalf("unexpected history count: %#v", history)
+	}
+	var alphaIDs []string
+	for _, entry := range history {
+		if entry.Command == "alpha" {
+			alphaIDs = append(alphaIDs, entry.ID)
+		}
+	}
+	if len(alphaIDs) != 2 {
+		t.Fatalf("expected connection and global alpha records, got %#v", history)
+	}
+	if err := s.DeleteCommandHistoryRecords(ctx, alphaIDs); err != nil {
+		t.Fatal(err)
+	}
+	history, err = s.ListCommandHistory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range history {
+		if entry.Command == "alpha" {
+			t.Fatalf("alpha history was not deleted: %#v", history)
+		}
+	}
+}
+
 func TestPutConnectionTrimsRemark(t *testing.T) {
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))

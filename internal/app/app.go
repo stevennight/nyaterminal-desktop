@@ -419,8 +419,20 @@ func (a *App) AddCommandHistory(connectionID, command string, private bool) erro
 	return nil
 }
 
+func (a *App) ListCommandHistory() ([]model.CommandHistory, error) {
+	return a.store.ListCommandHistory(a.context())
+}
+
 func (a *App) DeleteCommandHistory(connectionID, command string) error {
 	if err := a.store.DeleteCommandHistory(a.context(), connectionID, command); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
+}
+
+func (a *App) DeleteCommandHistoryRecords(ids []string) error {
+	if err := a.store.DeleteCommandHistoryRecords(a.context(), ids); err != nil {
 		return err
 	}
 	a.triggerSyncSoon()

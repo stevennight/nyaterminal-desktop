@@ -1,12 +1,13 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ArrowUpDown, ChevronDown, ChevronRight, Folder, FolderPlus, Info, LockKeyhole, Monitor,
+  ArrowUpDown, ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
-  Shield, SlidersHorizontal, Sun, TerminalSquare, X
+  Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
+import { cloneConnectionDraft } from './connectionDraft'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
@@ -16,7 +17,7 @@ import {
   resolveTerminalThemeColors, terminalChromeVariables,
 } from './terminalThemes'
 import type {
-  AccountSummary, Bootstrap, Connection, Credential, Group, InteractiveChallenge,
+  AccountSummary, Bootstrap, CommandHistory, Connection, Credential, Group, InteractiveChallenge,
   PendingHostKey, Settings, SyncSummary, Tag, TerminalThemeColors
 } from './types'
 
@@ -51,7 +52,7 @@ type ThemeName = 'dark' | 'light'
 type ConnectionSortMode = 'default' | 'natural' | 'recent'
 type RenameTabState = { id: string; value: string }
 type TerminalThemeField = keyof TerminalThemeColors
-type SettingsSectionId = 'appearance' | 'terminal' | 'security' | 'sync' | 'about'
+type SettingsSectionId = 'appearance' | 'terminal' | 'history' | 'security' | 'sync' | 'about'
 type AppLibraryDeclaration = {
   name: string
   version: string
@@ -832,6 +833,10 @@ export function App() {
           onSelect: () => openConnection(connection, true)
         },
         {
+          label: '克隆',
+          onSelect: () => setConnectionEditor(cloneConnectionDraft(connection))
+        },
+        {
           label: '编辑',
           onSelect: () => setConnectionEditor(connection)
         },
@@ -1150,6 +1155,7 @@ export function App() {
       />}
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
         syncSummary={bootstrap.syncSummary}
+        connections={bootstrap.connections ?? []}
         syncBusy={syncBusy}
         onSyncBusyChange={setSyncBusy}
         onClose={() => setSettingsOpen(false)}
@@ -1622,6 +1628,12 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
   const [passphrase, setPassphrase] = useState('')
   const [error, setError] = useState('')
   useEffect(() => { setAvailableGroups(groups) }, [groups])
+  useEffect(() => {
+    setValue(initial)
+    setSecret('')
+    setPassphrase('')
+    setError('')
+  }, [initial])
   const update = <K extends keyof Connection>(key: K, next: Connection[K]) =>
     setValue(current => ({ ...current, [key]: next }))
   const syncGroups = (nextGroups: Group[]) => {
@@ -1888,8 +1900,8 @@ function TagEditor({ initial, onClose, onSaved }: {
   </Modal>
 }
 
-function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange, onClose, onSaved, onReload }: {
-  value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary
+function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSyncBusyChange, onClose, onSaved, onReload }: {
+  value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary; connections: Connection[]
   syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
   onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
@@ -1903,6 +1915,12 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const [notice, setNotice] = useState<{ title: string; message: string }>()
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
+  const [historyEntries, setHistoryEntries] = useState<CommandHistory[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyFilter, setHistoryFilter] = useState('')
+  const [historyScope, setHistoryScope] = useState('all')
+  const [historyReveal, setHistoryReveal] = useState<Set<string>>(() => new Set())
+  const [historyMatchText, setHistoryMatchText] = useState('')
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
   const [recoveryCodeModal, setRecoveryCodeModal] = useState<{ title: string; code: string }>()
   const [joinPassword, setJoinPassword] = useState('')
@@ -1938,16 +1956,65 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
     setSensitiveRules(value.sensitiveCommandRules.join('\n'))
   }, [value])
 
+  useEffect(() => {
+    if (activeSection !== 'history') return
+    void loadCommandHistory()
+  }, [activeSection])
+
   const sections = [
     { id: 'appearance', label: '外观', icon: Paintbrush },
     { id: 'terminal', label: '终端', icon: Monitor },
+    { id: 'history', label: '历史', icon: TerminalSquare },
     { id: 'security', label: '安全', icon: Shield },
     { id: 'sync', label: '同步', icon: SlidersHorizontal },
     { id: 'about', label: '关于', icon: Info }
   ] satisfies ReadonlyArray<{ id: SettingsSectionId; label: string; icon: typeof Paintbrush }>
 
   const showNotice = (title: string, message: string) => setNotice({ title, message })
+  const connectionById = useMemo(() => new Map(connections.map(connection => [connection.id, connection])), [connections])
   const terminalPreviewColors = resolveTerminalThemeColors(next)
+
+  const loadCommandHistory = async () => {
+    setHistoryLoading(true)
+    try {
+      setHistoryEntries(await api.ListCommandHistory())
+      setHistoryReveal(new Set())
+    } catch (error) {
+      showNotice('读取命令历史失败', localizeError(error))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const deleteHistoryRows = async (rows: CommandHistory[], message: string) => {
+    const ids = Array.from(new Set(rows.map(row => row.id)))
+    if (!ids.length) return
+    if (!window.confirm(message)) return
+    try {
+      await api.DeleteCommandHistoryRecords(ids)
+      const removed = new Set(ids)
+      setHistoryEntries(current => current.filter(row => !removed.has(row.id)))
+      setHistoryReveal(current => new Set(Array.from(current).filter(id => !removed.has(id))))
+      showNotice('命令历史', `已删除 ${ids.length} 条历史记录。`)
+    } catch (error) {
+      showNotice('删除命令历史失败', localizeError(error))
+    }
+  }
+
+  const deleteHistoryCommand = async (entry: CommandHistory) => {
+    if (!window.confirm('删除这条命令历史？连接历史会同时移除同命令的全局副本。')) return
+    try {
+      await api.DeleteCommandHistory(entry.connectionId, entry.command)
+      const removedIds = new Set(
+        historyEntries.filter(row => sameManagedHistoryCommand(row, entry)).map(row => row.id)
+      )
+      setHistoryEntries(current => current.filter(row => !sameManagedHistoryCommand(row, entry)))
+      setHistoryReveal(current => new Set(Array.from(current).filter(id => !removedIds.has(id))))
+      showNotice('命令历史', '已删除命令历史。')
+    } catch (error) {
+      showNotice('删除命令历史失败', localizeError(error))
+    }
+  }
 
   const updateTerminalPreset = (presetId: string) => {
     const preset = TERMINAL_THEME_PRESETS.find(item => item.id === presetId)
@@ -2214,6 +2281,18 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
   const syncConfigured = !!syncSummary?.configured
   const autoSyncDisabled = syncConfigured ? syncSummary?.autoSyncEnabled === false : false
   const showSyncHistory = syncInitialized && syncConfigured
+  const normalizedHistoryFilter = historyFilter.trim().toLowerCase()
+  const filteredHistory = historyEntries.filter(entry => {
+    if (historyScope === 'global' && entry.connectionId) return false
+    if (historyScope !== 'all' && historyScope !== 'global' && entry.connectionId !== historyScope) return false
+    if (!normalizedHistoryFilter) return true
+    const connectionName = historyConnectionName(entry, connectionById).toLowerCase()
+    return entry.command.toLowerCase().includes(normalizedHistoryFilter) ||
+      connectionName.includes(normalizedHistoryFilter)
+  })
+  const historyMatchRows = historyMatchText
+    ? historyEntries.filter(entry => entry.command.includes(historyMatchText))
+    : []
 
   let content
   if (activeSection === 'appearance') {
@@ -2328,6 +2407,100 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
             </span>
           </span>
         </label>
+      </div>
+    </div>
+  } else if (activeSection === 'history') {
+    content = <div className="settings-page">
+      <h3>命令历史</h3>
+      <div className="settings-section-list">
+        <section className="setting-action-card">
+          <div>
+            <strong>当前记录方式</strong>
+            <small>开启历史的连接会保存两份记录：当前连接一份，全局一份。提示时会合并当前连接和全局记录。</small>
+          </div>
+          <button className="secondary" type="button" disabled={historyLoading}
+            onClick={() => void loadCommandHistory()}>{historyLoading ? '读取中…' : '刷新'}</button>
+        </section>
+        <section className="history-tools">
+          <label>范围
+            <select value={historyScope} onChange={event => setHistoryScope(event.target.value)}>
+              <option value="all">全部范围</option>
+              <option value="global">全局历史</option>
+              {connections.map(connection => <option key={connection.id} value={connection.id}>
+                {connection.name}
+              </option>)}
+            </select>
+          </label>
+          <label>筛选
+            <input value={historyFilter} placeholder="命令或连接名"
+              onChange={event => setHistoryFilter(event.target.value)} />
+          </label>
+          <div className="history-tool-actions">
+            <button className="secondary" type="button" disabled={!filteredHistory.length}
+              onClick={() => void deleteHistoryRows(filteredHistory, `删除当前筛选出的 ${filteredHistory.length} 条历史记录？`)}>
+              删除筛选结果
+            </button>
+            <button className="danger-button" type="button" disabled={!historyEntries.length}
+              onClick={() => void deleteHistoryRows(historyEntries, `删除全部 ${historyEntries.length} 条命令历史？`)}>
+              清空全部
+            </button>
+          </div>
+        </section>
+        <section className="history-match-delete">
+          <div>
+            <strong>按内容清理隐私记录</strong>
+            <small>适合粘贴密码、token 或误记录的片段。输入内容不会展示在列表里。</small>
+          </div>
+          <label>要匹配的内容
+            <input type="password" value={historyMatchText}
+              onChange={event => setHistoryMatchText(event.target.value)}
+              placeholder="粘贴要清理的字符串" />
+          </label>
+          <button className="danger-button" type="button" disabled={!historyMatchRows.length}
+            onClick={() => void deleteHistoryRows(historyMatchRows, `删除包含该内容的 ${historyMatchRows.length} 条历史记录？`)}>
+            删除匹配项{historyMatchText ? `（${historyMatchRows.length}）` : ''}
+          </button>
+        </section>
+        <div className="history-summary">
+          <span>全部 {historyEntries.length}</span>
+          <span>当前显示 {filteredHistory.length}</span>
+          <span>全局 {historyEntries.filter(entry => !entry.connectionId).length}</span>
+        </div>
+        <div className="history-list">
+          {historyLoading && <div className="history-empty">正在读取命令历史…</div>}
+          {!historyLoading && !filteredHistory.length && <div className="history-empty">没有匹配的历史记录</div>}
+          {!historyLoading && filteredHistory.slice(0, 300).map(entry => {
+            const revealed = historyReveal.has(entry.id)
+            return <div key={entry.id} className="history-row">
+              <div className="history-row-main">
+                <code className={revealed ? 'revealed' : ''}>
+                  {revealed ? entry.command : hiddenCommandLabel(entry.command)}
+                </code>
+                <small>
+                  {historyConnectionName(entry, connectionById)}
+                  {' · '}{entry.connectionId ? '连接历史' : '全局历史'}
+                  {' · '}{entry.useCount} 次
+                  {' · '}{formatDateTime(entry.lastUsedAt)}
+                </small>
+              </div>
+              <div className="history-row-actions">
+                <button type="button" className="secondary"
+                  onClick={() => setHistoryReveal(current => toggleSetValue(current, entry.id))}>
+                  {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                  <span>{revealed ? '隐藏' : '显示'}</span>
+                </button>
+                <button type="button" className="danger-button"
+                  onClick={() => void deleteHistoryCommand(entry)}>
+                  <Trash2 size={13} />
+                  <span>删除</span>
+                </button>
+              </div>
+            </div>
+          })}
+          {!historyLoading && filteredHistory.length > 300 && <div className="history-empty">
+            仅显示最近的 300 条，请使用筛选缩小范围。
+          </div>}
+        </div>
       </div>
     </div>
   } else if (activeSection === 'security') {
@@ -2584,6 +2757,28 @@ function SettingsDialog({ value, vault, syncSummary, syncBusy, onSyncBusyChange,
       }}
     />}
   </Modal>
+}
+
+function historyConnectionName(entry: CommandHistory, connectionById: Map<string, Connection>) {
+  if (!entry.connectionId) return '全局'
+  return connectionById.get(entry.connectionId)?.name ?? '已删除连接'
+}
+
+function hiddenCommandLabel(command: string) {
+  return `隐藏内容 · ${Array.from(command).length} 字符`
+}
+
+function toggleSetValue<T>(current: Set<T>, value: T) {
+  const next = new Set(current)
+  if (next.has(value)) next.delete(value)
+  else next.add(value)
+  return next
+}
+
+function sameManagedHistoryCommand(row: CommandHistory, target: CommandHistory) {
+  if (row.command !== target.command) return false
+  if (!target.connectionId) return row.connectionId === ''
+  return row.connectionId === target.connectionId || row.connectionId === ''
 }
 
 function AccountManagerDialog({ account, onClose, onReload }: {

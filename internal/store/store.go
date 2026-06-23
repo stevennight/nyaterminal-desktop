@@ -344,6 +344,18 @@ func (s *Store) AddCommand(ctx context.Context, connectionID, command string, pr
 	return s.upsertCommandHistory(ctx, commandHistoryID("", command), "", command, now)
 }
 
+func (s *Store) ListCommandHistory(ctx context.Context) ([]model.CommandHistory, error) {
+	values, err := s.vault.List(ctx, TypeHistory, func() any { return &model.CommandHistory{} })
+	result := valuesAs[model.CommandHistory](values)
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].LastUsedAt.Equal(result[j].LastUsedAt) {
+			return result[i].Command < result[j].Command
+		}
+		return result[i].LastUsedAt.After(result[j].LastUsedAt)
+	})
+	return result, err
+}
+
 func (s *Store) DeleteCommandHistory(ctx context.Context, connectionID, command string) error {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -358,6 +370,25 @@ func (s *Store) DeleteCommandHistory(ctx context.Context, connectionID, command 
 			if err := s.Delete(ctx, value.ID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) DeleteCommandHistoryRecords(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		recordType, err := s.vault.RecordType(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if recordType != TypeHistory {
+			return errors.New("record is not command history")
+		}
+		if err := s.Delete(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 	}
 	return nil
