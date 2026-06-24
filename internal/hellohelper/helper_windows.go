@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -202,13 +201,6 @@ func runHelper(config helperConfig) (err error) {
 	defer runtime.UnlockOSThread()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			appendDiagnosticLog(
-				config.dataDir,
-				"hello-helper",
-				"helper panic=%v stack=%s",
-				recovered,
-				string(debug.Stack()),
-			)
 			err = &helperError{
 				kind:    helperErrorFailed,
 				message: fmt.Sprintf("Windows Hello helper panicked: %v", recovered),
@@ -260,13 +252,6 @@ func runHelper(config helperConfig) (err error) {
 					kind:    helperErrorFailed,
 					message: fmt.Sprintf("Windows Hello helper panicked: %v", recovered),
 				}
-				appendDiagnosticLog(
-					config.dataDir,
-					"hello-helper",
-					"verify panic=%v stack=%s",
-					recovered,
-					string(debug.Stack()),
-				)
 				helperResultChan <- err
 				_, _ = win32.PostMessageW(hwnd, wmHelperDone, 0, 0)
 			}
@@ -664,29 +649,6 @@ func defaultDataDir() (string, error) {
 }
 
 func appendDiagnosticLog(dataDir, component, format string, args ...any) {
-	if dataDir == "" {
-		return
-	}
-	logPath := filepath.Join(dataDir, "diagnostics.log")
-	line := fmt.Sprintf(
-		"%s [%s] %s\n",
-		time.Now().Format(time.RFC3339Nano),
-		component,
-		fmt.Sprintf(format, args...),
-	)
-
-	logMu.Lock()
-	defer logMu.Unlock()
-
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return
-	}
-	if _, err := file.WriteString(line); err != nil {
-		_ = file.Close()
-		return
-	}
-	_ = file.Close()
 }
 
 func createUIFont(pointSize int32, weight int32) win32.HFONT {

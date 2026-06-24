@@ -40,11 +40,10 @@ type Vault struct {
 }
 
 type Status struct {
-	Initialized        bool   `json:"initialized"`
-	Locked             bool   `json:"locked"`
-	QuickUnlock        bool   `json:"quickUnlock"`
-	QuickUnlockMethod  string `json:"quickUnlockMethod"`
-	CustomLockPassword bool   `json:"customLockPassword"`
+	Initialized       bool   `json:"initialized"`
+	Locked            bool   `json:"locked"`
+	QuickUnlock       bool   `json:"quickUnlock"`
+	QuickUnlockMethod string `json:"quickUnlockMethod"`
 }
 
 type ExportedRecord struct {
@@ -94,15 +93,7 @@ func Open(path string) (*Vault, error) {
 			nonce BLOB NOT NULL,
 			wrapped_key BLOB NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS password_wrappers (
-			profile TEXT PRIMARY KEY,
-			salt BLOB NOT NULL,
-			nonce BLOB NOT NULL,
-			wrapped_key BLOB NOT NULL,
-			kdf_memory INTEGER NOT NULL,
-			kdf_iterations INTEGER NOT NULL,
-			kdf_parallelism INTEGER NOT NULL
-		)`,
+		"DROP TABLE IF EXISTS password_wrappers",
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			if closeErr := db.Close(); closeErr != nil {
@@ -137,16 +128,11 @@ func (v *Vault) Status(ctx context.Context) (Status, error) {
 	if err := v.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM quick_unlock").Scan(&quickUnlock); err != nil {
 		return Status{}, err
 	}
-	var customLock int
-	if err := v.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM password_wrappers WHERE profile = 'lock'",
-	).Scan(&customLock); err != nil {
-		return Status{}, err
-	}
 	return Status{
-		Initialized: count > 0, Locked: locked, QuickUnlock: quickUnlock > 0,
-		QuickUnlockMethod:  userPresenceMethod,
-		CustomLockPassword: customLock > 0,
+		Initialized:       count > 0,
+		Locked:            locked,
+		QuickUnlock:       quickUnlock > 0,
+		QuickUnlockMethod: userPresenceMethod,
 	}, nil
 }
 
@@ -337,71 +323,6 @@ func (v *Vault) UnlockQuick(ctx context.Context, profile string) error {
 func (v *Vault) DisableQuickUnlock(ctx context.Context, profile string) error {
 	_ = DeleteQuickUnlock(profile)
 	_, err := v.db.ExecContext(ctx, "DELETE FROM quick_unlock WHERE profile = ?", profile)
-	return err
-}
-
-func (v *Vault) SetLockPassword(ctx context.Context, password string) error {
-	if len(password) < 8 {
-		return errors.New("lock password must contain at least 8 characters")
-	}
-	key, err := v.keyCopy()
-	if err != nil {
-		return err
-	}
-	defer wipe(key)
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
-	wrappingKey := deriveKey(password, salt, kdfMemory, kdfIterations, kdfParallelism)
-	nonce, wrapped, err := seal(wrappingKey, key, []byte("nyaterminal:lock-key:v1"))
-	wipe(wrappingKey)
-	if err != nil {
-		return err
-	}
-	_, err = v.db.ExecContext(ctx, `
-		INSERT INTO password_wrappers(
-			profile, salt, nonce, wrapped_key, kdf_memory, kdf_iterations, kdf_parallelism
-		) VALUES('lock', ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(profile) DO UPDATE SET salt = excluded.salt, nonce = excluded.nonce,
-		wrapped_key = excluded.wrapped_key, kdf_memory = excluded.kdf_memory,
-		kdf_iterations = excluded.kdf_iterations,
-		kdf_parallelism = excluded.kdf_parallelism`,
-		salt, nonce, wrapped, kdfMemory, kdfIterations, kdfParallelism,
-	)
-	return err
-}
-
-func (v *Vault) UnlockWithLockPassword(ctx context.Context, password string) error {
-	var salt, nonce, wrapped []byte
-	var memory, iterations uint32
-	var parallelism uint8
-	err := v.db.QueryRowContext(ctx, `
-		SELECT salt, nonce, wrapped_key, kdf_memory, kdf_iterations, kdf_parallelism
-		FROM password_wrappers WHERE profile = 'lock'`,
-	).Scan(&salt, &nonce, &wrapped, &memory, &iterations, &parallelism)
-	if err != nil {
-		return ErrInvalidPassword
-	}
-	if memory > 256*1024 || iterations > 10 || parallelism > 16 {
-		return ErrInvalidPassword
-	}
-	wrappingKey := deriveKey(password, salt, memory, iterations, parallelism)
-	key, err := open(wrappingKey, nonce, wrapped, []byte("nyaterminal:lock-key:v1"))
-	wipe(wrappingKey)
-	if err != nil || len(key) != chacha20poly1305.KeySize {
-		wipe(key)
-		return ErrInvalidPassword
-	}
-	v.mu.Lock()
-	wipe(v.key)
-	v.key = key
-	v.mu.Unlock()
-	return nil
-}
-
-func (v *Vault) ClearLockPassword(ctx context.Context) error {
-	_, err := v.db.ExecContext(ctx, "DELETE FROM password_wrappers WHERE profile = 'lock'")
 	return err
 }
 

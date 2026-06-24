@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -229,35 +228,17 @@ func (a *App) Unlock(password string) error {
 	}
 	defer a.finishUnlockAttempt()
 	err := a.vault.Unlock(a.context(), password)
-	if errors.Is(err, vault.ErrInvalidPassword) {
-		err = a.vault.UnlockWithLockPassword(a.context(), password)
-	}
 	a.recordUnlockResult(err)
 	return err
 }
 
 func (a *App) UnlockWithSystem() error {
-	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem called")
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			vault.AppendDiagnosticLogForApp(
-				a.dataDir,
-				"UnlockWithSystem panic=%v stack=%s",
-				recovered,
-				string(debug.Stack()),
-			)
-			panic(recovered)
-		}
-	}()
 	if err := a.beginUnlockAttempt(); err != nil {
-		vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem beginUnlockAttempt error=%v", err)
 		return err
 	}
 	defer a.finishUnlockAttempt()
 	err := a.vault.UnlockQuick(a.context(), "default")
-	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem UnlockQuick returned err=%v", err)
 	a.recordUnlockResult(err)
-	vault.AppendDiagnosticLogForApp(a.dataDir, "UnlockWithSystem recordUnlockResult done err=%v", err)
 	return err
 }
 
@@ -325,14 +306,6 @@ func (a *App) Lock() error {
 
 func (a *App) ChangeMasterPassword(oldPassword, newPassword string) error {
 	return a.vault.ChangePassword(a.context(), oldPassword, newPassword)
-}
-
-func (a *App) SetLockPassword(password string) error {
-	return a.vault.SetLockPassword(a.context(), password)
-}
-
-func (a *App) ClearLockPassword() error {
-	return a.vault.ClearLockPassword(a.context())
 }
 
 func (a *App) ListGroups() ([]model.Group, error) {

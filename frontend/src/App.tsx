@@ -1910,7 +1910,6 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
     terminalThemeColors: cloneTerminalThemeColors(resolveTerminalThemeColors(value)),
   }))
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(syncSummary?.autoSyncEnabled ?? true)
-  const [lockPassword, setLockPassword] = useState('')
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
   const [notice, setNotice] = useState<{ title: string; message: string }>()
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
@@ -2062,7 +2061,6 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
 
   const persist = async () => {
     try {
-      if (lockPassword) await api.SetLockPassword(lockPassword)
       const terminalThemeColors = resolveTerminalThemeColors(next)
       await api.SaveSettings({
         ...next,
@@ -2546,15 +2544,6 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
             </label>
           </div>
         </div>
-        <label className="full">独立锁屏密码（可选）
-          <input type="password" value={lockPassword} placeholder="至少 8 个字符；留空不修改"
-            onChange={event => setLockPassword(event.target.value)} /></label>
-        {vault.customLockPassword && <button className="secondary full" type="button"
-          onClick={() => void api.ClearLockPassword()
-            .then(() => showNotice('独立锁屏密码', '独立锁屏密码已清除。'))
-            .catch(error => showNotice('独立锁屏密码', localizeError(error)))}>
-          清除独立锁屏密码
-        </button>}
         <label className="full">敏感命令过滤规则（每行一个正则）
           <textarea rows={4} value={sensitiveRules}
             onChange={event => setSensitiveRules(event.target.value)} />

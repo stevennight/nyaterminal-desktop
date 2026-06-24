@@ -3,7 +3,6 @@ export type VaultStatus = {
   locked: boolean
   quickUnlock: boolean
   quickUnlockMethod: string
-  customLockPassword: boolean
 }
 
 export type Group = {

@@ -10,8 +10,6 @@ type Backend = {
   UnlockWithSystem(): Promise<void>
   EnableSystemUnlock(): Promise<void>
   DisableSystemUnlock(): Promise<void>
-  SetLockPassword(password: string): Promise<void>
-  ClearLockPassword(): Promise<void>
   ChangeMasterPassword(oldPassword: string, newPassword: string): Promise<void>
   Lock(): Promise<void>
   ListGroups(): Promise<Group[]>

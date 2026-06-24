@@ -93,25 +93,53 @@ func TestChangePasswordRewrapsVaultKey(t *testing.T) {
 	}
 }
 
-func TestIndependentLockPassword(t *testing.T) {
-	v, err := Open(filepath.Join(t.TempDir(), "vault.db"))
+func TestLegacyLockPasswordWrappersAreRemovedOnOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.db")
+	v, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
 	ctx := context.Background()
 	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.SetLockPassword(ctx, "lock-only-password"); err != nil {
+	if _, err := v.db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS password_wrappers (
+			profile TEXT PRIMARY KEY,
+			salt BLOB NOT NULL,
+			nonce BLOB NOT NULL,
+			wrapped_key BLOB NOT NULL,
+			kdf_memory INTEGER NOT NULL,
+			kdf_iterations INTEGER NOT NULL,
+			kdf_parallelism INTEGER NOT NULL
+		)`); err != nil {
 		t.Fatal(err)
 	}
-	v.Lock()
-	if err := v.UnlockWithLockPassword(ctx, "wrong-lock-password"); !errors.Is(err, ErrInvalidPassword) {
-		t.Fatalf("wrong lock password returned %v", err)
-	}
-	if err := v.UnlockWithLockPassword(ctx, "lock-only-password"); err != nil {
+	if _, err := v.db.ExecContext(ctx, `
+		INSERT INTO password_wrappers(
+			profile, salt, nonce, wrapped_key, kdf_memory, kdf_iterations, kdf_parallelism
+		) VALUES('lock', X'00', X'00', X'00', 1, 1, 1)`); err != nil {
 		t.Fatal(err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	var tableCount int
+	if err := v.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'password_wrappers'`,
+	).Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 0 {
+		t.Fatal("legacy password_wrappers table was not removed")
 	}
 }
 
