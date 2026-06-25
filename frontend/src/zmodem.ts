@@ -4,8 +4,10 @@ import { api } from './bridge'
 type Callbacks = {
   toTerminal: (data: Uint8Array) => void
   send: (data: Uint8Array) => void
+  waitForSendBuffer?: () => Promise<void>
   onStatus: (message: string) => void
   onActive?: (active: boolean) => void
+  onTransferActivity?: () => void
 }
 
 const decoder = new TextDecoder('latin1')
@@ -13,6 +15,8 @@ const encoder = new TextEncoder()
 const receiveHeaderPrefix = encoder.encode('**\x18B00')
 const sendHeaderPrefix = encoder.encode('**\x18B01')
 const fileSelectionCancelDelayMs = 150
+const progressStatusIntervalMs = 250
+const zmodemYieldEveryBytes = 512 * 1024
 
 // zmodem2 deliberately exposes protocol state machines rather than terminal
 // detection. This adapter keeps the protocol isolated from the terminal and
@@ -32,6 +36,7 @@ export class ZmodemAdapter {
   private sendIndex = 0
   private selectingFile = false
   private senderFlush = Promise.resolve()
+  private lastStatusAt = 0
 
   constructor(private callbacks: Callbacks) {}
 
@@ -51,7 +56,7 @@ export class ZmodemAdapter {
     }
     const protocolData = detection.protocol
     if (detection.mode === 'receive') {
-      this.callbacks.onStatus('检测到远端 sz，正在接收文件')
+      this.setStatus('检测到远端 sz，正在接收文件')
       this.callbacks.onActive?.(true)
       this.receiver = new Receiver()
       this.consumeReceiver(protocolData)
@@ -69,14 +74,17 @@ export class ZmodemAdapter {
   }
 
   private async flushReceiverInput() {
+    let bytesSinceYield = 0
     while (this.receiver && this.receiverInput.length) {
       const receiver = this.receiver
       const consumed = receiver.feedIncoming(this.receiverInput)
       if (consumed > 0) {
         this.receiverInput = this.receiverInput.slice(consumed)
+        bytesSinceYield += consumed
       }
       const progressed = await this.flushReceiverState()
       if (consumed === 0 && !progressed) break
+      bytesSinceYield = await this.maybeYieldReceiver(bytesSinceYield)
     }
     await this.flushReceiverState()
   }
@@ -92,6 +100,7 @@ export class ZmodemAdapter {
         progress = true
         localProgress = true
         this.callbacks.send(outgoing)
+        this.callbacks.onTransferActivity?.()
         outgoing = receiver.drainOutgoing()
       }
       for (let event = receiver.pollEvent(); event; event = receiver.pollEvent()) {
@@ -107,11 +116,11 @@ export class ZmodemAdapter {
           await this.receiveQueue
           if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
           this.receiveHandle = ''
-          this.callbacks.onStatus(`已接收 ${this.receiveName}`)
+          this.setStatus(`已接收 ${this.receiveName}`)
         } else if (event === ReceiverEvent.SessionComplete) {
           this.receiver = undefined
           this.callbacks.onActive?.(false)
-          this.callbacks.onStatus('ZMODEM 接收完成')
+          this.setStatus('ZMODEM 接收完成')
         }
       }
       for (let fileData = receiver.drainFile(); fileData.length; fileData = receiver.drainFile()) {
@@ -124,6 +133,7 @@ export class ZmodemAdapter {
         progress = true
         localProgress = true
         this.callbacks.send(outgoing)
+        this.callbacks.onTransferActivity?.()
         outgoing = receiver.drainOutgoing()
       }
       if (!this.receiver || !localProgress) break
@@ -136,7 +146,7 @@ export class ZmodemAdapter {
     const chunk = data.slice()
     const handle = this.receiveHandle
     this.receivedBytes += chunk.length
-    this.callbacks.onStatus(
+    this.setProgressStatus(
       `正在接收 ${this.receiveName} · ${formatProgress(this.receivedBytes, this.receiveSize)}`
     )
     this.receiveQueue = this.receiveQueue.then(() =>
@@ -149,13 +159,13 @@ export class ZmodemAdapter {
     this.receiveHandle = ''
     this.receiver = undefined
     this.callbacks.onActive?.(false)
-    this.callbacks.onStatus(String(error))
+    this.setStatus(String(error))
   }
 
   private selectFiles(initialData: Uint8Array) {
     if (this.selectingFile) return
     this.selectingFile = true
-    this.callbacks.onStatus('检测到远端 rz，请选择要发送的文件')
+    this.setStatus('检测到远端 rz，请选择要发送的文件')
     const input = document.createElement('input')
     input.type = 'file'
     input.multiple = true
@@ -217,28 +227,39 @@ export class ZmodemAdapter {
       .catch(error => {
         this.sender = undefined
         this.callbacks.onActive?.(false)
-        this.callbacks.onStatus(String(error))
+        this.setStatus(String(error))
       })
   }
 
   private async flushSender() {
     const sender = this.sender
     if (!sender) return
+    let bytesSinceYield = 0
     let outgoing = sender.drainOutgoing()
-    if (outgoing.length) this.callbacks.send(outgoing)
+    if (outgoing.length) {
+      this.callbacks.send(outgoing)
+      bytesSinceYield += outgoing.length
+      this.callbacks.onTransferActivity?.()
+    }
     for (let request = sender.pollFile(); request; request = sender.pollFile()) {
       const file = this.sendFiles[this.sendIndex]
       const chunk = new Uint8Array(await file.slice(request.offset, request.offset + request.len).arrayBuffer())
       sender.feedFile(chunk)
-      this.callbacks.onStatus(
+      this.setProgressStatus(
         `正在发送 ${file.name} · ${formatProgress(request.offset + chunk.length, file.size)}`
       )
       outgoing = sender.drainOutgoing()
-      if (outgoing.length) this.callbacks.send(outgoing)
+      if (outgoing.length) {
+        this.callbacks.send(outgoing)
+        bytesSinceYield += outgoing.length
+        this.callbacks.onTransferActivity?.()
+      }
+      bytesSinceYield = await this.maybeYieldSender(bytesSinceYield)
+      if (this.sender !== sender) return
     }
     for (let event = sender.pollEvent(); event; event = sender.pollEvent()) {
       if (event === SenderEvent.FileComplete) {
-        this.callbacks.onStatus(`已发送 ${this.sendFiles[this.sendIndex].name}`)
+        this.setStatus(`已发送 ${this.sendFiles[this.sendIndex].name}`)
         this.sendIndex++
         if (this.sendIndex < this.sendFiles.length) this.startCurrentFile()
         else sender.finishSession()
@@ -247,11 +268,16 @@ export class ZmodemAdapter {
         this.sendFiles = []
         this.sendIndex = 0
         this.callbacks.onActive?.(false)
-        this.callbacks.onStatus('ZMODEM 发送完成')
+        this.setStatus('ZMODEM 发送完成')
       }
     }
     outgoing = sender.drainOutgoing()
-    if (outgoing.length) this.callbacks.send(outgoing)
+    if (outgoing.length) {
+      this.callbacks.send(outgoing)
+      bytesSinceYield += outgoing.length
+      this.callbacks.onTransferActivity?.()
+    }
+    await this.maybeYieldSender(bytesSinceYield)
   }
 
   private startCurrentFile() {
@@ -270,7 +296,37 @@ export class ZmodemAdapter {
     this.sendIndex = 0
     this.detector.reset()
     this.callbacks.onActive?.(false)
-    this.callbacks.onStatus('ZMODEM 传输已取消')
+    this.setStatus('ZMODEM 传输已取消')
+  }
+
+  private setStatus(message: string) {
+    this.lastStatusAt = Date.now()
+    this.callbacks.onTransferActivity?.()
+    this.callbacks.onStatus(message)
+  }
+
+  private setProgressStatus(message: string) {
+    const now = Date.now()
+    this.callbacks.onTransferActivity?.()
+    if (now - this.lastStatusAt < progressStatusIntervalMs) return
+    this.lastStatusAt = now
+    this.callbacks.onStatus(message)
+  }
+
+  private async maybeYieldSender(bytesSinceYield: number) {
+    if (bytesSinceYield < zmodemYieldEveryBytes) return bytesSinceYield
+    await this.callbacks.waitForSendBuffer?.()
+    await yieldToBrowser()
+    this.callbacks.onTransferActivity?.()
+    return 0
+  }
+
+  private async maybeYieldReceiver(bytesSinceYield: number) {
+    if (bytesSinceYield < zmodemYieldEveryBytes) return bytesSinceYield
+    await this.receiveQueue
+    await yieldToBrowser()
+    this.callbacks.onTransferActivity?.()
+    return 0
   }
 }
 
@@ -352,6 +408,10 @@ function matchesPrefix(buffer: Uint8Array, length: number, pattern: Uint8Array) 
     if (buffer[offset + index] !== pattern[index]) return false
   }
   return true
+}
+
+function yieldToBrowser() {
+  return new Promise<void>(resolve => window.setTimeout(resolve, 0))
 }
 
 function formatProgress(done: number, total: number) {

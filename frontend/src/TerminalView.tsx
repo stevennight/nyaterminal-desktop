@@ -38,11 +38,13 @@ type Props = {
   onRetryableDisconnect: (reason: { message: string; retryable: boolean }) => void
   onHostKey: (pending: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['hostKey']>) => void
   onAuthPrompt: (prompt: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['authPrompt']>) => void
+  onActivity?: () => void
+  onZmodemActiveChange?: (active: boolean) => void
   onClose: () => void
 }
 
 export function TerminalView({
-  connection, settings, active, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onClose
+  connection, settings, active, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onActivity, onZmodemActiveChange, onClose
 }: Props) {
   const paneRef = useRef<HTMLElement>(null)
   const host = useRef<HTMLDivElement>(null)
@@ -67,17 +69,22 @@ export function TerminalView({
   const searchRef = useRef<SearchAddon | undefined>(undefined)
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
   const deleteSuggestionRef = useRef<(index: number) => void>(() => undefined)
+  const zmodemActiveRef = useRef(false)
   const colors = resolveTerminalThemeColors(settings)
   const onReadyRef = useRef(onReady)
   const onRetryableDisconnectRef = useRef(onRetryableDisconnect)
   const onHostKeyRef = useRef(onHostKey)
   const onAuthPromptRef = useRef(onAuthPrompt)
+  const onActivityRef = useRef(onActivity)
+  const onZmodemActiveChangeRef = useRef(onZmodemActiveChange)
   const onCloseRef = useRef(onClose)
 
   onReadyRef.current = onReady
   onRetryableDisconnectRef.current = onRetryableDisconnect
   onHostKeyRef.current = onHostKey
   onAuthPromptRef.current = onAuthPrompt
+  onActivityRef.current = onActivity
+  onZmodemActiveChangeRef.current = onZmodemActiveChange
   onCloseRef.current = onClose
 
   useEffect(() => {
@@ -321,9 +328,17 @@ export function TerminalView({
           if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
           else clearSuggestions()
         },
-        send: data => socket?.send(data),
+        send: data => {
+          if (socket?.readyState === WebSocket.OPEN) socket.send(data)
+        },
+        waitForSendBuffer: () => waitForWebSocketBuffer(socket),
         onStatus: setStatus,
-        onActive: setZmodemActive
+        onActive: value => {
+          zmodemActiveRef.current = value
+          setZmodemActive(value)
+          onZmodemActiveChangeRef.current?.(value)
+        },
+        onTransferActivity: () => onActivityRef.current?.()
       })
       zmodemRef.current = zmodem
       socket.onopen = () => setStatus('Connected')
@@ -435,6 +450,8 @@ export function TerminalView({
     return () => {
       disposed = true
       observer.disconnect()
+      if (zmodemActiveRef.current) onZmodemActiveChangeRef.current?.(false)
+      zmodemActiveRef.current = false
       socket?.close()
       terminalRef.current = null
       socketRef.current = undefined
@@ -601,6 +618,27 @@ export function TerminalView({
       </div>
     </section>
   )
+}
+
+const zmodemBufferedAmountLimit = 2 * 1024 * 1024
+const zmodemBufferedAmountPollMs = 16
+
+function waitForWebSocketBuffer(socket?: WebSocket) {
+  if (!socket || socket.readyState !== WebSocket.OPEN ||
+    socket.bufferedAmount <= zmodemBufferedAmountLimit) {
+    return Promise.resolve()
+  }
+  return new Promise<void>(resolve => {
+    const poll = () => {
+      if (!socket || socket.readyState !== WebSocket.OPEN ||
+        socket.bufferedAmount <= zmodemBufferedAmountLimit) {
+        resolve()
+        return
+      }
+      window.setTimeout(poll, zmodemBufferedAmountPollMs)
+    }
+    window.setTimeout(poll, zmodemBufferedAmountPollMs)
+  })
 }
 
 function suggestionPopupWidth(paneWidth: number, suggestions: CommandHistory[]) {

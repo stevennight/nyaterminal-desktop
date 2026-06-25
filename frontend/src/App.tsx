@@ -468,6 +468,7 @@ export function App() {
   const activityTimer = useRef<number | undefined>(undefined)
   const sessionsRef = useRef<SessionTab[]>([])
   const closedTabsRef = useRef(new Set<string>())
+  const zmodemActiveTabsRef = useRef(new Set<string>())
   const searchInput = useRef<HTMLInputElement>(null)
   const tabScroll = useRef<HTMLDivElement>(null)
   const tabMenu = useRef<HTMLDivElement>(null)
@@ -563,6 +564,12 @@ export function App() {
     }
   }, [bootstrap])
 
+  const setZmodemTabActive = useCallback((tabId: string, active: boolean) => {
+    if (active) zmodemActiveTabsRef.current.add(tabId)
+    else zmodemActiveTabsRef.current.delete(tabId)
+    if (active) resetActivity()
+  }, [resetActivity])
+
   useEffect(() => {
     const events = ['pointerdown', 'keydown', 'wheel']
     events.forEach(name => window.addEventListener(name, resetActivity, { passive: true }))
@@ -611,17 +618,24 @@ export function App() {
   }
 
   useEffect(() => {
-    if (bootstrap?.vault.locked) return
+    const lockAfterMinutes = bootstrap?.settings?.lockAfterMinutes ?? 0
+    if (bootstrap?.vault.locked || lockAfterMinutes <= 0) return
     let lastTick = Date.now()
     const timer = window.setInterval(() => {
       const now = Date.now()
-      if (now - lastTick > 30_000) void lock()
+      if (now - lastTick > 30_000) {
+        if (zmodemActiveTabsRef.current.size > 0) lastTick = now
+        else void lock()
+      }
       lastTick = now
     }, 5_000)
     let hiddenTimer = 0
     const visibility = () => {
       if (document.visibilityState === 'hidden') {
-        hiddenTimer = window.setTimeout(() => void lock(), 30_000)
+        hiddenTimer = window.setTimeout(() => {
+          if (zmodemActiveTabsRef.current.size > 0) return
+          void lock()
+        }, 30_000)
       } else if (hiddenTimer) {
         window.clearTimeout(hiddenTimer)
       }
@@ -632,7 +646,11 @@ export function App() {
       if (hiddenTimer) window.clearTimeout(hiddenTimer)
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [bootstrap?.vault.locked, bootstrap?.settings?.disconnectOnLock])
+  }, [
+    bootstrap?.vault.locked,
+    bootstrap?.settings?.disconnectOnLock,
+    bootstrap?.settings?.lockAfterMinutes,
+  ])
 
   const openConnection = (connection: Connection, privateSession = false) => {
     const id = crypto.randomUUID()
@@ -1060,6 +1078,8 @@ export function App() {
               privateSession={tab.privateSession}
               reconnectMessage={tab.reconnectMessage}
               credentialOverride={tab.credentialOverride}
+              onActivity={resetActivity}
+              onZmodemActiveChange={active => setZmodemTabActive(tab.id, active)}
               onReady={sessionId => setSessions(current => current.map(item =>
                 item.id === tab.id
                   ? {
