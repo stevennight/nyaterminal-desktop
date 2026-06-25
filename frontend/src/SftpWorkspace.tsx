@@ -1,10 +1,16 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import {
-  ArrowDown, ArrowLeft, ArrowUp, Folder, FolderOpen, FolderPlus, Pause,
+  ArrowDown, ArrowLeft, ArrowUp, Folder, FolderOpen, FolderPlus, GripHorizontal, Pause,
   Pencil, Play, RefreshCw, Square, Trash2, X
 } from 'lucide-react'
 import { api } from './bridge'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
+import { useVerticalSplit } from './useVerticalSplit'
+
+const WORKSPACE_QUEUE_STORAGE_KEY = 'nyaterminal.sftpWorkspaceQueueHeight'
+const WORKSPACE_MAIN_MIN_HEIGHT = 300
+const WORKSPACE_QUEUE_MIN_HEIGHT = 180
+const WORKSPACE_SPLITTER_HEIGHT = 10
 
 export function SftpWorkspace({ connection, onClose }: {
   connection: Connection
@@ -20,6 +26,15 @@ export function SftpWorkspace({ connection, onClose }: {
   const [selectedRemote, setSelectedRemote] = useState<RemoteEntry[]>([])
   const [transfers, setTransfers] = useState<SFTPTransfer[]>([])
   const [error, setError] = useState('')
+  const {
+    containerRef: splitContainerRef,
+    height: queueHeight,
+    beginResize: beginQueueResize,
+  } = useVerticalSplit({
+    storageKey: WORKSPACE_QUEUE_STORAGE_KEY,
+    initialHeight: 176,
+    minHeight: WORKSPACE_QUEUE_MIN_HEIGHT,
+  })
 
   const chooseLocal = async () => {
     try {
@@ -185,113 +200,130 @@ export function SftpWorkspace({ connection, onClose }: {
   }
 
   const title = useMemo(() => `${connection.name} · SFTP`, [connection.name])
+  const workspaceStyle = useMemo(() => ({
+    ['--workspace-queue-height']: `${queueHeight}px`,
+    ['--workspace-main-min-height']: `${WORKSPACE_MAIN_MIN_HEIGHT}px`,
+    ['--workspace-queue-min-height']: `${WORKSPACE_QUEUE_MIN_HEIGHT}px`,
+    ['--workspace-splitter-height']: `${WORKSPACE_SPLITTER_HEIGHT}px`,
+  }) as CSSProperties, [queueHeight])
 
   return <div className="sftp-workspace-backdrop">
-    <section className="sftp-workspace">
+    <section className="sftp-workspace" style={workspaceStyle}>
       <header className="sftp-workspace-header">
         <div><FolderOpen size={19} /><strong>{title}</strong></div>
         <button onClick={onClose}><X size={18} /></button>
       </header>
       {error && <div className="workspace-error">{error}</div>}
-      <div className="sftp-columns">
-        <FileColumn
-          title="本地"
-          root={localRoot || '尚未选择目录'}
-          path={localPath}
-          items={localItems}
-          selected={selectedLocal.map(item => item.path)}
-          side="local"
-          actions={<>
-            <button disabled={!token} onClick={() => void createLocalDirectory()}>
-              <FolderPlus size={14} />新建本地目录
+      <div className="sftp-workspace-body" ref={splitContainerRef}>
+        <div className="sftp-columns">
+          <FileColumn
+            title="本地"
+            root={localRoot || '尚未选择目录'}
+            path={localPath}
+            items={localItems}
+            selected={selectedLocal.map(item => item.path)}
+            side="local"
+            actions={<>
+              <button disabled={!token} onClick={() => void createLocalDirectory()}>
+                <FolderPlus size={14} />新建本地目录
+              </button>
+              <button disabled={selectedLocal.length !== 1} onClick={() => void renameLocal()}>
+                <Pencil size={14} />重命名本地
+              </button>
+              <button disabled={!selectedLocal.length} onClick={() => void deleteLocal()}>
+                <Trash2 size={14} />删除本地
+              </button>
+            </>}
+            onChooseRoot={() => void chooseLocal()}
+            onRefresh={() => void loadLocal()}
+            onParent={() => void loadLocal(parentLocal(localPath))}
+            onSelect={(entry, additive) => setSelectedLocal(current => additive
+              ? current.some(item => item.path === entry.path)
+                ? current.filter(item => item.path !== entry.path) : [...current, entry]
+              : [entry])}
+            onOpen={entry => entry.isDir && void loadLocal(entry.path)}
+            onDragEntries={entry => selectedLocal.some(item => item.path === entry.path)
+              ? selectedLocal : [entry]}
+            onDropFiles={(source, paths) => void dropTransfer('local', source, paths)}
+          />
+          <div className="transfer-actions">
+            <button
+              disabled={!selectedLocal.some(item => !item.isDir)}
+              title="上传到远端"
+              onClick={() => void transfer('upload')}
+            >
+              <ArrowUp size={18} />
             </button>
-            <button disabled={selectedLocal.length !== 1} onClick={() => void renameLocal()}>
-              <Pencil size={14} />重命名本地
+            <button
+              disabled={!selectedRemote.some(item => !item.isDir)}
+              title="下载到本地"
+              onClick={() => void transfer('download')}
+            >
+              <ArrowDown size={18} />
             </button>
-            <button disabled={!selectedLocal.length} onClick={() => void deleteLocal()}>
-              <Trash2 size={14} />删除本地
-            </button>
-          </>}
-          onChooseRoot={() => void chooseLocal()}
-          onRefresh={() => void loadLocal()}
-          onParent={() => void loadLocal(parentLocal(localPath))}
-          onSelect={(entry, additive) => setSelectedLocal(current => additive
-            ? current.some(item => item.path === entry.path)
-              ? current.filter(item => item.path !== entry.path) : [...current, entry]
-            : [entry])}
-          onOpen={entry => entry.isDir && void loadLocal(entry.path)}
-          onDragEntries={entry => selectedLocal.some(item => item.path === entry.path)
-            ? selectedLocal : [entry]}
-          onDropFiles={(source, paths) => void dropTransfer('local', source, paths)}
-        />
-        <div className="transfer-actions">
-          <button
-            disabled={!selectedLocal.some(item => !item.isDir)}
-            title="上传到远端"
-            onClick={() => void transfer('upload')}
-          >
-            <ArrowUp size={18} />
-          </button>
-          <button
-            disabled={!selectedRemote.some(item => !item.isDir)}
-            title="下载到本地"
-            onClick={() => void transfer('download')}
-          >
-            <ArrowDown size={18} />
-          </button>
-        </div>
-        <FileColumn
-          title="远端"
-          root={`${connection.username}@${connection.host}`}
-          path={remotePath}
-          items={remoteItems}
-          selected={selectedRemote.map(item => item.path)}
-          side="remote"
-          actions={<>
-            <button onClick={() => void createRemoteDirectory()}>
-              <FolderPlus size={14} />新建远端目录
-            </button>
-            <button disabled={selectedRemote.length !== 1} onClick={() => void renameRemote()}>
-              <Pencil size={14} />重命名远端
-            </button>
-            <button disabled={!selectedRemote.length} onClick={() => void deleteRemote()}>
-              <Trash2 size={14} />删除远端
-            </button>
-          </>}
-          onRefresh={() => void loadRemote()}
-          onParent={() => void loadRemote(parentRemote(remotePath))}
-          onSelect={(entry, additive) => setSelectedRemote(current => additive
-            ? current.some(item => item.path === entry.path)
-              ? current.filter(item => item.path !== entry.path) : [...current, entry]
-            : [entry])}
-          onOpen={entry => entry.isDir && void loadRemote(entry.path)}
-          onDragEntries={entry => selectedRemote.some(item => item.path === entry.path)
-            ? selectedRemote : [entry]}
-          onDropFiles={(source, paths) => void dropTransfer('remote', source, paths)}
-        />
-      </div>
-      <div className="transfer-queue">
-        <strong>传输队列</strong>
-        {!transfers.length && <span>当前没有传输任务</span>}
-        {transfers.map(item => <div key={item.id} className={`transfer-item ${item.status}`}>
-          <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
-          <span>{item.name}<progress max={Math.max(1, item.totalBytes)} value={item.bytesDone} /></span>
-          <small>{transferStatus(item)}</small>
-          <div className="transfer-controls">
-            {(item.status === 'running' || item.status === 'queued') &&
-              <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
-                <Pause size={13} />
-              </button>}
-            {(item.status === 'paused' || item.status === 'failed') &&
-              <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
-                <Play size={13} />
-              </button>}
-            {!['completed', 'cancelled'].includes(item.status) &&
-              <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
-                <Square size={12} />
-              </button>}
           </div>
-        </div>)}
+          <FileColumn
+            title="远端"
+            root={`${connection.username}@${connection.host}`}
+            path={remotePath}
+            items={remoteItems}
+            selected={selectedRemote.map(item => item.path)}
+            side="remote"
+            actions={<>
+              <button onClick={() => void createRemoteDirectory()}>
+                <FolderPlus size={14} />新建远端目录
+              </button>
+              <button disabled={selectedRemote.length !== 1} onClick={() => void renameRemote()}>
+                <Pencil size={14} />重命名远端
+              </button>
+              <button disabled={!selectedRemote.length} onClick={() => void deleteRemote()}>
+                <Trash2 size={14} />删除远端
+              </button>
+            </>}
+            onRefresh={() => void loadRemote()}
+            onParent={() => void loadRemote(parentRemote(remotePath))}
+            onSelect={(entry, additive) => setSelectedRemote(current => additive
+              ? current.some(item => item.path === entry.path)
+                ? current.filter(item => item.path !== entry.path) : [...current, entry]
+              : [entry])}
+            onOpen={entry => entry.isDir && void loadRemote(entry.path)}
+            onDragEntries={entry => selectedRemote.some(item => item.path === entry.path)
+              ? selectedRemote : [entry]}
+            onDropFiles={(source, paths) => void dropTransfer('remote', source, paths)}
+          />
+        </div>
+        <div
+          className="workspace-splitter"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="调整文件区和传输队列高度"
+          onPointerDown={beginQueueResize}
+        >
+          <GripHorizontal size={16} />
+        </div>
+        <div className="transfer-queue">
+          <strong>传输队列</strong>
+          {!transfers.length && <span>当前没有传输任务</span>}
+          {transfers.map(item => <div key={item.id} className={`transfer-item ${item.status}`}>
+            <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
+            <span>{item.name}<progress max={Math.max(1, item.totalBytes)} value={item.bytesDone} /></span>
+            <small>{transferStatus(item)}</small>
+            <div className="transfer-controls">
+              {(item.status === 'running' || item.status === 'queued') &&
+                <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
+                  <Pause size={13} />
+                </button>}
+              {(item.status === 'paused' || item.status === 'failed') &&
+                <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
+                  <Play size={13} />
+                </button>}
+              {!['completed', 'cancelled'].includes(item.status) &&
+                <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
+                  <Square size={12} />
+                </button>}
+            </div>
+          </div>)}
+        </div>
       </div>
     </section>
   </div>

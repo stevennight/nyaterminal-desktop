@@ -1,12 +1,18 @@
-import { useEffect, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  ArrowDownToLine, ArrowUpFromLine, Folder, FolderPlus, Maximize2,
+  ArrowDownToLine, ArrowUpFromLine, Folder, FolderPlus, GripHorizontal, Maximize2,
   Pause, Pencil, Play, RefreshCw, Square, Trash2, X
 } from 'lucide-react'
 import { api } from './bridge'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
+import { useVerticalSplit } from './useVerticalSplit'
+
+const PANEL_TRANSFER_STORAGE_KEY = 'nyaterminal.sftpPanelTransferHeight'
+const PANEL_FILE_MIN_HEIGHT = 220
+const PANEL_TRANSFER_MIN_HEIGHT = 120
+const PANEL_SPLITTER_HEIGHT = 10
 
 type ContextMenuState = {
   x: number
@@ -32,6 +38,15 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   const [transfers, setTransfers] = useState<SFTPTransfer[]>([])
   const [contextMenu, setContextMenu] = useState<ContextMenuState>()
   const [renaming, setRenaming] = useState<RenameState>()
+  const {
+    containerRef: panelBodyRef,
+    height: transferHeight,
+    beginResize: beginTransferResize,
+  } = useVerticalSplit({
+    storageKey: PANEL_TRANSFER_STORAGE_KEY,
+    initialHeight: 150,
+    minHeight: PANEL_TRANSFER_MIN_HEIGHT,
+  })
 
   const load = async (next = remotePath) => {
     setBusy(true)
@@ -60,6 +75,13 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
     const timer = window.setInterval(update, 700)
     return () => window.clearInterval(timer)
   }, [connection.id])
+
+  const panelStyle = useMemo(() => ({
+    ['--panel-transfer-height']: `${transferHeight}px`,
+    ['--panel-file-min-height']: `${PANEL_FILE_MIN_HEIGHT}px`,
+    ['--panel-transfer-min-height']: `${PANEL_TRANSFER_MIN_HEIGHT}px`,
+    ['--panel-splitter-height']: `${PANEL_SPLITTER_HEIGHT}px`,
+  }) as CSSProperties, [transferHeight])
 
   const createDirectory = async (basePath = remotePath) => {
     const name = window.prompt('新建远端目录名称')
@@ -146,7 +168,7 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
 
   return (
     <>
-    <aside className="sftp-panel">
+    <aside className="sftp-panel" style={panelStyle}>
       <header>
         <strong>SFTP</strong>
         <div className="icon-actions">
@@ -174,60 +196,71 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
         onChange={event => setRemotePath(event.target.value)}
         onKeyDown={event => event.key === 'Enter' && void load(remotePath)} />
       {error && <div className="inline-error">{error}</div>}
-      <div className="file-list" onClick={event => {
-        if (event.target === event.currentTarget) {
-          setSelected(undefined)
-          setContextMenu(undefined)
-        }
-      }}>
-        {busy && <div className="empty">正在读取目录…</div>}
-        {!busy && entries.map(entry => (
-          <div className={`file-row ${selected?.path === entry.path ? 'selected' : ''}`} key={entry.path}
-            onClick={() => {
-              setSelected(entry)
-              setContextMenu(undefined)
-            }}
-            onContextMenu={event => showEntryContextMenu(event, entry)}
-            onDoubleClick={() => entry.isDir && void load(entry.path)}>
-            {entry.isDir ? <Folder size={16} /> : <span className="file-dot" />}
-            <span className="file-name">{entry.name}</span>
-            <span className="file-size">{entry.isDir ? '' : formatSize(entry.size)}</span>
-            {!entry.isDir && (
-              <button title="下载" onClick={event => {
-                event.stopPropagation()
+      <div className="panel-main" ref={panelBodyRef}>
+        <div className="file-list" onClick={event => {
+          if (event.target === event.currentTarget) {
+            setSelected(undefined)
+            setContextMenu(undefined)
+          }
+        }}>
+          {busy && <div className="empty">正在读取目录…</div>}
+          {!busy && entries.map(entry => (
+            <div className={`file-row ${selected?.path === entry.path ? 'selected' : ''}`} key={entry.path}
+              onClick={() => {
                 setSelected(entry)
-                void download(entry).catch(value => setError(String(value)))
-              }}>
-                <ArrowDownToLine size={14} />
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="panel-transfer-queue">
-        <strong>传输队列</strong>
-        {!transfers.length && <span>暂无任务</span>}
-        {!!transfers.length && <div className="panel-transfer-list">
-          {transfers.map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
-          <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
-          <span title={item.name}>{item.name}</span>
-          <small>{transferStatus(item)}</small>
-          <div>
-            {(item.status === 'running' || item.status === 'queued') &&
-              <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
-                <Pause size={12} />
-              </button>}
-            {(item.status === 'paused' || item.status === 'failed') &&
-              <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
-                <Play size={12} />
-              </button>}
-            {!['completed', 'cancelled'].includes(item.status) &&
-              <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
-                <Square size={11} />
-              </button>}
-          </div>
-          </div>)}
-        </div>}
+                setContextMenu(undefined)
+              }}
+              onContextMenu={event => showEntryContextMenu(event, entry)}
+              onDoubleClick={() => entry.isDir && void load(entry.path)}>
+              {entry.isDir ? <Folder size={16} /> : <span className="file-dot" />}
+              <span className="file-name">{entry.name}</span>
+              <span className="file-size">{entry.isDir ? '' : formatSize(entry.size)}</span>
+              {!entry.isDir && (
+                <button title="下载" onClick={event => {
+                  event.stopPropagation()
+                  setSelected(entry)
+                  void download(entry).catch(value => setError(String(value)))
+                }}>
+                  <ArrowDownToLine size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        <div
+          className="panel-splitter"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="调整文件列表和传输队列高度"
+          onPointerDown={beginTransferResize}
+        >
+          <GripHorizontal size={15} />
+        </div>
+        <div className="panel-transfer-queue">
+          <strong>传输队列</strong>
+          {!transfers.length && <span>暂无任务</span>}
+          {!!transfers.length && <div className="panel-transfer-list">
+            {transfers.map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
+            <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
+            <span title={item.name}>{item.name}</span>
+            <small>{transferStatus(item)}</small>
+            <div>
+              {(item.status === 'running' || item.status === 'queued') &&
+                <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
+                  <Pause size={12} />
+                </button>}
+              {(item.status === 'paused' || item.status === 'failed') &&
+                <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
+                  <Play size={12} />
+                </button>}
+              {!['completed', 'cancelled'].includes(item.status) &&
+                <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
+                  <Square size={11} />
+                </button>}
+            </div>
+            </div>)}
+          </div>}
+        </div>
       </div>
     </aside>
     {contextMenu && <ContextMenu
