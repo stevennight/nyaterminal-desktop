@@ -41,9 +41,11 @@ type Manager struct {
 	sessions           map[string]*terminalSession
 	pending            map[string]PendingHostKey
 	interactiveHandler func(context.Context, InteractiveChallenge) ([]string, error)
+	zmodemHandler      ZmodemHandler
 }
 
 type terminalSession struct {
+	manager      *Manager
 	id           string
 	connectionID string
 	token        string
@@ -55,6 +57,9 @@ type terminalSession struct {
 	output       chan []byte
 	done         chan struct{}
 	closeOnce    sync.Once
+	zmodemMu     sync.Mutex
+	zmodem       *zmodemTransfer
+	detector     backendZmodemDetector
 }
 
 type StartRequest struct {
@@ -148,6 +153,12 @@ func (m *Manager) SetInteractiveHandler(handler func(context.Context, Interactiv
 	m.mu.Unlock()
 }
 
+func (m *Manager) SetZmodemHandler(handler ZmodemHandler) {
+	m.mu.Lock()
+	m.zmodemHandler = handler
+	m.mu.Unlock()
+}
+
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	for _, session := range m.sessions {
@@ -212,7 +223,8 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 		return StartResult{}, err
 	}
 	entry := &terminalSession{
-		id: id, connectionID: connection.ID,
+		manager: m,
+		id:      id, connectionID: connection.ID,
 		token: token, client: client, session: sshSession, stdin: stdin,
 		encoding: terminalEncoding(connection.Encoding),
 		output:   make(chan []byte, 256), done: make(chan struct{}),
@@ -299,6 +311,16 @@ func (m *Manager) CloseSession(sessionID string) {
 	if session != nil {
 		session.close()
 	}
+}
+
+func (m *Manager) CancelZmodem(sessionID string) error {
+	m.mu.RLock()
+	session := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if session == nil {
+		return errors.New("session not found")
+	}
+	return session.cancelZmodem()
 }
 
 func (m *Manager) PendingHostKey(id string) (PendingHostKey, bool) {
@@ -651,12 +673,10 @@ type channelWriter struct {
 
 func (w channelWriter) Write(data []byte) (int, error) {
 	copyOfData := append([]byte(nil), data...)
-	select {
-	case <-w.session.done:
-		return 0, io.ErrClosedPipe
-	case w.session.output <- copyOfData:
-		return len(data), nil
+	if err := w.session.handleOutput(copyOfData); err != nil {
+		return 0, err
 	}
+	return len(data), nil
 }
 
 func (s *terminalSession) close() {

@@ -70,6 +70,7 @@ export function TerminalView({
   const applySuggestionRef = useRef<(command: string) => void>(() => undefined)
   const deleteSuggestionRef = useRef<(index: number) => void>(() => undefined)
   const zmodemActiveRef = useRef(false)
+  const backendZmodemActiveRef = useRef(false)
   const colors = resolveTerminalThemeColors(settings)
   const onReadyRef = useRef(onReady)
   const onRetryableDisconnectRef = useRef(onRetryableDisconnect)
@@ -190,6 +191,7 @@ export function TerminalView({
     let sessionId = ''
     let suggestionTimer = 0
     let suggestionRequest = 0
+    let zmodemStatusUnsubscribe: (() => void) | undefined
     let disposed = false
     const hiddenSuggestionCommands = new Set<string>()
     const echoGuard = new TerminalEchoGuard()
@@ -315,6 +317,15 @@ export function TerminalView({
       sessionId = result.session.sessionId
       sessionIdRef.current = sessionId
       onReadyRef.current(sessionId)
+      zmodemStatusUnsubscribe = window.runtime?.EventsOn?.('zmodem:status', value => {
+        if (!isZmodemStatus(value) || value.sessionId !== sessionId) return
+        backendZmodemActiveRef.current = value.active
+        zmodemActiveRef.current = value.active
+        setZmodemActive(value.active)
+        onZmodemActiveChangeRef.current?.(value.active)
+        onActivityRef.current?.()
+        setStatus(value.message)
+      })
       socket = new WebSocket(result.session.url)
       socketRef.current = socket
       socket.binaryType = 'arraybuffer'
@@ -452,6 +463,8 @@ export function TerminalView({
       observer.disconnect()
       if (zmodemActiveRef.current) onZmodemActiveChangeRef.current?.(false)
       zmodemActiveRef.current = false
+      backendZmodemActiveRef.current = false
+      zmodemStatusUnsubscribe?.()
       socket?.close()
       terminalRef.current = null
       socketRef.current = undefined
@@ -614,10 +627,28 @@ export function TerminalView({
       <div className="terminal-status">
         {status}
         {privateSession ? ' · private session' : ''}
-        {zmodemActive && <button onClick={() => void zmodemRef.current?.cancel()}>Cancel ZMODEM</button>}
+        {zmodemActive && <button onClick={() => {
+          const sessionId = sessionIdRef.current
+          if (backendZmodemActiveRef.current && sessionId) void api.CancelZmodem(sessionId)
+          else void zmodemRef.current?.cancel()
+        }}>Cancel ZMODEM</button>}
       </div>
     </section>
   )
+}
+
+type ZmodemStatusEvent = {
+  sessionId: string
+  message: string
+  active: boolean
+}
+
+function isZmodemStatus(value: unknown): value is ZmodemStatusEvent {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<ZmodemStatusEvent>
+  return typeof candidate.sessionId === 'string' &&
+    typeof candidate.message === 'string' &&
+    typeof candidate.active === 'boolean'
 }
 
 const zmodemBufferedAmountLimit = 2 * 1024 * 1024

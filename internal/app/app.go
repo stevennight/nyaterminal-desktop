@@ -108,6 +108,7 @@ func (a *App) initialize() error {
 	a.zmodem = zmodemstore.New()
 	a.syncStop = make(chan struct{})
 	sshManager.SetInteractiveHandler(a.handleInteractiveChallenge)
+	sshManager.SetZmodemHandler(a)
 	return nil
 }
 
@@ -470,6 +471,10 @@ func (a *App) ResizeSSH(sessionID string, columns, rows int) error {
 
 func (a *App) CloseSSH(sessionID string) {
 	a.ssh.CloseSession(sessionID)
+}
+
+func (a *App) CancelZmodem(sessionID string) error {
+	return a.ssh.CancelZmodem(sessionID)
 }
 
 func (a *App) ListRemote(connectionID, remotePath string) ([]sftpclient.Entry, error) {

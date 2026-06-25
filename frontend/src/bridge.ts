@@ -46,6 +46,7 @@ type Backend = {
   AcceptHostKey(id: string): Promise<void>
   ResizeSSH(sessionId: string, columns: number, rows: number): Promise<void>
   CloseSSH(sessionId: string): Promise<void>
+  CancelZmodem(sessionId: string): Promise<void>
   AnswerSSHChallenge(id: string, answers: string[], cancelled: boolean): Promise<void>
   ListRemote(connectionId: string, remotePath: string): Promise<RemoteEntry[]>
   ChooseLocalDirectory(): Promise<{ token: string; path: string; items: RemoteEntry[] }>
