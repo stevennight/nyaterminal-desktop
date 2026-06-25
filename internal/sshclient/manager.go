@@ -45,21 +45,22 @@ type Manager struct {
 }
 
 type terminalSession struct {
-	manager      *Manager
-	id           string
-	connectionID string
-	token        string
-	attached     bool
-	client       *ssh.Client
-	session      *ssh.Session
-	stdin        io.WriteCloser
-	encoding     encoding.Encoding
-	output       chan []byte
-	done         chan struct{}
-	closeOnce    sync.Once
-	zmodemMu     sync.Mutex
-	zmodem       *zmodemTransfer
-	detector     backendZmodemDetector
+	manager            *Manager
+	id                 string
+	connectionID       string
+	token              string
+	attached           bool
+	client             *ssh.Client
+	session            *ssh.Session
+	stdin              io.WriteCloser
+	encoding           encoding.Encoding
+	output             chan []byte
+	done               chan struct{}
+	closeOnce          sync.Once
+	zmodemMu           sync.Mutex
+	zmodem             *zmodemTransfer
+	detector           backendZmodemDetector
+	zmodemDiscardUntil time.Time
 }
 
 type StartRequest struct {
