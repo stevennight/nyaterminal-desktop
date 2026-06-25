@@ -69,6 +69,7 @@ type Backend = {
   CancelSFTPTransfer(id: string): Promise<void>
   BeginZmodemReceive(name: string, size: number): Promise<string>
   WriteZmodemReceive(id: string, data: number[] | Uint8Array): Promise<void>
+  WriteZmodemReceiveBase64(id: string, data: string): Promise<void>
   FinishZmodemReceive(id: string): Promise<void>
   CancelZmodemReceive(id: string): Promise<void>
   CreateRemoteDirectory(connectionId: string, remotePath: string): Promise<void>

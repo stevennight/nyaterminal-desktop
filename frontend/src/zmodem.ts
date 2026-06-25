@@ -17,6 +17,8 @@ const sendHeaderPrefix = encoder.encode('**\x18B01')
 const fileSelectionCancelDelayMs = 150
 const progressStatusIntervalMs = 250
 const zmodemYieldEveryBytes = 512 * 1024
+const receiveWriteBatchBytes = 512 * 1024
+const zmodemCancelSuppressMs = 1200
 
 // zmodem2 deliberately exposes protocol state machines rather than terminal
 // detection. This adapter keeps the protocol isolated from the terminal and
@@ -30,8 +32,12 @@ export class ZmodemAdapter {
   private receiveSize = 0
   private receivedBytes = 0
   private receiveQueue = Promise.resolve()
+  private receiveBatch: Uint8Array[] = []
+  private receiveBatchBytes = 0
+  private receiveGeneration = 0
   private receiverFlush = Promise.resolve()
   private receiverInput = new Uint8Array()
+  private protocolDiscardUntil = 0
   private sendFiles: File[] = []
   private sendIndex = 0
   private selectingFile = false
@@ -41,6 +47,11 @@ export class ZmodemAdapter {
   constructor(private callbacks: Callbacks) {}
 
   consume(data: Uint8Array) {
+    if (this.shouldDiscardProtocolInput()) {
+      this.protocolDiscardUntil = Date.now() + zmodemCancelSuppressMs
+      this.callbacks.onTransferActivity?.()
+      return
+    }
     if (this.receiver) {
       this.consumeReceiver(data)
       return
@@ -56,11 +67,13 @@ export class ZmodemAdapter {
     }
     const protocolData = detection.protocol
     if (detection.mode === 'receive') {
+      this.protocolDiscardUntil = 0
       this.setStatus('检测到远端 sz，正在接收文件')
       this.callbacks.onActive?.(true)
       this.receiver = new Receiver()
       this.consumeReceiver(protocolData)
     } else {
+      this.protocolDiscardUntil = 0
       this.selectFiles(protocolData)
     }
   }
@@ -107,13 +120,22 @@ export class ZmodemAdapter {
         progress = true
         localProgress = true
         if (event === ReceiverEvent.FileStart) {
-          this.receiveName = safeFilename(receiver.getFileName())
+          this.receiveName = safeFilename(decodeProtocolFilename(receiver.getFileName()))
           this.receiveSize = receiver.getFileSize()
           this.receivedBytes = 0
+          this.receiveGeneration++
+          this.receiveQueue = Promise.resolve()
+          this.receiveBatch = []
+          this.receiveBatchBytes = 0
           this.receiveHandle = await api.BeginZmodemReceive(this.receiveName, this.receiveSize)
           if (!this.receiveHandle) throw new Error('已取消 ZMODEM 接收')
         } else if (event === ReceiverEvent.FileComplete) {
+          const generation = this.receiveGeneration
+          await this.flushReceiveBatch()
           await this.receiveQueue
+          if (this.receiver !== receiver || this.receiveGeneration !== generation || !this.receiveHandle) {
+            return progress
+          }
           if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
           this.receiveHandle = ''
           this.setStatus(`已接收 ${this.receiveName}`)
@@ -127,6 +149,7 @@ export class ZmodemAdapter {
         progress = true
         localProgress = true
         this.queueReceiveData(fileData)
+        if (this.receiveBatchBytes >= receiveWriteBatchBytes) await this.flushReceiveBatch()
       }
       outgoing = receiver.drainOutgoing()
       while (outgoing.length) {
@@ -144,19 +167,43 @@ export class ZmodemAdapter {
   private queueReceiveData(data: Uint8Array) {
     if (!data.length || !this.receiveHandle) return
     const chunk = data.slice()
-    const handle = this.receiveHandle
     this.receivedBytes += chunk.length
+    this.receiveBatch.push(chunk)
+    this.receiveBatchBytes += chunk.length
     this.setProgressStatus(
       `正在接收 ${this.receiveName} · ${formatProgress(this.receivedBytes, this.receiveSize)}`
     )
-    this.receiveQueue = this.receiveQueue.then(() =>
-      api.WriteZmodemReceive(handle, Array.from(chunk))
-    )
+  }
+
+  private async flushReceiveBatch() {
+    if (!this.receiveHandle || this.receiveBatchBytes === 0) return
+    const handle = this.receiveHandle
+    const generation = this.receiveGeneration
+    const batch = concatChunks(this.receiveBatch, this.receiveBatchBytes)
+    this.receiveBatch = []
+    this.receiveBatchBytes = 0
+    this.receiveQueue = this.receiveQueue.then(async () => {
+      if (this.receiveGeneration !== generation) return
+      const encoded = await encodeBase64(batch)
+      if (this.receiveGeneration !== generation) return
+      await api.WriteZmodemReceiveBase64(handle, encoded)
+    })
+    try {
+      await this.receiveQueue
+    } catch (error) {
+      if (this.receiveGeneration !== generation) return
+      throw error
+    }
   }
 
   private async failReceive(error: unknown) {
+    this.receiveGeneration++
+    this.receiveQueue = this.receiveQueue.catch(() => undefined).then(() => undefined)
     if (this.receiveHandle) await api.CancelZmodemReceive(this.receiveHandle).catch(() => undefined)
     this.receiveHandle = ''
+    this.receiveBatch = []
+    this.receiveBatchBytes = 0
+    this.receiverInput = new Uint8Array()
     this.receiver = undefined
     this.callbacks.onActive?.(false)
     this.setStatus(String(error))
@@ -282,20 +329,27 @@ export class ZmodemAdapter {
 
   private startCurrentFile() {
     const file = this.sendFiles[this.sendIndex]
-    this.sender?.startFile(safeFilename(file.name), file.size)
+    this.sender?.startFile(encodeProtocolFilename(safeFilename(file.name)), file.size)
   }
 
   async cancel() {
     this.selectingFile = false
+    const handle = this.receiveHandle
+    this.receiveGeneration++
+    this.protocolDiscardUntil = Date.now() + zmodemCancelSuppressMs
     this.callbacks.send(new Uint8Array(8).fill(0x18))
-    if (this.receiveHandle) await api.CancelZmodemReceive(this.receiveHandle).catch(() => undefined)
     this.receiver = undefined
     this.sender = undefined
     this.receiveHandle = ''
+    this.receiveBatch = []
+    this.receiveBatchBytes = 0
+    this.receiverInput = new Uint8Array()
+    this.receiveQueue = this.receiveQueue.catch(() => undefined).then(() => undefined)
     this.sendFiles = []
     this.sendIndex = 0
     this.detector.reset()
     this.callbacks.onActive?.(false)
+    if (handle) await api.CancelZmodemReceive(handle).catch(() => undefined)
     this.setStatus('ZMODEM 传输已取消')
   }
 
@@ -323,10 +377,14 @@ export class ZmodemAdapter {
 
   private async maybeYieldReceiver(bytesSinceYield: number) {
     if (bytesSinceYield < zmodemYieldEveryBytes) return bytesSinceYield
-    await this.receiveQueue
+    await this.flushReceiveBatch()
     await yieldToBrowser()
     this.callbacks.onTransferActivity?.()
     return 0
+  }
+
+  private shouldDiscardProtocolInput() {
+    return Date.now() < this.protocolDiscardUntil
   }
 }
 
@@ -390,6 +448,55 @@ function concatBytes(left: Uint8Array, right: Uint8Array) {
   result.set(left)
   result.set(right, left.length)
   return result
+}
+
+function concatChunks(chunks: Uint8Array[], totalLength: number) {
+  const result = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    result.set(chunk, offset)
+    offset += chunk.length
+  }
+  return result
+}
+
+function encodeProtocolFilename(value: string) {
+  const bytes = encoder.encode(value)
+  let result = ''
+  for (const byte of bytes) result += String.fromCharCode(byte)
+  return result
+}
+
+function decodeProtocolFilename(value: string) {
+  const bytes = new Uint8Array(Array.from(value, char => char.charCodeAt(0) & 0xff))
+  const decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  return decoded.includes('\uFFFD') ? value : decoded
+}
+
+function encodeBase64(data: Uint8Array) {
+  if (typeof FileReader !== 'undefined' && typeof Blob !== 'undefined') {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : ''
+        const comma = result.indexOf(',')
+        resolve(comma >= 0 ? result.slice(comma + 1) : result)
+      }
+      reader.onerror = () => reject(reader.error ?? new Error('ZMODEM encode failed'))
+      reader.onabort = () => reject(new Error('ZMODEM encode aborted'))
+      reader.readAsDataURL(new Blob([data]))
+    })
+  }
+  return Promise.resolve(encodeBase64Sync(data))
+}
+
+function encodeBase64Sync(data: Uint8Array) {
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let offset = 0; offset < data.length; offset += chunkSize) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
 }
 
 function longestHeaderPrefixSuffix(buffer: Uint8Array) {

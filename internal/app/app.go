@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -163,6 +164,17 @@ func (a *App) BeginZmodemReceive(name string, size int64) (string, error) {
 }
 
 func (a *App) WriteZmodemReceive(id string, data []byte) error {
+	if len(data) > 1<<20 {
+		return errors.New("ZMODEM chunk is too large")
+	}
+	return a.zmodem.Write(id, data)
+}
+
+func (a *App) WriteZmodemReceiveBase64(id string, encoded string) error {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return err
+	}
 	if len(data) > 1<<20 {
 		return errors.New("ZMODEM chunk is too large")
 	}
