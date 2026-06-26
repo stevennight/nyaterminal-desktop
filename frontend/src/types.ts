@@ -169,6 +169,8 @@ export type RemoteEntry = {
 export type SFTPTransfer = {
   id: string
   connectionId: string
+  sessionId?: string
+  mode: 'sftp' | 'zmodem'
   name: string
   direction: 'upload' | 'download'
   status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'

@@ -15,6 +15,8 @@ import (
 type Transfer struct {
 	ID           string    `json:"id"`
 	ConnectionID string    `json:"connectionId"`
+	SessionID    string    `json:"sessionId,omitempty"`
+	Mode         string    `json:"mode"`
 	Name         string    `json:"name"`
 	Direction    string    `json:"direction"`
 	Status       string    `json:"status"`
@@ -104,7 +106,7 @@ func (s *Service) startTransfer(spec transferSpec, name string, total int64) Tra
 		spec: spec,
 		value: Transfer{
 			ID: uuid.NewString(), ConnectionID: spec.connectionID, Name: name,
-			Direction: spec.direction, Status: "queued", TotalBytes: total,
+			Mode: "sftp", Direction: spec.direction, Status: "queued", TotalBytes: total,
 			CreatedAt: now, UpdatedAt: now,
 		},
 	}

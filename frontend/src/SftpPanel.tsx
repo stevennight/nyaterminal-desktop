@@ -6,10 +6,12 @@ import {
 } from 'lucide-react'
 import { api } from './bridge'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { parentRemotePath, resolveRemotePath } from './sftpPaths'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
 import { useVerticalSplit } from './useVerticalSplit'
 
 const PANEL_TRANSFER_STORAGE_KEY = 'nyaterminal.sftpPanelTransferHeight'
+const PANEL_REMOTE_PATH_STORAGE_PREFIX = 'nyaterminal.sftpRemotePath:'
 const PANEL_FILE_MIN_HEIGHT = 220
 const PANEL_TRANSFER_MIN_HEIGHT = 120
 const PANEL_SPLITTER_HEIGHT = 10
@@ -30,7 +32,8 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   onClose: () => void
   onOpenWorkspace: () => void
 }) {
-  const [remotePath, setRemotePath] = useState('.')
+  const [remotePath, setRemotePath] = useState('')
+  const [remotePathDraft, setRemotePathDraft] = useState('')
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -47,27 +50,57 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
     initialHeight: 150,
     minHeight: PANEL_TRANSFER_MIN_HEIGHT,
   })
+  const storageKey = `${PANEL_REMOTE_PATH_STORAGE_PREFIX}${connection.id}`
 
   const load = async (next = remotePath) => {
     setBusy(true)
     setError('')
     try {
-      setEntries(await api.ListRemote(connection.id, next))
-      setRemotePath(next)
+      const resolved = next.trim() || '.'
+      setEntries(await api.ListRemote(connection.id, resolved))
+      setRemotePath(resolved)
+      setRemotePathDraft(resolved)
       setSelected(undefined)
       setContextMenu(undefined)
       setRenaming(undefined)
+      window.localStorage.setItem(storageKey, resolved)
+      return true
     } catch (value) {
       setError(String(value))
+      return false
     } finally {
       setBusy(false)
     }
   }
 
-  useEffect(() => { void load('.') }, [connection.id])
+  useEffect(() => {
+    let cancelled = false
+    const init = async () => {
+      const stored = window.localStorage.getItem(storageKey)?.trim()
+      if (stored) {
+        if (cancelled) return
+        const loaded = await load(stored)
+        if (loaded) {
+          return
+        }
+      }
+      try {
+        const workingDirectory = await api.GetRemoteWorkingDirectory(connection.id)
+        if (cancelled) return
+        const loaded = await load(workingDirectory || '.')
+        if (loaded) return
+      } catch {
+        if (!cancelled) await load('.')
+      }
+    }
+    void init()
+    return () => {
+      cancelled = true
+    }
+  }, [connection.id])
 
   useEffect(() => {
-    const update = () => void api.ListSFTPTransfers().then(values =>
+    const update = () => void api.ListTransfers().then(values =>
       setTransfers(values.filter(value => value.connectionId === connection.id)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
     ).catch(value => setError(String(value)))
@@ -86,7 +119,7 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
   const createDirectory = async (basePath = remotePath) => {
     const name = window.prompt('新建远端目录名称')
     if (!name?.trim()) return
-    await api.CreateRemoteDirectory(connection.id, joinRemote(basePath, name.trim()))
+    await api.CreateRemoteDirectory(connection.id, resolveRemotePath(basePath, name.trim()))
     await load()
   }
   const openRenameDialog = (entry = selected) => {
@@ -104,7 +137,7 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
     await api.RenameRemote(
       connection.id,
       renaming.entry.path,
-      joinRemote(parentRemote(renaming.entry.path), name),
+      resolveRemotePath(parentRemotePath(renaming.entry.path), name),
     )
     await load()
   }
@@ -192,9 +225,13 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
           <button title="关闭" onClick={onClose}><X size={16} /></button>
         </div>
       </header>
-      <input className="path-input" value={remotePath}
-        onChange={event => setRemotePath(event.target.value)}
-        onKeyDown={event => event.key === 'Enter' && void load(remotePath)} />
+      <input className="path-input" value={remotePathDraft}
+        onChange={event => setRemotePathDraft(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            void load(resolveRemotePath(remotePath, remotePathDraft))
+          }
+        }} />
       {error && <div className="inline-error">{error}</div>}
       <div className="panel-main" ref={panelBodyRef}>
         <div className="file-list" onClick={event => {
@@ -240,25 +277,34 @@ export function SftpPanel({ connection, onClose, onOpenWorkspace }: {
           <strong>传输队列</strong>
           {!transfers.length && <span>暂无任务</span>}
           {!!transfers.length && <div className="panel-transfer-list">
-            {transfers.map(item => <div key={item.id} className={`panel-transfer ${item.status}`}>
-            <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
-            <span title={item.name}>{item.name}</span>
-            <small>{transferStatus(item)}</small>
-            <div>
-              {(item.status === 'running' || item.status === 'queued') &&
-                <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
-                  <Pause size={12} />
-                </button>}
-              {(item.status === 'paused' || item.status === 'failed') &&
-                <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
-                  <Play size={12} />
-                </button>}
-              {!['completed', 'cancelled'].includes(item.status) &&
-                <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
-                  <Square size={11} />
-                </button>}
-            </div>
-            </div>)}
+            {transfers.map(item => {
+              const zmodemSessionId = item.mode === 'zmodem' ? item.sessionId : undefined
+              return <div key={item.id} className={`panel-transfer ${item.status}`}>
+          <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
+          <span className="transfer-mode">{transferModeLabel(item.mode)}</span>
+          <span className="panel-transfer-details" title={item.name}>{item.name}</span>
+          <small>{transferStatus(item)}</small>
+          <div>
+            {item.mode === 'sftp' && (item.status === 'running' || item.status === 'queued') &&
+              <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
+                <Pause size={12} />
+              </button>}
+            {item.mode === 'sftp' && (item.status === 'paused' || item.status === 'failed') &&
+              <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
+                <Play size={12} />
+              </button>}
+            {item.mode === 'sftp' && !['completed', 'cancelled'].includes(item.status) &&
+              <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
+                <Square size={11} />
+              </button>}
+            {zmodemSessionId &&
+              !['completed', 'cancelled', 'failed'].includes(item.status) &&
+              <button title="取消" onClick={() => void api.CancelZmodem(zmodemSessionId!)}>
+                <Square size={11} />
+              </button>}
+          </div>
+          </div>
+            })}
           </div>}
         </div>
       </div>
@@ -330,15 +376,8 @@ function transferStatus(item: SFTPTransfer) {
   return `${labels[item.status]} · ${progress}`
 }
 
-function joinRemote(parent: string, name: string) {
-  return `${parent.replace(/\/+$/, '')}/${name}`.replace(/^\.\//, '')
-}
-
-function parentRemote(value: string) {
-  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
-  const index = normalized.lastIndexOf('/')
-  if (index < 0) return '.'
-  return normalized.slice(0, index) || '/'
+function transferModeLabel(value: SFTPTransfer['mode']) {
+  return value === 'zmodem' ? 'ZMODEM' : 'SFTP'
 }
 
 function modalPortalTarget() {

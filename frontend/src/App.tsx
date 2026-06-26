@@ -8,6 +8,12 @@ import {
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
 import { cloneConnectionDraft } from './connectionDraft'
+import {
+  deleteCommandHistory,
+  deleteCommandHistoryRecords,
+  loadCommandHistoryEntries,
+  refreshCommandHistorySuggestions,
+} from './commandHistorySuggestions'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
@@ -500,6 +506,11 @@ export function App() {
       // Ignore storage failures; the in-memory theme still updates.
     }
   }, [bootstrap?.settings?.theme])
+
+  useEffect(() => {
+    if (!bootstrap || bootstrap.vault.locked) return
+    void refreshCommandHistorySuggestions().catch(() => undefined)
+  }, [bootstrap?.vault.locked])
 
   useEffect(() => {
     try {
@@ -1996,7 +2007,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
   const loadCommandHistory = async () => {
     setHistoryLoading(true)
     try {
-      setHistoryEntries(await api.ListCommandHistory())
+      setHistoryEntries(await loadCommandHistoryEntries())
       setHistoryReveal(new Set())
     } catch (error) {
       showNotice('读取命令历史失败', localizeError(error))
@@ -2010,7 +2021,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
     if (!ids.length) return
     if (!window.confirm(message)) return
     try {
-      await api.DeleteCommandHistoryRecords(ids)
+      await deleteCommandHistoryRecords(ids)
       const removed = new Set(ids)
       setHistoryEntries(current => current.filter(row => !removed.has(row.id)))
       setHistoryReveal(current => new Set(Array.from(current).filter(id => !removed.has(id))))
@@ -2023,7 +2034,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
   const deleteHistoryCommand = async (entry: CommandHistory) => {
     if (!window.confirm('删除这条命令历史？连接历史会同时移除同命令的全局副本。')) return
     try {
-      await api.DeleteCommandHistory(entry.connectionId, entry.command)
+      await deleteCommandHistory(entry.connectionId, entry.command)
       const removedIds = new Set(
         historyEntries.filter(row => sameManagedHistoryCommand(row, entry)).map(row => row.id)
       )
@@ -2099,6 +2110,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
       const result = await api.SyncNow(next.syncSecretsByDefault, next.syncCommandHistory)
       showNotice('同步完成', `上传 ${result.pushed}，下载 ${result.pulled}，冲突 ${result.conflicts}。`)
       await onReload()
+      void refreshCommandHistorySuggestions().catch(() => undefined)
     } catch (error) {
       showNotice('同步失败', localizeError(error))
     } finally {

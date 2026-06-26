@@ -67,6 +67,14 @@ func TestSFTPTransferQueueUploadsAndResumesDownload(t *testing.T) {
 	defer manager.Close()
 	service := New(manager)
 
+	workingDirectory, err := service.RemoteWorkingDirectory(ctx, connection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(workingDirectory) != filepath.Clean(remoteRoot) {
+		t.Fatalf("unexpected remote working directory: %q", workingDirectory)
+	}
+
 	payload := bytes.Repeat([]byte("NyaTerminal-SFTP-"), 64*1024)
 	localRoot := t.TempDir()
 	source := filepath.Join(localRoot, "source.bin")

@@ -212,6 +212,26 @@ func (s *Service) ListRemote(ctx context.Context, connectionID, remotePath strin
 	return result, nil
 }
 
+func (s *Service) RemoteWorkingDirectory(ctx context.Context, connectionID string) (string, error) {
+	client, sftpClient, err := s.connect(ctx, connectionID)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	defer sftpClient.Close()
+	if workingDirectory, err := sftpClient.Getwd(); err == nil {
+		if cleaned, cleanErr := cleanRemote(workingDirectory); cleanErr == nil && cleaned != "." {
+			return normalizeRemoteDisplayPath(cleaned), nil
+		}
+	}
+	if resolved, err := sftpClient.RealPath("."); err == nil {
+		if cleaned, cleanErr := cleanRemote(resolved); cleanErr == nil {
+			return normalizeRemoteDisplayPath(cleaned), nil
+		}
+	}
+	return ".", errors.New("remote working directory is unavailable")
+}
+
 func (s *Service) CreateRemoteDirectory(
 	ctx context.Context, connectionID, remotePath string,
 ) error {
@@ -432,6 +452,14 @@ func cleanRemote(value string) (string, error) {
 		return "", errors.New("remote path traversal is not allowed")
 	}
 	return cleaned, nil
+}
+
+func normalizeRemoteDisplayPath(value string) string {
+	if len(value) >= 3 && value[0] == '/' && value[2] == ':' &&
+		((value[1] >= 'A' && value[1] <= 'Z') || (value[1] >= 'a' && value[1] <= 'z')) {
+		return value[1:]
+	}
+	return value
 }
 
 func validateLocalFile(value string) (string, error) {

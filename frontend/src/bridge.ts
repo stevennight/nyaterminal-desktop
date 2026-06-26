@@ -49,6 +49,9 @@ type Backend = {
   CancelZmodem(sessionId: string): Promise<void>
   AnswerSSHChallenge(id: string, answers: string[], cancelled: boolean): Promise<void>
   ListRemote(connectionId: string, remotePath: string): Promise<RemoteEntry[]>
+  GetRemoteWorkingDirectory(connectionId: string): Promise<string>
+  GetDefaultSFTPLocalDirectory(): Promise<string>
+  GrantLocalDirectory(path: string): Promise<{ token: string; path: string; items: RemoteEntry[] }>
   ChooseLocalDirectory(): Promise<{ token: string; path: string; items: RemoteEntry[] }>
   ListLocal(token: string, relativePath: string): Promise<RemoteEntry[]>
   CreateLocalDirectory(token: string, relativePath: string): Promise<void>
@@ -64,6 +67,7 @@ type Backend = {
     connectionId: string, remotePath: string, token: string,
     localRelativePath: string, overwrite: boolean
   ): Promise<SFTPTransfer>
+  ListTransfers(): Promise<SFTPTransfer[]>
   ListSFTPTransfers(): Promise<SFTPTransfer[]>
   PauseSFTPTransfer(id: string): Promise<void>
   ResumeSFTPTransfer(id: string): Promise<void>

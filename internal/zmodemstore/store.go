@@ -4,14 +4,19 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/nyaterminal/nyaterminal/desktop/internal/sftpclient"
 )
 
 type Store struct {
-	mu    sync.Mutex
-	files map[string]*pendingFile
+	mu        sync.Mutex
+	files     map[string]*pendingFile
+	transfers map[string]*sftpclient.Transfer
+	active    map[string]string
 }
 
 type pendingFile struct {
@@ -22,10 +27,25 @@ type pendingFile struct {
 	written   int64
 }
 
+type TransferUpdate struct {
+	SessionID    string
+	ConnectionID string
+	Name         string
+	Direction    string
+	Status       string
+	BytesDone    int64
+	TotalBytes   int64
+	Error        string
+}
+
 const maxReceiveSize = int64(100 << 30)
 
 func New() *Store {
-	return &Store{files: make(map[string]*pendingFile)}
+	return &Store{
+		files:     make(map[string]*pendingFile),
+		transfers: make(map[string]*sftpclient.Transfer),
+		active:    make(map[string]string),
+	}
 }
 
 func (s *Store) Begin(finalPath string, expected int64) (string, error) {
@@ -52,6 +72,62 @@ func (s *Store) Begin(finalPath string, expected int64) (string, error) {
 	}
 	s.mu.Unlock()
 	return id, nil
+}
+
+func (s *Store) Record(update TransferUpdate) {
+	if update.SessionID == "" || update.ConnectionID == "" || update.Name == "" || update.Status == "" {
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.active[update.SessionID]
+	record := s.transfers[id]
+	if update.Status == "running" {
+		if record == nil || record.Mode != "zmodem" || record.Name != update.Name ||
+			record.Direction != update.Direction || record.ConnectionID != update.ConnectionID {
+			id = uuid.NewString()
+			record = &sftpclient.Transfer{
+				ID: id, ConnectionID: update.ConnectionID, SessionID: update.SessionID, Mode: "zmodem",
+				Name: update.Name, Direction: update.Direction, Status: update.Status,
+				BytesDone: update.BytesDone, TotalBytes: update.TotalBytes,
+				Error: update.Error, CreatedAt: now, UpdatedAt: now,
+			}
+			s.transfers[id] = record
+			s.active[update.SessionID] = id
+			return
+		}
+	}
+	if record == nil {
+		id = uuid.NewString()
+		record = &sftpclient.Transfer{
+			ID: id, ConnectionID: update.ConnectionID, SessionID: update.SessionID, Mode: "zmodem",
+			Name: update.Name, Direction: update.Direction, Status: update.Status,
+			BytesDone: update.BytesDone, TotalBytes: update.TotalBytes,
+			Error: update.Error, CreatedAt: now, UpdatedAt: now,
+		}
+		s.transfers[id] = record
+		if isTransferTerminal(update.Status) {
+			return
+		}
+		s.active[update.SessionID] = id
+		return
+	}
+	record.ConnectionID = update.ConnectionID
+	record.SessionID = update.SessionID
+	record.Mode = "zmodem"
+	record.Name = update.Name
+	record.Direction = update.Direction
+	record.Status = update.Status
+	record.BytesDone = update.BytesDone
+	if update.TotalBytes > 0 || record.TotalBytes == 0 {
+		record.TotalBytes = update.TotalBytes
+	}
+	record.Error = update.Error
+	record.UpdatedAt = now
+	if isTransferTerminal(update.Status) {
+		delete(s.active, update.SessionID)
+	}
 }
 
 func (s *Store) Write(id string, data []byte) error {
@@ -130,5 +206,30 @@ func (s *Store) Close() {
 	for _, pending := range files {
 		_ = pending.file.Close()
 		_ = os.Remove(pending.tempPath)
+	}
+}
+
+func (s *Store) ListTransfers() []sftpclient.Transfer {
+	s.mu.Lock()
+	result := make([]sftpclient.Transfer, 0, len(s.transfers))
+	for _, transfer := range s.transfers {
+		result = append(result, *transfer)
+	}
+	s.mu.Unlock()
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].UpdatedAt.After(result[j].UpdatedAt)
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	return result
+}
+
+func isTransferTerminal(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
 	}
 }

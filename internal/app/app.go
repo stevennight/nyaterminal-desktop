@@ -481,6 +481,18 @@ func (a *App) ListRemote(connectionID, remotePath string) ([]sftpclient.Entry, e
 	return a.sftp.ListRemote(a.context(), connectionID, remotePath)
 }
 
+func (a *App) GetRemoteWorkingDirectory(connectionID string) (string, error) {
+	return a.sftp.RemoteWorkingDirectory(a.context(), connectionID)
+}
+
+func (a *App) GetDefaultSFTPLocalDirectory() (string, error) {
+	return defaultSFTPLocalDirectory(), nil
+}
+
+func (a *App) GrantLocalDirectory(path string) (sftpclient.LocalLocation, error) {
+	return a.sftp.GrantLocalDirectory(path)
+}
+
 func (a *App) ChooseLocalDirectory() (sftpclient.LocalLocation, error) {
 	localPath, err := runtime.OpenDirectoryDialog(a.context(), runtime.OpenDialogOptions{
 		Title: "选择本地 SFTP 工作目录",
@@ -488,7 +500,7 @@ func (a *App) ChooseLocalDirectory() (sftpclient.LocalLocation, error) {
 	if err != nil || localPath == "" {
 		return sftpclient.LocalLocation{}, err
 	}
-	return a.sftp.GrantLocalDirectory(localPath)
+	return a.GrantLocalDirectory(localPath)
 }
 
 func (a *App) ListLocal(token, relativePath string) ([]sftpclient.Entry, error) {
@@ -541,6 +553,17 @@ func (a *App) StartSFTPDownload(
 
 func (a *App) ListSFTPTransfers() []sftpclient.Transfer {
 	return a.sftp.ListTransfers()
+}
+
+func (a *App) ListTransfers() []sftpclient.Transfer {
+	transfers := make([]sftpclient.Transfer, 0)
+	if a.sftp != nil {
+		transfers = append(transfers, a.sftp.ListTransfers()...)
+	}
+	if a.zmodem != nil {
+		transfers = append(transfers, a.zmodem.ListTransfers()...)
+	}
+	return transfers
 }
 
 func (a *App) PauseSFTPTransfer(id string) error {

@@ -8,6 +8,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { ClipboardCopy, ClipboardPaste, TextSelect, Trash2 } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
+import { deleteCommandHistory, recordCommandHistory, suggestCommandHistory } from './commandHistorySuggestions'
 import { ZmodemAdapter } from './zmodem'
 import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
 import { TerminalEchoGuard } from './terminalEchoGuard'
@@ -51,6 +52,8 @@ export function TerminalView({
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef('')
+  const connectionRef = useRef(connection)
+  const settingsRef = useRef(settings)
   const [status, setStatus] = useState('Connecting...')
   const [zmodemActive, setZmodemActive] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -87,6 +90,8 @@ export function TerminalView({
   onActivityRef.current = onActivity
   onZmodemActiveChangeRef.current = onZmodemActiveChange
   onCloseRef.current = onClose
+  connectionRef.current = connection
+  settingsRef.current = settings
 
   useEffect(() => {
     suggestionsRef.current = suggestions
@@ -200,7 +205,13 @@ export function TerminalView({
       : undefined
     const terminalDecoder = outputDecoder ?? new TextDecoder()
     const addCommandHistory = (command: string) => {
-      void api.AddCommandHistory(connection.id, command, privateSession)
+      void recordCommandHistory(
+        connectionRef.current.id,
+        connectionRef.current.commandHistory ?? false,
+        command,
+        privateSession,
+        settingsRef.current.sensitiveCommandRules,
+      ).catch(() => undefined)
     }
     const updateSuggestionPosition = (count = suggestionsRef.current.length) => {
       const pane = paneRef.current
@@ -263,7 +274,7 @@ export function TerminalView({
       setActiveSuggestion(Math.min(index, Math.max(next.length - 1, 0)), next.length)
       if (next.length) updateSuggestionPosition(next.length)
       else setSuggestionPosition(null)
-      void api.DeleteCommandHistory(connection.id, target.command).catch(error => {
+      void deleteCommandHistory(connectionRef.current.id, target.command).catch(error => {
         hiddenSuggestionCommands.delete(target.command)
         const message = error instanceof Error ? error.message : String(error)
         setStatus(`Delete history failed: ${message}`)
@@ -277,7 +288,11 @@ export function TerminalView({
       }
       const request = ++suggestionRequest
       suggestionTimer = window.setTimeout(() => {
-        void api.SuggestCommands(connection.id, prefix)
+        void suggestCommandHistory(
+          connectionRef.current.id,
+          connectionRef.current.commandHistory ?? false,
+          prefix,
+        )
           .then(values => {
             if (disposed || request !== suggestionRequest || lineRef.current !== prefix) return
             const next = values

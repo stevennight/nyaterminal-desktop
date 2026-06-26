@@ -1,13 +1,26 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import {
-  ArrowDown, ArrowLeft, ArrowUp, Folder, FolderOpen, FolderPlus, GripHorizontal, Pause,
+  ArrowLeft, ArrowRight, Folder, FolderOpen, FolderPlus, GripHorizontal, Pause,
   Pencil, Play, RefreshCw, Square, Trash2, X
 } from 'lucide-react'
 import { api } from './bridge'
+import {
+  joinLocalDisplayPath,
+  joinLocalRelativePath,
+  joinRemotePath,
+  localRelativePath,
+  parentLocalDisplayPath,
+  parentRemotePath,
+  resolveLocalPath,
+  resolveRemotePath,
+} from './sftpPaths'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
 import { useVerticalSplit } from './useVerticalSplit'
 
 const WORKSPACE_QUEUE_STORAGE_KEY = 'nyaterminal.sftpWorkspaceQueueHeight'
+const WORKSPACE_LOCAL_ROOT_STORAGE_PREFIX = 'nyaterminal.sftpWorkspaceLocalRoot:'
+const WORKSPACE_LOCAL_PATH_STORAGE_PREFIX = 'nyaterminal.sftpWorkspaceLocalPath:'
+const WORKSPACE_REMOTE_PATH_STORAGE_PREFIX = 'nyaterminal.sftpRemotePath:'
 const WORKSPACE_MAIN_MIN_HEIGHT = 300
 const WORKSPACE_QUEUE_MIN_HEIGHT = 180
 const WORKSPACE_SPLITTER_HEIGHT = 10
@@ -18,8 +31,10 @@ export function SftpWorkspace({ connection, onClose }: {
 }) {
   const [token, setToken] = useState('')
   const [localRoot, setLocalRoot] = useState('')
-  const [localPath, setLocalPath] = useState('.')
-  const [remotePath, setRemotePath] = useState('.')
+  const [localPath, setLocalPath] = useState('')
+  const [localPathDraft, setLocalPathDraft] = useState('')
+  const [remotePath, setRemotePath] = useState('')
+  const [remotePathDraft, setRemotePathDraft] = useState('')
   const [localItems, setLocalItems] = useState<RemoteEntry[]>([])
   const [remoteItems, setRemoteItems] = useState<RemoteEntry[]>([])
   const [selectedLocal, setSelectedLocal] = useState<RemoteEntry[]>([])
@@ -36,49 +51,183 @@ export function SftpWorkspace({ connection, onClose }: {
     minHeight: WORKSPACE_QUEUE_MIN_HEIGHT,
   })
 
+  const localRootKey = `${WORKSPACE_LOCAL_ROOT_STORAGE_PREFIX}${connection.id}`
+  const localPathKey = `${WORKSPACE_LOCAL_PATH_STORAGE_PREFIX}${connection.id}`
+  const remotePathKey = `${WORKSPACE_REMOTE_PATH_STORAGE_PREFIX}${connection.id}`
+
+  const currentLocalRelative = localRelativePath(localRoot, localPath) ?? '.'
+
+  const persistLocalPath = (root: string, path: string) => {
+    window.localStorage.setItem(localRootKey, root)
+    window.localStorage.setItem(localPathKey, path)
+  }
+
+  const persistRemotePath = (path: string) => {
+    window.localStorage.setItem(remotePathKey, path)
+  }
+
+  const applyGrantedLocalLocation = async (
+    location: { token: string; path: string; items: RemoteEntry[] },
+    preferredPath?: string,
+  ) => {
+    const preferredResolved = preferredPath
+      ? resolveLocalPath(location.path, preferredPath)
+      : location.path
+    const preferredRelative = localRelativePath(location.path, preferredResolved)
+    let nextItems = location.items
+    let nextPath = location.path
+    if (preferredRelative && preferredRelative !== '.') {
+      try {
+        nextItems = await api.ListLocal(location.token, preferredRelative)
+        nextPath = preferredResolved
+      } catch {
+        nextItems = location.items
+        nextPath = location.path
+      }
+    } else if (preferredRelative === '.') {
+      nextPath = location.path
+    }
+    setToken(location.token)
+    setLocalRoot(location.path)
+    setLocalPath(nextPath)
+    setLocalPathDraft(nextPath)
+    setLocalItems(nextItems)
+    setSelectedLocal([])
+    persistLocalPath(location.path, nextPath)
+  }
+
+  const grantLocalDirectory = async (requestedPath: string, preferredPath?: string) => {
+    try {
+      setError('')
+      const target = resolveLocalPath(localPath || localRoot || '.', requestedPath)
+      const location = await api.GrantLocalDirectory(target)
+      await applyGrantedLocalLocation(location, preferredPath ?? target)
+      return true
+    } catch (reason) {
+      setError(String(reason))
+      return false
+    }
+  }
+
   const chooseLocal = async () => {
     try {
       setError('')
       const location = await api.ChooseLocalDirectory()
       if (!location.token) return
-      setToken(location.token)
-      setLocalRoot(location.path)
-      setLocalPath('.')
-      setLocalItems(location.items)
-      setSelectedLocal([])
+      await applyGrantedLocalLocation(location)
     } catch (reason) {
       setError(String(reason))
     }
   }
 
   const loadLocal = async (next = localPath) => {
-    if (!token) return
+    if (!token || !localRoot) return false
+    setError('')
+    const resolved = resolveLocalPath(localPath || localRoot || '.', next)
+    const relative = localRelativePath(localRoot, resolved)
+    if (relative === null) {
+      return grantLocalDirectory(resolved)
+    }
     try {
-      setLocalItems(await api.ListLocal(token, next))
-      setLocalPath(next)
+      setLocalItems(await api.ListLocal(token, relative))
+      setLocalPath(resolved)
+      setLocalPathDraft(resolved)
       setSelectedLocal([])
+      persistLocalPath(localRoot, resolved)
+      return true
     } catch (reason) {
       setError(String(reason))
+      return false
     }
   }
 
   const loadRemote = async (next = remotePath) => {
+    setError('')
+    const resolved = resolveRemotePath(remotePath || '.', next)
     try {
-      setRemoteItems(await api.ListRemote(connection.id, next))
-      setRemotePath(next)
+      setRemoteItems(await api.ListRemote(connection.id, resolved))
+      setRemotePath(resolved)
+      setRemotePathDraft(resolved)
       setSelectedRemote([])
+      persistRemotePath(resolved)
+      return true
     } catch (reason) {
       setError(String(reason))
+      return false
     }
   }
 
+  const openLocalPath = async () => {
+    if (!localPathDraft.trim()) return
+    await loadLocal(localPathDraft)
+  }
+
+  const openRemotePath = async () => {
+    if (!remotePathDraft.trim()) return
+    await loadRemote(remotePathDraft)
+  }
+
   useEffect(() => {
-    void chooseLocal()
-    void loadRemote('.')
+    let cancelled = false
+    const init = async () => {
+      const storedRoot = window.localStorage.getItem(localRootKey)?.trim()
+      const storedPath = window.localStorage.getItem(localPathKey)?.trim()
+      try {
+        if (storedRoot) {
+          const granted = await grantLocalDirectory(storedRoot, storedPath || undefined)
+          if (cancelled || granted) return
+        }
+        const defaultRoot = await api.GetDefaultSFTPLocalDirectory()
+        if (cancelled) return
+        const granted = await grantLocalDirectory(defaultRoot || '.', storedPath || undefined)
+        if (cancelled || granted) return
+      } catch {
+        if (!cancelled) {
+          try {
+            const location = await api.ChooseLocalDirectory()
+            if (!cancelled && location.token) {
+              await applyGrantedLocalLocation(location, storedPath || undefined)
+            }
+          } catch (reason) {
+            if (!cancelled) setError(String(reason))
+          }
+        }
+      }
+    }
+    void init()
+    return () => {
+      cancelled = true
+    }
   }, [connection.id])
 
   useEffect(() => {
-    const update = () => void api.ListSFTPTransfers().then(values =>
+    let cancelled = false
+    const init = async () => {
+      const stored = window.localStorage.getItem(remotePathKey)?.trim()
+      if (stored) {
+        if (cancelled) return
+        const loaded = await loadRemote(stored)
+        if (loaded) {
+          return
+        }
+      }
+      try {
+        const workingDirectory = await api.GetRemoteWorkingDirectory(connection.id)
+        if (cancelled) return
+        const loaded = await loadRemote(workingDirectory || '.')
+        if (loaded) return
+      } catch {
+        if (!cancelled) await loadRemote('.')
+      }
+    }
+    void init()
+    return () => {
+      cancelled = true
+    }
+  }, [connection.id])
+
+  useEffect(() => {
+    const update = () => void api.ListTransfers().then(values =>
       setTransfers(values.filter(value => value.connectionId === connection.id)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
     ).catch(reason => setError(String(reason)))
@@ -106,11 +255,11 @@ export function SftpWorkspace({ connection, onClose }: {
         if (destinationExists && !overwrite) continue
         if (direction === 'upload') {
           await api.StartSFTPUpload(
-            connection.id, token, source.path, joinRemote(remotePath, source.name), overwrite
+            connection.id, token, source.path, joinRemotePath(remotePath, source.name), overwrite
           )
         } else {
           await api.StartSFTPDownload(
-            connection.id, source.path, token, joinLocal(localPath, source.name), overwrite
+            connection.id, source.path, token, joinLocalRelativePath(currentLocalRelative, source.name), overwrite
           )
         }
       }
@@ -131,7 +280,7 @@ export function SftpWorkspace({ connection, onClose }: {
     const name = window.prompt('请输入本地目录名')
     if (!name?.trim()) return
     try {
-      await api.CreateLocalDirectory(token, joinLocal(localPath, name.trim()))
+      await api.CreateLocalDirectory(token, joinLocalRelativePath(currentLocalRelative, name.trim()))
       await loadLocal()
     } catch (reason) {
       setError(String(reason))
@@ -144,7 +293,7 @@ export function SftpWorkspace({ connection, onClose }: {
     const name = window.prompt('请输入新名称', selected.name)
     if (!name?.trim() || name.trim() === selected.name) return
     try {
-      await api.RenameLocal(token, selected.path, joinLocal(localPath, name.trim()))
+      await api.RenameLocal(token, selected.path, joinLocalRelativePath(currentLocalRelative, name.trim()))
       await loadLocal()
     } catch (reason) {
       setError(String(reason))
@@ -167,7 +316,7 @@ export function SftpWorkspace({ connection, onClose }: {
     const name = window.prompt('请输入远端目录名')
     if (!name?.trim()) return
     try {
-      await api.CreateRemoteDirectory(connection.id, joinRemote(remotePath, name.trim()))
+      await api.CreateRemoteDirectory(connection.id, joinRemotePath(remotePath, name.trim()))
       await loadRemote()
     } catch (reason) {
       setError(String(reason))
@@ -180,7 +329,7 @@ export function SftpWorkspace({ connection, onClose }: {
     const name = window.prompt('请输入新名称', selected.name)
     if (!name?.trim() || name.trim() === selected.name) return
     try {
-      await api.RenameRemote(connection.id, selected.path, joinRemote(remotePath, name.trim()))
+      await api.RenameRemote(connection.id, selected.path, joinRemotePath(parentRemotePath(selected.path), name.trim()))
       await loadRemote()
     } catch (reason) {
       setError(String(reason))
@@ -219,7 +368,7 @@ export function SftpWorkspace({ connection, onClose }: {
           <FileColumn
             title="本地"
             root={localRoot || '尚未选择目录'}
-            path={localPath}
+            path={localPathDraft}
             items={localItems}
             selected={selectedLocal.map(item => item.path)}
             side="local"
@@ -236,12 +385,14 @@ export function SftpWorkspace({ connection, onClose }: {
             </>}
             onChooseRoot={() => void chooseLocal()}
             onRefresh={() => void loadLocal()}
-            onParent={() => void loadLocal(parentLocal(localPath))}
+            onParent={() => void loadLocal(parentLocalDisplayPath(localRoot || localPath, localPath))}
+            onPathChange={value => setLocalPathDraft(value)}
+            onPathSubmit={() => void openLocalPath()}
             onSelect={(entry, additive) => setSelectedLocal(current => additive
               ? current.some(item => item.path === entry.path)
                 ? current.filter(item => item.path !== entry.path) : [...current, entry]
               : [entry])}
-            onOpen={entry => entry.isDir && void loadLocal(entry.path)}
+            onOpen={entry => entry.isDir && void loadLocal(joinLocalDisplayPath(localPath, entry.name))}
             onDragEntries={entry => selectedLocal.some(item => item.path === entry.path)
               ? selectedLocal : [entry]}
             onDropFiles={(source, paths) => void dropTransfer('local', source, paths)}
@@ -252,20 +403,20 @@ export function SftpWorkspace({ connection, onClose }: {
               title="上传到远端"
               onClick={() => void transfer('upload')}
             >
-              <ArrowUp size={18} />
+              <ArrowRight size={18} />
             </button>
             <button
               disabled={!selectedRemote.some(item => !item.isDir)}
               title="下载到本地"
               onClick={() => void transfer('download')}
             >
-              <ArrowDown size={18} />
+              <ArrowLeft size={18} />
             </button>
           </div>
           <FileColumn
             title="远端"
             root={`${connection.username}@${connection.host}`}
-            path={remotePath}
+            path={remotePathDraft}
             items={remoteItems}
             selected={selectedRemote.map(item => item.path)}
             side="remote"
@@ -281,7 +432,9 @@ export function SftpWorkspace({ connection, onClose }: {
               </button>
             </>}
             onRefresh={() => void loadRemote()}
-            onParent={() => void loadRemote(parentRemote(remotePath))}
+            onParent={() => void loadRemote(parentRemotePath(remotePath))}
+            onPathChange={value => setRemotePathDraft(value)}
+            onPathSubmit={() => void openRemotePath()}
             onSelect={(entry, additive) => setSelectedRemote(current => additive
               ? current.some(item => item.path === entry.path)
                 ? current.filter(item => item.path !== entry.path) : [...current, entry]
@@ -304,25 +457,37 @@ export function SftpWorkspace({ connection, onClose }: {
         <div className="transfer-queue">
           <strong>传输队列</strong>
           {!transfers.length && <span>当前没有传输任务</span>}
-          {transfers.map(item => <div key={item.id} className={`transfer-item ${item.status}`}>
-            <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
-            <span>{item.name}<progress max={Math.max(1, item.totalBytes)} value={item.bytesDone} /></span>
-            <small>{transferStatus(item)}</small>
-            <div className="transfer-controls">
-              {(item.status === 'running' || item.status === 'queued') &&
-                <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
-                  <Pause size={13} />
-                </button>}
-              {(item.status === 'paused' || item.status === 'failed') &&
-                <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
-                  <Play size={13} />
-                </button>}
-              {!['completed', 'cancelled'].includes(item.status) &&
-                <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
-                  <Square size={12} />
-                </button>}
+          {transfers.map(item => {
+            const zmodemSessionId = item.mode === 'zmodem' ? item.sessionId : undefined
+            return <div key={item.id} className={`transfer-item ${item.status}`}>
+              <i>{item.direction === 'upload' ? '↑' : '↓'}</i>
+              <span className="transfer-mode">{transferModeLabel(item.mode)}</span>
+              <span className="transfer-details">
+                {item.name}
+                <progress max={Math.max(1, item.totalBytes)} value={item.bytesDone} />
+              </span>
+              <small>{transferStatus(item)}</small>
+              <div className="transfer-controls">
+                {item.mode === 'sftp' && (item.status === 'running' || item.status === 'queued') &&
+                  <button title="暂停" onClick={() => void api.PauseSFTPTransfer(item.id)}>
+                    <Pause size={13} />
+                  </button>}
+                {item.mode === 'sftp' && (item.status === 'paused' || item.status === 'failed') &&
+                  <button title="继续" onClick={() => void api.ResumeSFTPTransfer(item.id)}>
+                    <Play size={13} />
+                  </button>}
+                {item.mode === 'sftp' && !['completed', 'cancelled'].includes(item.status) &&
+                  <button title="取消" onClick={() => void api.CancelSFTPTransfer(item.id)}>
+                    <Square size={12} />
+                  </button>}
+                {zmodemSessionId &&
+                  !['completed', 'cancelled', 'failed'].includes(item.status) &&
+                  <button title="取消" onClick={() => void api.CancelZmodem(zmodemSessionId!)}>
+                    <Square size={12} />
+                  </button>}
+              </div>
             </div>
-          </div>)}
+          })}
         </div>
       </div>
     </section>
@@ -340,17 +505,30 @@ function transferStatus(item: SFTPTransfer) {
     paused: '已暂停',
     completed: '已完成',
     failed: '失败',
-    cancelled: '已取消'
+    cancelled: '已取消',
   }
   return `${labels[item.status]} · ${progress}`
 }
 
+function transferModeLabel(value: SFTPTransfer['mode']) {
+  return value === 'zmodem' ? 'ZMODEM' : 'SFTP'
+}
+
 function FileColumn({ title, root, path, items, selected, side, onChooseRoot, onRefresh,
-  onParent, onSelect, onOpen, onDragEntries, onDropFiles, actions }: {
-  title: string; root: string; path: string; items: RemoteEntry[]; selected: string[]
+  onParent, onPathChange, onPathSubmit, onSelect, onOpen, onDragEntries, onDropFiles, actions }: {
+  title: string
+  root: string
+  path: string
+  items: RemoteEntry[]
+  selected: string[]
   side: 'local' | 'remote'
-  onChooseRoot?: () => void; onRefresh: () => void; onParent: () => void
-  onSelect: (entry: RemoteEntry, additive: boolean) => void; onOpen: (entry: RemoteEntry) => void
+  onChooseRoot?: () => void
+  onRefresh: () => void
+  onParent: () => void
+  onPathChange: (value: string) => void
+  onPathSubmit: () => void
+  onSelect: (entry: RemoteEntry, additive: boolean) => void
+  onOpen: (entry: RemoteEntry) => void
   onDragEntries: (entry: RemoteEntry) => RemoteEntry[]
   onDropFiles: (source: 'local' | 'remote', paths: string[]) => void
   actions: ReactNode
@@ -367,7 +545,18 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
         <button title="刷新" onClick={onRefresh}><RefreshCw size={15} /></button>
       </div>
     </header>
-    <div className="column-path">{path}</div>
+    <div className="column-path">
+      <input
+        className="column-path-input"
+        value={path}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={event => onPathChange(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') onPathSubmit()
+        }}
+      />
+    </div>
     <div className="column-actions">{actions}</div>
     <div className="column-head"><span>名称</span><span>大小</span><span>修改时间</span></div>
     <div
@@ -413,27 +602,6 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
   </section>
 }
 
-function parentRemote(value: string) {
-  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
-  const index = normalized.lastIndexOf('/')
-  if (index < 0) return '.'
-  return normalized.slice(0, index) || '/'
-}
-
-function parentLocal(value: string) {
-  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
-  const index = normalized.lastIndexOf('/')
-  return index < 0 ? '.' : normalized.slice(0, index) || '.'
-}
-
-function joinRemote(parent: string, name: string) {
-  return `${parent.replace(/\/+$/, '')}/${name}`.replace(/^\.\//, '')
-}
-
-function joinLocal(parent: string, name: string) {
-  return parent === '.' ? name : `${parent.replace(/\/+$/, '')}/${name}`
-}
-
 function formatSize(value: number) {
   if (value < 1024) return `${value} B`
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
@@ -443,6 +611,6 @@ function formatSize(value: number) {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString(undefined, {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   })
 }
