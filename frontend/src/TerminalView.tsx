@@ -392,8 +392,8 @@ export function TerminalView({
           } else if (char === '\x7f') {
             echoGuard.backspace()
           } else if (char === '\t') {
-            // Tab completion changes the remote shell buffer in a way the
-            // terminal cannot reconstruct reliably.
+            // Tab completion can redraw the line or emit prompts that we
+            // cannot safely distinguish from command text.
             echoGuard.markUnreliable()
           } else if (char < ' ' || char === '\x1b') {
             echoGuard.markUnreliable()
