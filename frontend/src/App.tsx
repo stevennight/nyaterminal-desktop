@@ -1084,8 +1084,9 @@ export function App() {
         {!sessions.length && <Welcome onCreate={() => setConnectionEditor({ ...emptyConnection })} />}
         <div className="terminal-stack">
           {sessions.map(tab => (
-            <TerminalView key={`${tab.id}:${tab.attempt}`} connection={tab.connection}
+            <TerminalView key={tab.id} connection={tab.connection}
               settings={settings} active={tab.id === activeSession}
+              attempt={tab.attempt}
               privateSession={tab.privateSession}
               reconnectMessage={tab.reconnectMessage}
               credentialOverride={tab.credentialOverride}

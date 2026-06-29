@@ -26,6 +26,7 @@ type Props = {
   connection: Connection
   settings: Settings
   active: boolean
+  attempt: number
   privateSession: boolean
   reconnectMessage?: string
   credentialOverride?: {
@@ -45,7 +46,7 @@ type Props = {
 }
 
 export function TerminalView({
-  connection, settings, active, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onActivity, onZmodemActiveChange, onClose
+  connection, settings, active, attempt, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onActivity, onZmodemActiveChange, onClose
 }: Props) {
   const paneRef = useRef<HTMLElement>(null)
   const host = useRef<HTMLDivElement>(null)
@@ -54,6 +55,14 @@ export function TerminalView({
   const sessionIdRef = useRef('')
   const connectionRef = useRef(connection)
   const settingsRef = useRef(settings)
+  const credentialOverrideRef = useRef(credentialOverride)
+  const activeRef = useRef(active)
+  const attemptRef = useRef(attempt)
+  const handledAttemptRef = useRef<number | undefined>(undefined)
+  const reconnectMessageRef = useRef('')
+  const startConnectionRef = useRef<((attemptValue: number) => void) | undefined>(undefined)
+  const hasConnectedRef = useRef(false)
+  const wasDisconnectedRef = useRef(false)
   const [status, setStatus] = useState('Connecting...')
   const [zmodemActive, setZmodemActive] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -92,6 +101,9 @@ export function TerminalView({
   onCloseRef.current = onClose
   connectionRef.current = connection
   settingsRef.current = settings
+  credentialOverrideRef.current = credentialOverride
+  activeRef.current = active
+  attemptRef.current = attempt
 
   useEffect(() => {
     suggestionsRef.current = suggestions
@@ -146,10 +158,21 @@ export function TerminalView({
     terminal.selectAll()
     syncSelection()
   }
+  const writeTerminalNotice = (message: string, color = '38;5;244') => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    terminal.write(`\r\n\x1b[${color}m[${sanitizeTerminalNotice(message)}]\x1b[0m\r\n`)
+  }
 
   useEffect(() => {
-    if (!reconnectMessage) return
+    if (!reconnectMessage) {
+      reconnectMessageRef.current = ''
+      return
+    }
+    if (reconnectMessageRef.current === reconnectMessage) return
+    reconnectMessageRef.current = reconnectMessage
     setStatus(reconnectMessage)
+    writeTerminalNotice(reconnectMessage)
   }, [reconnectMessage])
 
   useEffect(() => {
@@ -199,11 +222,8 @@ export function TerminalView({
     let zmodemStatusUnsubscribe: (() => void) | undefined
     let disposed = false
     const hiddenSuggestionCommands = new Set<string>()
-    const echoGuard = new TerminalEchoGuard()
-    const outputDecoder = connection.encoding && connection.encoding.toLowerCase() !== 'utf-8'
-      ? new TextDecoder(connection.encoding)
-      : undefined
-    const terminalDecoder = outputDecoder ?? new TextDecoder()
+    let echoGuard = new TerminalEchoGuard()
+    let terminalDecoder = terminalDecoderFor(connectionRef.current.encoding)
     const addCommandHistory = (command: string) => {
       void recordCommandHistory(
         connectionRef.current.id,
@@ -305,26 +325,70 @@ export function TerminalView({
           })
           .catch(() => {
             if (!disposed && request === suggestionRequest) clearSuggestions()
-          })
+        })
       }, 180)
     }
+    const resetEchoTracking = () => {
+      echoGuard = new TerminalEchoGuard()
+      lineRef.current = ''
+      clearSuggestions()
+    }
+    const closeCurrentConnection = (notifyBackend: boolean) => {
+      const currentSocket = socket
+      socket = undefined
+      socketRef.current = undefined
+      if (currentSocket) {
+        currentSocket.onopen = null
+        currentSocket.onmessage = null
+        currentSocket.onerror = null
+        currentSocket.onclose = null
+        if (currentSocket.readyState === WebSocket.OPEN ||
+          currentSocket.readyState === WebSocket.CONNECTING) {
+          currentSocket.close()
+        }
+      }
+      zmodemStatusUnsubscribe?.()
+      zmodemStatusUnsubscribe = undefined
+      zmodemRef.current = undefined
+      if (zmodemActiveRef.current) onZmodemActiveChangeRef.current?.(false)
+      zmodemActiveRef.current = false
+      backendZmodemActiveRef.current = false
+      setZmodemActive(false)
+      if (sessionId) {
+        const closedSessionId = sessionId
+        sessionId = ''
+        sessionIdRef.current = ''
+        if (notifyBackend) void api.CloseSSH(closedSessionId)
+      }
+      resetEchoTracking()
+    }
 
-    const connect = async () => {
+    const connect = async (attemptValue: number) => {
+      closeCurrentConnection(true)
+      handledAttemptRef.current = attemptValue
+      terminalDecoder = terminalDecoderFor(connectionRef.current.encoding)
+      setStatus(hasConnectedRef.current || wasDisconnectedRef.current ? 'Reconnecting...' : 'Connecting...')
       const result = await api.StartSSH({
-        connectionId: connection.id,
+        connectionId: connectionRef.current.id,
         columns: terminal.cols,
         rows: terminal.rows,
         interactionResponses: [],
-        credentialOverride
+        credentialOverride: credentialOverrideRef.current
       })
-      if (disposed) return
+      if (disposed || attemptRef.current !== attemptValue) {
+        if (result.session) void api.CloseSSH(result.session.sessionId)
+        return
+      }
       if (result.hostKey) {
-        setStatus(result.hostKey.changed ? 'Host key changed' : 'Host key confirmed')
+        const message = result.hostKey.changed ? 'Host key changed' : 'Host key confirmation required'
+        setStatus(message)
+        writeTerminalNotice(message)
         onHostKeyRef.current(result.hostKey)
         return
       }
       if (result.authPrompt) {
         setStatus(result.authPrompt.message)
+        writeTerminalNotice(result.authPrompt.message)
         onAuthPromptRef.current(result.authPrompt)
         return
       }
@@ -342,22 +406,25 @@ export function TerminalView({
         setStatus(value.message)
       })
       socket = new WebSocket(result.session.url)
+      const currentSocket = socket
+      const connectionEchoGuard = echoGuard
       socketRef.current = socket
       socket.binaryType = 'arraybuffer'
       const zmodem = new ZmodemAdapter({
         toTerminal: data => {
+          if (disposed || attemptRef.current !== attemptValue) return
           const text = terminalDecoder.decode(data, { stream: true })
-          for (const command of echoGuard.observeOutput(text)) addCommandHistory(command)
+          for (const command of connectionEchoGuard.observeOutput(text)) addCommandHistory(command)
           terminal.write(text)
-          lineRef.current = echoGuard.line
+          lineRef.current = connectionEchoGuard.line
           updateSuggestionPosition()
-          if (echoGuard.canSuggest()) scheduleSuggestions(echoGuard.line)
+          if (connectionEchoGuard.canSuggest()) scheduleSuggestions(connectionEchoGuard.line)
           else clearSuggestions()
         },
         send: data => {
-          if (socket?.readyState === WebSocket.OPEN) socket.send(data)
+          if (currentSocket.readyState === WebSocket.OPEN) currentSocket.send(data)
         },
-        waitForSendBuffer: () => waitForWebSocketBuffer(socket),
+        waitForSendBuffer: () => waitForWebSocketBuffer(currentSocket),
         onStatus: setStatus,
         onActive: value => {
           zmodemActiveRef.current = value
@@ -367,12 +434,43 @@ export function TerminalView({
         onTransferActivity: () => onActivityRef.current?.()
       })
       zmodemRef.current = zmodem
-      socket.onopen = () => setStatus('Connected')
-      socket.onmessage = event => zmodem.consume(new Uint8Array(event.data as ArrayBuffer))
-      socket.onerror = () => setStatus('Connection error')
+      let socketHadError = false
+      socket.onopen = () => {
+        if (disposed || attemptRef.current !== attemptValue) return
+        setStatus('Connected')
+        if (wasDisconnectedRef.current) writeTerminalNotice('已重连')
+        hasConnectedRef.current = true
+        wasDisconnectedRef.current = false
+      }
+      socket.onmessage = event => {
+        if (disposed || attemptRef.current !== attemptValue) return
+        zmodem.consume(new Uint8Array(event.data as ArrayBuffer))
+      }
+      socket.onerror = () => {
+        if (disposed || attemptRef.current !== attemptValue) return
+        socketHadError = true
+        setStatus('Connection error')
+        writeTerminalNotice('Connection error', '31')
+      }
       socket.onclose = () => {
+        if (disposed || attemptRef.current !== attemptValue) return
+        if (sessionId === result.session?.sessionId) {
+          sessionId = ''
+          sessionIdRef.current = ''
+        }
+        socket = undefined
+        socketRef.current = undefined
+        zmodemStatusUnsubscribe?.()
+        zmodemStatusUnsubscribe = undefined
+        zmodemRef.current = undefined
+        if (zmodemActiveRef.current) onZmodemActiveChangeRef.current?.(false)
+        zmodemActiveRef.current = false
+        backendZmodemActiveRef.current = false
+        setZmodemActive(false)
+        resetEchoTracking()
+        wasDisconnectedRef.current = true
         setStatus('Connection closed')
-        terminal.write('\r\n\x1b[38;5;244m[Connection closed]\x1b[0m\r\n')
+        writeTerminalNotice(socketHadError ? 'Connection closed after error' : 'Connection closed')
         onRetryableDisconnectRef.current({ message: 'Connection closed', retryable: true })
       }
       applySuggestionRef.current = command => {
@@ -384,8 +482,28 @@ export function TerminalView({
         clearSuggestions()
       }
       deleteSuggestionRef.current = deleteSuggestion
+    }
+
+    startConnectionRef.current = attemptValue => {
+      void connect(attemptValue).catch(error => {
+        if (disposed || attemptRef.current !== attemptValue) return
+        closeCurrentConnection(true)
+        const message = error instanceof Error ? error.message : String(error)
+        const retryable = !/host key|password is required|private key is required|rejected by the server|invalid|cancelled|timed out/i.test(message)
+        wasDisconnectedRef.current = true
+        setStatus(message)
+        writeTerminalNotice(message, '31')
+        onRetryableDisconnectRef.current({ message, retryable })
+      })
+    }
+
       terminal.onData(data => {
-        for (const chunk of chunkTerminalInput(data)) socket?.send(chunk)
+        const openSocket = socket?.readyState === WebSocket.OPEN ? socket : undefined
+        if (!openSocket) {
+          clearSuggestions()
+          return
+        }
+        for (const chunk of chunkTerminalInput(data)) openSocket.send(chunk)
         for (const char of data) {
           if (char === '\r') {
             echoGuard.submit()
@@ -457,17 +575,10 @@ export function TerminalView({
         if (sessionId) void api.ResizeSSH(sessionId, size.cols, size.rows)
         updateSuggestionPosition()
       })
-    }
 
-    connect().catch(error => {
-      const message = error instanceof Error ? error.message : String(error)
-      const retryable = !/host key|password is required|private key is required|rejected by the server|invalid|cancelled|timed out/i.test(message)
-      setStatus(message)
-      terminal.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`)
-      onRetryableDisconnectRef.current({ message, retryable })
-    })
+    startConnectionRef.current(attemptRef.current)
     const observer = new ResizeObserver(() => {
-      if (active) {
+      if (activeRef.current) {
         fit.fit()
         updateSuggestionPosition()
       }
@@ -487,6 +598,7 @@ export function TerminalView({
       searchRef.current = undefined
       fitRef.current = null
       sessionIdRef.current = ''
+      startConnectionRef.current = undefined
       applySuggestionRef.current = () => undefined
       deleteSuggestionRef.current = () => undefined
       window.clearTimeout(suggestionTimer)
@@ -494,12 +606,12 @@ export function TerminalView({
       terminal.dispose()
       onCloseRef.current()
     }
-  }, [
-    connection.id,
-    credentialOverride?.password,
-    credentialOverride?.privateKeyPem,
-    credentialOverride?.passphrase,
-  ])
+  }, [])
+
+  useEffect(() => {
+    if (handledAttemptRef.current === attempt) return
+    startConnectionRef.current?.(attempt)
+  }, [attempt])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -685,6 +797,22 @@ function waitForWebSocketBuffer(socket?: WebSocket) {
     }
     window.setTimeout(poll, zmodemBufferedAmountPollMs)
   })
+}
+
+function terminalDecoderFor(encoding?: string) {
+  const label = encoding?.trim()
+  return label && label.toLowerCase() !== 'utf-8'
+    ? new TextDecoder(label)
+    : new TextDecoder()
+}
+
+function sanitizeTerminalNotice(value: string) {
+  const stripped = value
+    .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+  return stripped || 'Connection status changed'
 }
 
 function suggestionPopupWidth(paneWidth: number, suggestions: CommandHistory[]) {
