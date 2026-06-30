@@ -35,6 +35,7 @@ type App struct {
 	syncRunning        bool
 	syncPending        bool
 	syncLastTrigger    time.Time
+	syncTimer          *time.Timer
 	syncStop           chan struct{}
 	challengeMu        sync.Mutex
 	challenges         map[string]chan challengeResponse
@@ -121,6 +122,7 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 	go a.syncLoop()
+	a.triggerSyncSoon()
 }
 
 func (a *App) Shutdown(_ context.Context) {
@@ -130,6 +132,10 @@ func (a *App) Shutdown(_ context.Context) {
 func (a *App) Close() error {
 	a.syncCloseOnce.Do(func() {
 		a.syncMu.Lock()
+		if a.syncTimer != nil {
+			a.syncTimer.Stop()
+			a.syncTimer = nil
+		}
 		if a.syncStop != nil {
 			close(a.syncStop)
 			a.syncStop = nil
@@ -242,6 +248,9 @@ func (a *App) Unlock(password string) error {
 	defer a.finishUnlockAttempt()
 	err := a.vault.Unlock(a.context(), password)
 	a.recordUnlockResult(err)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
 	return err
 }
 
@@ -252,6 +261,9 @@ func (a *App) UnlockWithSystem() error {
 	defer a.finishUnlockAttempt()
 	err := a.vault.UnlockQuick(a.context(), "default")
 	a.recordUnlockResult(err)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
 	return err
 }
 
@@ -616,9 +628,13 @@ func (a *App) DownloadFile(
 func (a *App) RecoverSync(
 	serverURL, username, password, totpCode, deviceName, recoveryCode string,
 ) (syncclient.SetupResult, error) {
-	return a.sync.Recover(
+	result, err := a.sync.Recover(
 		a.context(), serverURL, username, password, totpCode, deviceName, recoveryCode,
 	)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) RotateSyncRecoveryCode(password, totpCode string) (string, error) {
@@ -634,11 +650,19 @@ func (a *App) SyncServerStatus(serverURL string) (syncclient.RemoteStatus, error
 }
 
 func (a *App) InitializeSync(deviceName string) (syncclient.SetupResult, error) {
-	return a.sync.InitializeSync(a.context(), deviceName)
+	result, err := a.sync.InitializeSync(a.context(), deviceName)
+	if err == nil {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) LoginAccount(serverURL, username, password, deviceID, secondFactor string) error {
-	return a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID, secondFactor)
+	if err := a.sync.LoginAccount(a.context(), serverURL, username, password, deviceID, secondFactor); err != nil {
+		return err
+	}
+	a.triggerSyncSoon()
+	return nil
 }
 
 func (a *App) LogoutAccount() error {
@@ -666,7 +690,11 @@ func (a *App) ApproveDevicePairing(approvalCode string) error {
 func (a *App) ClaimDevicePairing(
 	username, password, totpCode string,
 ) (syncclient.PairingClaim, error) {
-	return a.sync.ClaimPairing(a.context(), username, password, totpCode)
+	result, err := a.sync.ClaimPairing(a.context(), username, password, totpCode)
+	if err == nil && result.Approved {
+		a.triggerSyncSoon()
+	}
+	return result, err
 }
 
 func (a *App) ListSyncDevices() ([]syncclient.Device, error) {
@@ -698,7 +726,13 @@ func (a *App) DisableSyncTOTP(password, code string) error {
 }
 
 func (a *App) SetSyncAutoEnabled(enabled bool) error {
-	return a.sync.SetAutoSyncEnabled(a.context(), enabled)
+	if err := a.sync.SetAutoSyncEnabled(a.context(), enabled); err != nil {
+		return err
+	}
+	if enabled {
+		a.triggerSyncSoon()
+	}
+	return nil
 }
 
 func (a *App) context() context.Context {
@@ -764,16 +798,30 @@ func (a *App) syncLoop() {
 
 func (a *App) triggerSyncSoon() {
 	a.syncMu.Lock()
-	defer a.syncMu.Unlock()
 	if a.syncStop == nil || a.syncRunning {
 		a.syncPending = true
+		a.syncMu.Unlock()
 		return
 	}
-	if time.Since(a.syncLastTrigger) < 20*time.Second {
+	since := time.Since(a.syncLastTrigger)
+	if since < 20*time.Second {
 		a.syncPending = true
+		delay := 20*time.Second - since
+		if a.syncTimer != nil {
+			a.syncTimer.Stop()
+		}
+		a.syncTimer = time.AfterFunc(delay, func() {
+			a.syncMu.Lock()
+			a.syncTimer = nil
+			a.syncLastTrigger = time.Now()
+			a.syncMu.Unlock()
+			a.runSyncOnce()
+		})
+		a.syncMu.Unlock()
 		return
 	}
 	a.syncLastTrigger = time.Now()
+	a.syncMu.Unlock()
 	go a.runSyncOnce()
 }
 
@@ -784,6 +832,8 @@ func (a *App) runSyncOnce() {
 		return
 	}
 	a.syncRunning = true
+	a.syncPending = false
+	a.syncLastTrigger = time.Now()
 	a.syncMu.Unlock()
 
 	defer func() {

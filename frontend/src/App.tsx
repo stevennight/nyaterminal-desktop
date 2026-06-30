@@ -56,6 +56,7 @@ type SSHAuthPrompt = {
 
 type ThemeName = 'dark' | 'light'
 type ConnectionSortMode = 'default' | 'natural' | 'recent'
+type TabSortMode = 'manual' | 'grouped'
 type RenameTabState = { id: string; value: string }
 type TerminalThemeField = keyof TerminalThemeColors
 type SettingsSectionId = 'appearance' | 'terminal' | 'history' | 'security' | 'sync' | 'about'
@@ -86,6 +87,7 @@ type ContextMenuState = {
 
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 const CONNECTION_SORT_STORAGE_KEY = 'nyaterminal.connectionSortMode'
+const TAB_SORT_STORAGE_KEY = 'nyaterminal.tabSortMode'
 const DEFAULT_TAG_COLOR = '#62D9CA'
 const AUTO_RECONNECT_LIMIT = 5
 const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
@@ -106,6 +108,10 @@ const CONNECTION_SORT_OPTIONS: ReadonlyArray<{ mode: ConnectionSortMode; label: 
   { mode: 'natural', label: '自然排序（按名称）' },
   { mode: 'recent', label: '最近更新' },
 ]
+const TAB_SORT_OPTIONS: ReadonlyArray<{ mode: TabSortMode; label: string }> = [
+  { mode: 'manual', label: '手动排序' },
+  { mode: 'grouped', label: '按服务器分组' },
+]
 
 const emptyConnection: Connection = {
   id: '', name: '', remark: '', host: '', port: 22, username: 'root',
@@ -121,6 +127,10 @@ function isThemeName(value: string | null | undefined): value is ThemeName {
 
 function isConnectionSortMode(value: string | null | undefined): value is ConnectionSortMode {
   return value === 'default' || value === 'natural' || value === 'recent'
+}
+
+function isTabSortMode(value: string | null | undefined): value is TabSortMode {
+  return value === 'manual' || value === 'grouped'
 }
 
 function getPreferredTheme(): ThemeName {
@@ -143,6 +153,17 @@ function getPreferredConnectionSortMode(): ConnectionSortMode {
     // Ignore storage failures and fall back to the saved order.
   }
   return 'default'
+}
+
+function getPreferredTabSortMode(): TabSortMode {
+  if (typeof window === 'undefined') return 'manual'
+  try {
+    const stored = window.localStorage.getItem(TAB_SORT_STORAGE_KEY)
+    if (isTabSortMode(stored)) return stored
+  } catch {
+    // Ignore storage failures and fall back to the manual order.
+  }
+  return 'manual'
 }
 
 function formatDateTime(value?: string) {
@@ -326,6 +347,18 @@ function sessionLabel(session: Pick<SessionTab, 'title' | 'connection'>) {
   return session.title?.trim() || connectionLabel(session.connection)
 }
 
+function sessionServerKey(session: Pick<SessionTab, 'connection'>) {
+  const connection = session.connection
+  return `${connection.host.toLowerCase()}:${connection.port}`
+}
+
+function sessionServerLabel(session: Pick<SessionTab, 'connection'>) {
+  const connection = session.connection
+  return connection.name
+    ? `${connection.name} (${connection.host}:${connection.port})`
+    : `${connection.host}:${connection.port}`
+}
+
 function sortGroups(groups: Group[]) {
   return [...groups].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
 }
@@ -454,6 +487,7 @@ export function App() {
   const [theme, setTheme] = useState<ThemeName>(() => getPreferredTheme())
   const [connectionSortMode, setConnectionSortMode] =
     useState<ConnectionSortMode>(() => getPreferredConnectionSortMode())
+  const [tabSortMode, setTabSortMode] = useState<TabSortMode>(() => getPreferredTabSortMode())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
   const [tagEditor, setTagEditor] = useState<TagEditorState>()
@@ -480,7 +514,17 @@ export function App() {
   const tabMenu = useRef<HTMLDivElement>(null)
   const tabMenuButton = useRef<HTMLButtonElement>(null)
   const tabButtons = useRef<Record<string, HTMLButtonElement | null>>({})
-
+  const sessionDisplayOrder = useMemo(() => {
+    if (tabSortMode === 'manual') return sessions
+    return sessions.map((tab, index) => ({ tab, index })).sort((left, right) => {
+      const serverOrder = compareNaturalText(
+        sessionServerKey(left.tab),
+        sessionServerKey(right.tab)
+      )
+      if (serverOrder !== 0) return serverOrder
+      return left.index - right.index
+    }).map(item => item.tab)
+  }, [sessions, tabSortMode])
   const reload = useCallback(async () => {
     try {
       setError('')
@@ -519,6 +563,14 @@ export function App() {
       // Ignore storage failures; the in-memory sort still updates.
     }
   }, [connectionSortMode])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TAB_SORT_STORAGE_KEY, tabSortMode)
+    } catch {
+      // Ignore storage failures; the in-memory tab order still updates.
+    }
+  }, [tabSortMode])
 
   useEffect(() => {
     return window.runtime?.EventsOn?.('ssh:interactive-challenge', value => {
@@ -910,6 +962,39 @@ export function App() {
     setRenamingTab(undefined)
   }
 
+  const moveSessionBefore = (sourceId: string, targetId: string) => {
+    if (!sourceId || sourceId === targetId) return
+    setTabSortMode('manual')
+    setSessions(current => {
+      const byId = new Map(current.map(item => [item.id, item]))
+      const orderedIds = sessionDisplayOrder
+        .map(item => item.id)
+        .filter(id => byId.has(id))
+      for (const item of current) {
+        if (!orderedIds.includes(item.id)) orderedIds.push(item.id)
+      }
+      const sourceIndex = orderedIds.indexOf(sourceId)
+      const targetIndex = orderedIds.indexOf(targetId)
+      if (sourceIndex < 0 || targetIndex < 0) return current
+      const [source] = orderedIds.splice(sourceIndex, 1)
+      orderedIds.splice(sourceIndex < targetIndex ? targetIndex - 1 : targetIndex, 0, source)
+      return orderedIds.map(id => byId.get(id)).filter((item): item is SessionTab => Boolean(item))
+    })
+  }
+
+  const showTabSortMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    const rect = event.currentTarget.getBoundingClientRect()
+    setContextMenu({
+      x: rect.right - 180,
+      y: rect.bottom + 6,
+      items: TAB_SORT_OPTIONS.map(option => ({
+        label: `${tabSortMode === option.mode ? '当前 - ' : ''}${option.label}`,
+        onSelect: () => setTabSortMode(option.mode),
+      })),
+    })
+  }
+
   const handleTabListWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     const container = event.currentTarget
     if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
@@ -998,13 +1083,30 @@ export function App() {
         <div className="tabbar">
           <div className="tab-scroll" ref={tabScroll} onWheel={handleTabListWheel}>
             <div className="tab-strip">
-              {sessions.map(tab => (
+              {sessionDisplayOrder.map(tab => (
                 <button
                   key={tab.id}
                   ref={node => { tabButtons.current[tab.id] = node }}
                   className={`session-tab ${tab.id === activeSession ? 'active' : ''}`}
+                  draggable
                   onClick={() => setActiveSession(tab.id)}
                   onDoubleClick={() => openRenameTab(tab)}
+                  onDragStart={event => {
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('application/x-nya-session-tab', tab.id)
+                  }}
+                  onDragOver={event => {
+                    if (Array.from(event.dataTransfer.types).includes('application/x-nya-session-tab')) {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                    }
+                  }}
+                  onDrop={event => {
+                    const sourceId = event.dataTransfer.getData('application/x-nya-session-tab')
+                    if (!sourceId) return
+                    event.preventDefault()
+                    moveSessionBefore(sourceId, tab.id)
+                  }}
                   title={sessionLabel(tab)}
                 >
                   <TerminalSquare size={15} /><span>{sessionLabel(tab)}</span>
@@ -1023,6 +1125,13 @@ export function App() {
           </div>
           <div className="tabbar-actions">
             <button
+              className={`tab-menu-toggle ${tabSortMode !== 'manual' ? 'active' : ''}`}
+              onClick={showTabSortMenu}
+              title={tabSortMode === 'grouped' ? '标签页排序：按服务器分组' : '标签页排序：手动排序'}
+            >
+              <ArrowUpDown size={16} />
+            </button>
+            <button
               ref={tabMenuButton}
               className={`tab-menu-toggle ${tabMenuOpen ? 'active' : ''}`}
               onClick={() => setTabMenuOpen(current => !current)}
@@ -1033,7 +1142,7 @@ export function App() {
             {tabMenuOpen && (
               <div className="tab-switcher-menu" ref={tabMenu}>
                 <div className="tab-switcher-list">
-                  {sessions.length ? sessions.map(tab => (
+                  {sessionDisplayOrder.length ? sessionDisplayOrder.map(tab => (
                     <div key={tab.id} className={`tab-switcher-item ${tab.id === activeSession ? 'active' : ''}`}>
                       <button
                         className="tab-switcher-select"
@@ -1046,7 +1155,9 @@ export function App() {
                         <TerminalSquare size={15} />
                         <span className="tab-switcher-copy">
                           <strong>{sessionLabel(tab)}</strong>
-                          <small>{tab.connection.username}@{tab.connection.host}:{tab.connection.port}</small>
+                          <small>{tabSortMode === 'grouped'
+                            ? `${sessionServerLabel(tab)} · ${tab.connection.username}@${tab.connection.host}:${tab.connection.port}`
+                            : `${tab.connection.username}@${tab.connection.host}:${tab.connection.port}`}</small>
                         </span>
                       </button>
                       <button

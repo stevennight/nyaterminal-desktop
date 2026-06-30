@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
 	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
 	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
 )
@@ -229,6 +230,120 @@ func TestAuthorizedRequestPersistsRefreshedTokens(t *testing.T) {
 	}
 	if loaded.AccessToken != "new-access" || loaded.RefreshToken != "new-refresh" {
 		t.Fatalf("refreshed tokens were not persisted: %#v", loaded)
+	}
+}
+
+func TestFailedPushDoesNotMarkLocalRecordSynced(t *testing.T) {
+	pushUnauthorized := true
+	var pushedConnections int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sync/push":
+			if pushUnauthorized {
+				http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+				return
+			}
+			var body struct {
+				Records []serverRecord `json:"records"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for _, record := range body.Records {
+				if record.EntityType == store.TypeConnection {
+					pushedConnections++
+				}
+			}
+			writeJSON(t, w, map[string]int64{"logicalTime": int64(len(body.Records))})
+		case "/api/v1/sync/pull":
+			writeJSON(t, w, map[string]any{
+				"records": []serverRecord{},
+				"next":    0,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	syncRootKey := make([]byte, 32)
+	fillRandom(t, syncRootKey)
+	profile := Profile{
+		ServerURL:          server.URL,
+		Username:           "owner",
+		DeviceID:           "11111111-1111-1111-1111-111111111111",
+		DeviceName:         "laptop",
+		AutoSyncEnabled:    boolPtr(true),
+		ExchangePrivateKey: make([]byte, 32),
+		ExchangePublicKey:  make([]byte, 32),
+		SigningPrivateKey:  make([]byte, 64),
+		SigningPublicKey:   make([]byte, 32),
+		SyncRootKey:        syncRootKey,
+	}
+	session := AccountSession{
+		ServerURL: server.URL, Username: "owner", DeviceID: profile.DeviceID,
+		DeviceName: "laptop", AccessToken: "access", RefreshToken: "refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+	if err := client.saveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, store.TypeSyncState, stateID, State{Records: map[string]RecordState{}}); err != nil {
+		t.Fatal(err)
+	}
+	s := store.New(v)
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "server", Host: "example.test", Port: 22, Username: "root",
+		Authentication: "agent", Encoding: "utf-8", CommandHistory: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Sync(ctx, false, false); err == nil {
+		t.Fatal("expected unauthorized push to fail")
+	}
+	var state State
+	if err := v.Get(ctx, store.TypeSyncState, stateID, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Records[connection.ID].Version != 0 {
+		t.Fatalf("failed push marked connection as synced: %#v", state.Records[connection.ID])
+	}
+
+	pushUnauthorized = false
+	session.AccessToken = "new-access"
+	session.RefreshToken = "new-refresh"
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Sync(ctx, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Pushed == 0 || pushedConnections != 1 {
+		t.Fatalf("connection was not retried after login: result=%#v pushedConnections=%d", result, pushedConnections)
+	}
+	if err := v.Get(ctx, store.TypeSyncState, stateID, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Records[connection.ID].Version == 0 {
+		t.Fatalf("successful push did not mark connection synced: %#v", state.Records[connection.ID])
 	}
 }
 

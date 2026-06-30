@@ -930,6 +930,7 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 	}()
 	var outgoing []serverRecord
 	var pushedDeletions []string
+	pendingStates := make(map[string]RecordState)
 	for _, record := range records {
 		if record.Type == store.TypeCredential &&
 			!credentialPayloadAllowed(record.ID, record.Data, syncSecrets, credentialOverrides) {
@@ -960,7 +961,7 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 			Version: version, VersionVector: vector,
 			Nonce: nonce, Ciphertext: ciphertext, ContentHash: contentHash[:],
 		})
-		state.Records[record.ID] = RecordState{
+		pendingStates[record.ID] = RecordState{
 			Version: version, Vector: vector, Hash: plainHash[:], Fields: fields,
 		}
 	}
@@ -999,7 +1000,7 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 			VersionVector: vector,
 			Nonce:         nonce, Ciphertext: ciphertext, ContentHash: contentHash[:],
 		})
-		state.Records[deletion.EntityID] = RecordState{
+		pendingStates[deletion.EntityID] = RecordState{
 			Version: version, Vector: vector, Hash: plainHash[:], Tombstone: true,
 		}
 		pushedDeletions = append(pushedDeletions, deletion.ID)
@@ -1020,6 +1021,9 @@ func (c *Client) Sync(ctx context.Context, syncSecrets, syncHistory bool) (resul
 	)
 	if err != nil {
 		return SyncResult{}, err
+	}
+	for id, next := range pendingStates {
+		state.Records[id] = next
 	}
 	state.Cursor = next
 	result = SyncResult{
