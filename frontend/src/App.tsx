@@ -1,9 +1,9 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ArrowUpDown, ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
+  ArrowUpDown, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
-  Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
+  RefreshCw, Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
@@ -23,8 +23,8 @@ import {
   resolveTerminalThemeColors, terminalChromeVariables,
 } from './terminalThemes'
 import type {
-  AccountSummary, Bootstrap, CommandHistory, Connection, Credential, Group, InteractiveChallenge,
-  PendingHostKey, Settings, SyncSummary, Tag, TerminalThemeColors
+  AccountSummary, Bootstrap, BuildInfo, CommandHistory, Connection, Credential, Group, InteractiveChallenge,
+  PendingHostKey, Settings, SyncSummary, Tag, TerminalThemeColors, UpdateCheckResult
 } from './types'
 
 type SessionTab = {
@@ -70,6 +70,8 @@ type AppBuildInfo = {
   version: string
   buildNumber: string
   buildDateTime: string
+  commit?: string
+  updateRepository?: string
   libraries: AppLibraryDeclaration[]
 }
 type GroupEditorState = {
@@ -94,6 +96,29 @@ const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
 const NATURAL_SORTER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 declare const __APP_INFO__: AppBuildInfo
 const APP_INFO = __APP_INFO__
+function mergedBuildInfo(value?: BuildInfo): BuildInfo {
+  return {
+    version: value?.version || APP_INFO.version,
+    commit: value?.commit || APP_INFO.commit,
+    buildDate: value?.buildDate || APP_INFO.buildDateTime,
+    updateRepository: value?.updateRepository || APP_INFO.updateRepository,
+  }
+}
+
+function displayBuildValue(value: string | undefined, fallback = '-') {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : fallback
+}
+
+function openExternalURL(url: string | undefined) {
+  if (!url) return
+  if (window.runtime?.BrowserOpenURL) {
+    window.runtime.BrowserOpenURL(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 const LIBRARY_SOURCE_LABELS: Record<AppLibraryDeclaration['source'], string> = {
   frontend: '前端',
   go: '桌面端',
@@ -505,6 +530,10 @@ export function App() {
   const [activeTag, setActiveTag] = useState('')
   const [syncBusy, setSyncBusy] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuState>()
+  const [buildInfo, setBuildInfo] = useState<BuildInfo>()
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult>()
+  const [updateCheckBusy, setUpdateCheckBusy] = useState(false)
+  const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false)
   const activityTimer = useRef<number | undefined>(undefined)
   const sessionsRef = useRef<SessionTab[]>([])
   const closedTabsRef = useRef(new Set<string>())
@@ -533,8 +562,31 @@ export function App() {
       setError(localizeError(value))
     }
   }, [])
+  const checkForUpdates = useCallback(async () => {
+    setUpdateCheckBusy(true)
+    try {
+      const result = await api.CheckForUpdates()
+      setUpdateCheck(result)
+      if (result.updateAvailable) setUpdateNoticeDismissed(false)
+      return result
+    } finally {
+      setUpdateCheckBusy(false)
+    }
+  }, [])
+  const effectiveBuildInfo = useMemo(() => mergedBuildInfo(buildInfo), [buildInfo])
 
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    let cancelled = false
+    void api.BuildInfo()
+      .then(value => {
+        if (!cancelled) setBuildInfo(value)
+      })
+      .catch(() => undefined)
+    void checkForUpdates().catch(() => undefined)
+    return () => { cancelled = true }
+  }, [checkForUpdates])
 
   useEffect(() => {
     sessionsRef.current = sessions
@@ -1025,6 +1077,7 @@ export function App() {
 
   const settings = bootstrap.settings!
   const activeTab = sessions.find(session => session.id === activeSession)
+  const showUpdateNotice = updateCheck?.updateAvailable && !updateNoticeDismissed
 
   return (
     <div className={`app-shell theme-${settings.theme}`}>
@@ -1192,6 +1245,24 @@ export function App() {
             </button>
           )}
         </div>
+        {showUpdateNotice && updateCheck && (
+          <div className="update-banner">
+            <Info size={18} />
+            <div>
+              <strong>发现 NyaTerminal {updateCheck.latestVersion}</strong>
+              <small>当前版本 {effectiveBuildInfo.version}</small>
+            </div>
+            <button className="secondary" type="button"
+              disabled={!updateCheck.releaseUrl}
+              onClick={() => openExternalURL(updateCheck.releaseUrl)}>
+              <ExternalLink size={14} />Release
+            </button>
+            <button className="icon-button" type="button" title="关闭更新提醒"
+              onClick={() => setUpdateNoticeDismissed(true)}>
+              <X size={14} />
+            </button>
+          </div>
+        )}
         {!sessions.length && <Welcome onCreate={() => setConnectionEditor({ ...emptyConnection })} />}
         <div className="terminal-stack">
           {sessions.map(tab => (
@@ -1299,8 +1370,13 @@ export function App() {
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
         syncSummary={bootstrap.syncSummary}
         connections={bootstrap.connections ?? []}
+        buildInfo={effectiveBuildInfo}
+        updateCheck={updateCheck}
+        updateCheckBusy={updateCheckBusy}
         syncBusy={syncBusy}
         onSyncBusyChange={setSyncBusy}
+        onCheckForUpdates={checkForUpdates}
+        onOpenRelease={openExternalURL}
         onClose={() => setSettingsOpen(false)}
         onReload={reload}
         onSaved={async () => { setSettingsOpen(false); await reload() }} />}
@@ -2043,9 +2119,14 @@ function TagEditor({ initial, onClose, onSaved }: {
   </Modal>
 }
 
-function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSyncBusyChange, onClose, onSaved, onReload }: {
+function SettingsDialog({
+  value, vault, syncSummary, connections, buildInfo, updateCheck, updateCheckBusy,
+  syncBusy, onSyncBusyChange, onCheckForUpdates, onOpenRelease, onClose, onSaved, onReload
+}: {
   value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary; connections: Connection[]
+  buildInfo: BuildInfo; updateCheck?: UpdateCheckResult; updateCheckBusy: boolean
   syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
+  onCheckForUpdates: () => Promise<UpdateCheckResult>; onOpenRelease: (url: string | undefined) => void
   onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
   const [next, setNext] = useState<Settings>(() => ({
@@ -2113,6 +2194,19 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
   ] satisfies ReadonlyArray<{ id: SettingsSectionId; label: string; icon: typeof Paintbrush }>
 
   const showNotice = (title: string, message: string) => setNotice({ title, message })
+  const manualCheckForUpdates = async () => {
+    try {
+      const result = await onCheckForUpdates()
+      showNotice(
+        '检查更新',
+        result.updateAvailable
+          ? `发现新版本 ${result.latestVersion}。`
+          : '当前已经是最新版本。'
+      )
+    } catch (error) {
+      showNotice('检查更新失败', localizeError(error))
+    }
+  }
   const connectionById = useMemo(() => new Map(connections.map(connection => [connection.id, connection])), [connections])
   const terminalPreviewColors = resolveTerminalThemeColors(next)
 
@@ -2771,7 +2865,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
           <div className="setting-about-header">
             <div>
               <strong>{APP_INFO.name}</strong>
-              <small>{APP_INFO.version}</small>
+              <small>{buildInfo.version}</small>
             </div>
             <span className="setting-about-badge">构建 {APP_INFO.buildNumber}</span>
           </div>
@@ -2782,7 +2876,7 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
             </div>
             <div>
               <small>版本</small>
-              <strong>{APP_INFO.version}</strong>
+              <strong>{buildInfo.version}</strong>
             </div>
             <div>
               <small>构建号</small>
@@ -2790,8 +2884,57 @@ function SettingsDialog({ value, vault, syncSummary, connections, syncBusy, onSy
             </div>
             <div>
               <small>构建时间</small>
-              <strong>{formatDateTime(APP_INFO.buildDateTime)}</strong>
+              <strong>{formatDateTime(buildInfo.buildDate ?? APP_INFO.buildDateTime)}</strong>
             </div>
+            <div>
+              <small>提交</small>
+              <strong>{displayBuildValue(buildInfo.commit)}</strong>
+            </div>
+            <div>
+              <small>更新源</small>
+              <strong>{displayBuildValue(buildInfo.updateRepository)}</strong>
+            </div>
+          </div>
+        </section>
+        <section className="setting-about-card">
+          <div className="setting-about-header">
+            <div>
+              <strong>更新</strong>
+              <small>{updateCheck
+                ? `上次检查：${formatDateTime(updateCheck.checkedAt)}`
+                : '尚未检查 GitHub Release。'}</small>
+            </div>
+            <span className={`setting-about-badge ${updateCheck?.updateAvailable ? 'hot' : ''}`}>
+              {updateCheck?.updateAvailable ? updateCheck.latestVersion : '最新'}
+            </span>
+          </div>
+          <div className="setting-about-grid">
+            <div>
+              <small>当前版本</small>
+              <strong>{updateCheck?.currentVersion || buildInfo.version}</strong>
+            </div>
+            <div>
+              <small>最新版本</small>
+              <strong>{updateCheck?.latestVersion ?? '未找到客户端 Release'}</strong>
+            </div>
+            <div>
+              <small>发布时间</small>
+              <strong>{updateCheck?.publishedAt ? formatDateTime(updateCheck.publishedAt) : '-'}</strong>
+            </div>
+            <div>
+              <small>Release</small>
+              <strong>{displayBuildValue(updateCheck?.releaseName ?? updateCheck?.releaseUrl)}</strong>
+            </div>
+          </div>
+          <div className="setting-about-actions">
+            <button className="secondary" type="button" disabled={updateCheckBusy}
+              onClick={() => void manualCheckForUpdates()}>
+              <RefreshCw size={14} />{updateCheckBusy ? '检查中…' : '检查更新'}
+            </button>
+            <button className="secondary" type="button" disabled={!updateCheck?.releaseUrl}
+              onClick={() => onOpenRelease(updateCheck?.releaseUrl)}>
+              <ExternalLink size={14} />打开 Release
+            </button>
           </div>
         </section>
         <section className="setting-about-card">

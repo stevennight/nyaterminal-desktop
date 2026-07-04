@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"

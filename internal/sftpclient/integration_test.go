@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sshclient"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sshclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )

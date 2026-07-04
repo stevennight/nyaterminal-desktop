@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sshclient"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/zmodemstore"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sshclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/zmodemstore"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

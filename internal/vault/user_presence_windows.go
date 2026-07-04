@@ -3,7 +3,7 @@
 package vault
 
 import (
-	"github.com/nyaterminal/nyaterminal/desktop/internal/hellohelper"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/hellohelper"
 )
 
 const userPresenceMethod = "Windows Hello"

@@ -17,8 +17,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/store"
 	sshagent "github.com/xanzy/ssh-agent"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/text/encoding"

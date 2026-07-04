@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sftpclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sftpclient"
 )
 
 type Store struct {

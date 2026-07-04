@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
 )
 
 func TestDeleteCreatesEncryptedSynchronizationTombstone(t *testing.T) {

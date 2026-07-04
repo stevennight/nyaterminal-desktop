@@ -47,9 +47,12 @@ function parseDirectGoDependencies(goMod: string) {
 
 const packageJson = readJson<PackageJson>(resolve(configDir, 'package.json'))
 const wailsConfig = readJson<WailsConfig>(resolve(configDir, '..', 'wails.json'))
-const buildDate = new Date()
-const buildDateTime = buildDate.toISOString()
+const buildDateTime = process.env.NYATERMINAL_DESKTOP_BUILD_DATE || new Date().toISOString()
 const buildNumber = buildDateTime.replace(/[-:TZ.]/g, '').slice(0, 14)
+const version = process.env.NYATERMINAL_DESKTOP_VERSION
+  ?? wailsConfig.info?.productVersion
+  ?? packageJson.version
+  ?? '0.1.0'
 const frontendLibraries = Object.entries(packageJson.dependencies ?? {}).map(([name, version]) => ({
   name,
   version,
@@ -65,9 +68,11 @@ export default defineConfig({
   define: {
     __APP_INFO__: JSON.stringify({
       name: wailsConfig.info?.productName ?? wailsConfig.name ?? 'NyaTerminal',
-      version: wailsConfig.info?.productVersion ?? packageJson.version ?? '0.1.0',
+      version,
       buildNumber,
       buildDateTime,
+      commit: process.env.NYATERMINAL_DESKTOP_COMMIT ?? '',
+      updateRepository: process.env.NYATERMINAL_UPDATE_REPOSITORY ?? '',
       libraries: [...frontendLibraries, ...goLibraries],
     }),
   },

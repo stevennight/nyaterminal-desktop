@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
 	"golang.org/x/crypto/ssh"
 )
 

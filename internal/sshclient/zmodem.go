@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/zmodemproto"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/zmodemproto"
 )
 
 type ZmodemStatus struct {

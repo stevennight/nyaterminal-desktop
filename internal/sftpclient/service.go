@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sshclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sshclient"
 	"github.com/pkg/sftp"
 )
 

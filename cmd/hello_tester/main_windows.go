@@ -43,8 +43,12 @@ var (
 	pendingLogsMu sync.Mutex
 	pendingLogs   []string
 
-	iidAsyncOperationUserConsentVerificationResult = syscall.GUID{0xFD596FFD, 0x2318, 0x558F,
-		[8]byte{0x9D, 0xBE, 0xD2, 0x1D, 0xF4, 0x37, 0x64, 0xA5}}
+	iidAsyncOperationUserConsentVerificationResult = syscall.GUID{
+		Data1: 0xFD596FFD,
+		Data2: 0x2318,
+		Data3: 0x558F,
+		Data4: [8]byte{0x9D, 0xBE, 0xD2, 0x1D, 0xF4, 0x37, 0x64, 0xA5},
+	}
 )
 
 func main() {

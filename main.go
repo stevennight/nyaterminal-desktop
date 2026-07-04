@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/app"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/app"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/version"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -16,6 +17,11 @@ import (
 var assets embed.FS
 
 func main() {
+	if version.IsVersionCommand(os.Args[1:]) {
+		fmt.Println(version.Print("NyaTerminal"))
+		return
+	}
+
 	if handled, exitCode, err := runHelloHelperIfRequested(os.Args[1:]); handled {
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)

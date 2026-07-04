@@ -114,6 +114,24 @@ export type SyncSummary = {
   running: boolean
 }
 
+export type BuildInfo = {
+  version: string
+  commit?: string
+  buildDate?: string
+  updateRepository?: string
+}
+
+export type UpdateCheckResult = {
+  repository: string
+  currentVersion: string
+  latestVersion?: string
+  updateAvailable: boolean
+  releaseName?: string
+  releaseUrl?: string
+  publishedAt?: string
+  checkedAt: string
+}
+
 export type AccountSummary = {
   loggedIn: boolean
   serverUrl?: string

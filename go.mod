@@ -1,4 +1,4 @@
-module github.com/nyaterminal/nyaterminal/desktop
+module github.com/nyaterminal/nyaterminal-desktop
 
 go 1.25.0
 

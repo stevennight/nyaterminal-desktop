@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
 )
 
 const (

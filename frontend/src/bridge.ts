@@ -1,9 +1,11 @@
 import type {
-  Bootstrap, CommandHistory, Connection, Credential, Group,
-  RemoteEntry, Settings, SFTPTransfer, Tag, TerminalStart
+  Bootstrap, BuildInfo, CommandHistory, Connection, Credential, Group,
+  RemoteEntry, Settings, SFTPTransfer, Tag, TerminalStart, UpdateCheckResult
 } from './types'
 
 type Backend = {
+  BuildInfo(): Promise<BuildInfo>
+  CheckForUpdates(): Promise<UpdateCheckResult>
   Bootstrap(): Promise<Bootstrap>
   InitializeVault(password: string): Promise<void>
   Unlock(password: string): Promise<void>

@@ -9,13 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nyaterminal/nyaterminal/desktop/internal/model"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sftpclient"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/sshclient"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/store"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/syncclient"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/vault"
-	"github.com/nyaterminal/nyaterminal/desktop/internal/zmodemstore"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/model"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sftpclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/sshclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/store"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/syncclient"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/updatecheck"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/vault"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/version"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/zmodemstore"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -65,6 +67,16 @@ type TerminalStart struct {
 	Session    *sshclient.StartResult     `json:"session,omitempty"`
 	HostKey    *sshclient.PendingHostKey  `json:"hostKey,omitempty"`
 	AuthPrompt *sshclient.AuthPromptError `json:"authPrompt,omitempty"`
+}
+
+func (a *App) BuildInfo() version.BuildInfo {
+	return version.Info()
+}
+
+func (a *App) CheckForUpdates() (updatecheck.Result, error) {
+	ctx, cancel := context.WithTimeout(a.context(), 20*time.Second)
+	defer cancel()
+	return updatecheck.DefaultChecker().Check(ctx)
 }
 
 func New(dataDir string) *App {

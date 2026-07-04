@@ -25,6 +25,12 @@ Or use the helper script from `desktop/`:
 .\build.ps1
 ```
 
+Release builds inject independent desktop version metadata:
+
+```powershell
+.\build.ps1 -Version v0.1.0 -Commit <git-sha> -BuildDate 2026-07-04T00:00:00Z -UpdateRepository owner/NyaTerminal
+```
+
 For a dev loop:
 
 ```powershell
@@ -40,6 +46,15 @@ one-time codes are never saved.
 
 The terminal prefers WebGL rendering and falls back to a 2D canvas renderer
 before using xterm's default DOM renderer.
+
+## Updates
+
+The desktop client checks GitHub Releases from the configured update repository.
+It considers stable `v*` tags, reminds the user when a new desktop release is
+available, and does not download or install updates automatically.
+
+Release a desktop version by pushing a tag such as `v0.1.0`. The release
+workflow builds the Windows client and uploads it to the GitHub Release.
 
 SSH port forwarding/tunnels are intentionally not exposed in the first release.
 The Go SSH session layer contains a reserved port-forwarding interface so a

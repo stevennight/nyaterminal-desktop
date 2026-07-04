@@ -1,6 +1,10 @@
 param(
   [ValidateSet("dev", "build")]
-  [string]$Mode = "build"
+  [string]$Mode = "build",
+  [string]$Version = "0.1.0-dev",
+  [string]$Commit = "",
+  [string]$BuildDate = "",
+  [string]$UpdateRepository = "nyaterminal/nyaterminal-desktop"
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +40,13 @@ if (-not $wails) {
 
 Push-Location frontend
 try {
+  if (-not $BuildDate) {
+    $BuildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  }
+  $env:NYATERMINAL_DESKTOP_VERSION = $Version
+  $env:NYATERMINAL_DESKTOP_COMMIT = $Commit
+  $env:NYATERMINAL_DESKTOP_BUILD_DATE = $BuildDate
+  $env:NYATERMINAL_UPDATE_REPOSITORY = $UpdateRepository
   if (-not (Test-Path node_modules)) {
     npm install
   }
@@ -50,5 +61,9 @@ if ($Mode -eq "dev") {
   exit $LASTEXITCODE
 }
 
-& wails build
+$ldflags = "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.Version=$Version " +
+  "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.Commit=$Commit " +
+  "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.BuildDate=$BuildDate " +
+  "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.UpdateRepository=$UpdateRepository"
+& wails build -ldflags $ldflags
 exit $LASTEXITCODE
