@@ -16,6 +16,7 @@ const (
 
 	SubpacketMaxSize = 8192
 	SubpacketPerAck  = 200
+	maxHeaderCount   = int64(1<<32 - 1)
 )
 
 type Mode string
@@ -156,6 +157,13 @@ func (h Header) WithCount(count uint32) Header {
 	return h
 }
 
+func zmodemHeaderCount(count int64) (uint32, error) {
+	if count < 0 || count > maxHeaderCount {
+		return 0, errors.New("ZMODEM offset exceeds 32-bit header range")
+	}
+	return uint32(count), nil // #nosec G115 -- range checked against the protocol's 32-bit count field.
+}
+
 func (h Header) Encode() []byte {
 	result := []byte{ZPAD}
 	if h.Encoding == EncodingZHEX {
@@ -170,7 +178,9 @@ func (h Header) Encode() []byte {
 		payload = append(payload, crcBytes[:]...)
 	} else {
 		crc := crc16Xmodem(payload)
-		payload = append(payload, byte(crc>>8), byte(crc))
+		var crcBytes [2]byte
+		binary.BigEndian.PutUint16(crcBytes[:], crc)
+		payload = append(payload, crcBytes[:]...)
 	}
 	if h.Encoding == EncodingZHEX {
 		hexPayload := make([]byte, hex.EncodedLen(len(payload)))
@@ -185,10 +195,9 @@ func (h Header) Encode() []byte {
 	return append(result, writeSliceEscaped(payload)...)
 }
 
-func createZrinit(bufferSize int, flags Zrinit) Header {
+func createZrinit(bufferSize uint16, flags Zrinit) Header {
 	header := NewHeader(EncodingZHEX, FrameZRINIT)
-	header.Flags[0] = byte(bufferSize)
-	header.Flags[1] = byte(bufferSize >> 8)
+	binary.LittleEndian.PutUint16(header.Flags[:2], bufferSize)
 	header.Flags[3] = byte(flags)
 	return header
 }
@@ -440,6 +449,9 @@ func (s *Sender) StartFile(name string, size int64) error {
 		(s.state != sendWaitReceiverInit && s.state != sendReadyForFile) {
 		return errors.New("unsupported ZMODEM sender state")
 	}
+	if _, err := zmodemHeaderCount(size); err != nil {
+		return err
+	}
 	s.fileName = name
 	s.fileSize = size
 	s.hasFile = true
@@ -578,7 +590,11 @@ func (s *Sender) queueZfile() error {
 func (s *Sender) queueZdata(offset int64, data []byte, kind SubpacketType, includeHeader bool) error {
 	var result []byte
 	if includeHeader {
-		result = append(result, NewHeader(EncodingZBIN32, FrameZDATA).WithCount(uint32(offset)).Encode()...)
+		count, err := zmodemHeaderCount(offset)
+		if err != nil {
+			return err
+		}
+		result = append(result, NewHeader(EncodingZBIN32, FrameZDATA).WithCount(count).Encode()...)
 	}
 	result = append(result, writeSliceEscaped(data)...)
 	result = append(result, ZDLE, byte(kind))
@@ -590,9 +606,13 @@ func (s *Sender) queueZdata(offset int64, data []byte, kind SubpacketType, inclu
 	return s.outgoing.extend(result)
 }
 
-func (s *Sender) queueZeof(offset int64) {
+func (s *Sender) queueZeof(offset int64) error {
+	count, err := zmodemHeaderCount(offset)
+	if err != nil {
+		return err
+	}
 	s.outgoing.clear()
-	_ = s.outgoing.extend(NewHeader(EncodingZBIN32, FrameZEOF).WithCount(uint32(offset)).Encode())
+	return s.outgoing.extend(NewHeader(EncodingZBIN32, FrameZEOF).WithCount(count).Encode())
 }
 
 func (s *Sender) queueZfin() {
@@ -610,7 +630,7 @@ func (s *Sender) handleHeader(header Header) error {
 	case FrameZRINIT:
 		return s.onZrinit(header)
 	case FrameZRPOS, FrameZACK:
-		s.onZrpos(int64(header.Count()))
+		return s.onZrpos(int64(header.Count()))
 	case FrameZFIN:
 		s.onZfin()
 	default:
@@ -659,13 +679,15 @@ func (s *Sender) onZrinit(header Header) error {
 	return nil
 }
 
-func (s *Sender) onZrpos(offset int64) {
+func (s *Sender) onZrpos(offset int64) error {
 	switch s.state {
 	case sendWaitReceiverInit:
 		s.queueZrqinit()
 	case sendWaitFilePos, sendWaitFileAck, sendNeedFileData:
 		if offset >= s.fileSize {
-			s.queueZeof(offset)
+			if err := s.queueZeof(offset); err != nil {
+				return err
+			}
 			s.state = sendWaitFileDone
 			s.pendingRequest = nil
 		} else {
@@ -677,6 +699,7 @@ func (s *Sender) onZrpos(offset int64) {
 			s.state = sendNeedFileData
 		}
 	}
+	return nil
 }
 
 func (s *Sender) onZfin() {
@@ -725,6 +748,7 @@ type Receiver struct {
 	crc32                  crc32
 	outgoing               byteBuffer
 	events                 []ReceiverEvent
+	pendingErr             error
 }
 
 func NewReceiver() *Receiver {
@@ -742,6 +766,9 @@ func NewReceiver() *Receiver {
 }
 
 func (r *Receiver) FeedIncoming(input []byte) (int, error) {
+	if r.pendingErr != nil {
+		return 0, r.pendingErr
+	}
 	consumed := 0
 	for {
 		if r.hasFileData() || len(r.events) >= 4 {
@@ -770,7 +797,9 @@ func (r *Receiver) FeedIncoming(input []byte) (int, error) {
 			break
 		}
 		consumed = next
-		r.handleHeader(header)
+		if err := r.handleHeader(header); err != nil {
+			return consumed, err
+		}
 		if len(r.events) >= 4 || r.hasOutgoing() || consumed == before || consumed == len(input) {
 			break
 		}
@@ -789,7 +818,9 @@ func (r *Receiver) DrainFile() []byte {
 		return nil
 	}
 	data := r.buf.slice(r.bufWriteOffset)
-	r.finishSubpacket(r.subpacketType)
+	if err := r.finishSubpacket(r.subpacketType); err != nil {
+		r.pendingErr = err
+	}
 	return data
 }
 
@@ -829,14 +860,22 @@ func (r *Receiver) queueZrinit() {
 	_ = r.outgoing.extend(header.Encode())
 }
 
-func (r *Receiver) queueZrpos(count int64) {
+func (r *Receiver) queueZrpos(count int64) error {
+	headerCount, err := zmodemHeaderCount(count)
+	if err != nil {
+		return err
+	}
 	r.outgoing.clear()
-	_ = r.outgoing.extend(NewHeader(EncodingZHEX, FrameZRPOS).WithCount(uint32(count)).Encode())
+	return r.outgoing.extend(NewHeader(EncodingZHEX, FrameZRPOS).WithCount(headerCount).Encode())
 }
 
-func (r *Receiver) queueZack() {
+func (r *Receiver) queueZack() error {
+	count, err := zmodemHeaderCount(r.count)
+	if err != nil {
+		return err
+	}
 	r.outgoing.clear()
-	_ = r.outgoing.extend(NewHeader(EncodingZHEX, FrameZACK).WithCount(uint32(r.count)).Encode())
+	return r.outgoing.extend(NewHeader(EncodingZHEX, FrameZACK).WithCount(count).Encode())
 }
 
 func (r *Receiver) queueZfin() {
@@ -844,7 +883,7 @@ func (r *Receiver) queueZfin() {
 	_ = r.outgoing.extend(NewHeader(EncodingZHEX, FrameZFIN).Encode())
 }
 
-func (r *Receiver) handleHeader(header Header) {
+func (r *Receiver) handleHeader(header Header) error {
 	switch header.Frame {
 	case FrameZRQINIT:
 		if r.state == recvSessionBegin {
@@ -865,8 +904,7 @@ func (r *Receiver) handleHeader(header Header) {
 			r.queueZrinit()
 		} else if r.state == recvFileBegin || r.state == recvFileWaitingSubpacket {
 			if int64(header.Count()) != r.count {
-				r.queueZrpos(r.count)
-				return
+				return r.queueZrpos(r.count)
 			}
 			r.dataEncoding = header.Encoding
 			r.state = recvFileReadingSubpacket
@@ -889,6 +927,7 @@ func (r *Receiver) handleHeader(header Header) {
 			r.pushEvent(ReceiverSessionComplete)
 		}
 	}
+	return nil
 }
 
 func (r *Receiver) resetCrc() {
@@ -982,7 +1021,9 @@ func (r *Receiver) processSubpacket(input []byte, startOffset int) (int, bool, e
 				r.bufWriteOffset = 0
 				r.resetCrc()
 				r.subpacketEscapePending = false
-				r.queueZrpos(0)
+				if err := r.queueZrpos(0); err != nil {
+					return consumed, false, err
+				}
 				r.state = recvFileBegin
 				r.subpacketState = 0
 				r.pushEvent(ReceiverFileStart)
@@ -990,7 +1031,9 @@ func (r *Receiver) processSubpacket(input []byte, startOffset int) (int, bool, e
 				r.subpacketState = 2
 				r.bufWriteOffset = 0
 				if len(r.buf.data) == 0 {
-					r.finishSubpacket(r.subpacketType)
+					if err := r.finishSubpacket(r.subpacketType); err != nil {
+						return consumed, false, err
+					}
 				}
 			}
 			return consumed, true, nil
@@ -1018,6 +1061,9 @@ func (r *Receiver) parseZfileBuf() error {
 		if err != nil {
 			return errors.New("malformed ZMODEM file size")
 		}
+		if _, err := zmodemHeaderCount(size); err != nil {
+			return err
+		}
 		r.fileSize = size
 	} else {
 		r.fileSize = 0
@@ -1026,18 +1072,25 @@ func (r *Receiver) parseZfileBuf() error {
 	return nil
 }
 
-func (r *Receiver) finishSubpacket(packet SubpacketType) {
+func (r *Receiver) finishSubpacket(packet SubpacketType) error {
+	if r.count > maxHeaderCount-int64(len(r.buf.data)) {
+		return errors.New("ZMODEM receive count exceeds 32-bit header range")
+	}
 	r.count += int64(len(r.buf.data))
 	r.buf.clear()
 	r.bufWriteOffset = 0
 	r.resetCrc()
 	switch packet {
 	case SubpacketZCRCW:
-		r.queueZack()
+		if err := r.queueZack(); err != nil {
+			return err
+		}
 		r.state = recvFileWaitingSubpacket
 		r.subpacketState = 0
 	case SubpacketZCRCQ:
-		r.queueZack()
+		if err := r.queueZack(); err != nil {
+			return err
+		}
 		r.subpacketState = 1
 	case SubpacketZCRCG:
 		r.subpacketState = 1
@@ -1046,6 +1099,7 @@ func (r *Receiver) finishSubpacket(packet SubpacketType) {
 		r.subpacketState = 0
 	}
 	r.subpacketEscapePending = false
+	return nil
 }
 
 func writeSliceEscaped(data []byte) []byte {

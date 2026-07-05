@@ -267,6 +267,7 @@ func (s *Service) cleanupTransfer(spec transferSpec) {
 }
 
 func (s *Service) runUpload(ctx context.Context, job *transferJob) error {
+	// #nosec G304 -- Transfer upload reads an explicit local file path selected by the desktop user.
 	source, err := os.Open(job.spec.localPath)
 	if err != nil {
 		return err
@@ -297,21 +298,21 @@ func (s *Service) runUpload(ctx context.Context, job *transferJob) error {
 	}
 	if offset == 0 {
 		if err := target.Truncate(0); err != nil {
-			target.Close()
+			_ = target.Close()
 			return err
 		}
 	}
 	if _, err := source.Seek(offset, io.SeekStart); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	if _, err := target.Seek(offset, io.SeekStart); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	job.setProgress(offset, job.value.TotalBytes)
 	if _, err := copyTransfer(ctx, target, source, job); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	if err := target.Close(); err != nil {
@@ -345,33 +346,34 @@ func (s *Service) runDownload(ctx context.Context, job *transferJob) error {
 		}
 	}
 	tempPath := job.spec.localPath + ".nyapart"
+	// #nosec G304 -- Transfer download writes to an explicit local destination selected by the desktop user.
 	target, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
 	offset, err := target.Seek(0, io.SeekEnd)
 	if err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	if offset > info.Size() {
 		if err := target.Truncate(0); err != nil {
-			target.Close()
+			_ = target.Close()
 			return err
 		}
 		offset = 0
 	}
 	if _, err := source.Seek(offset, io.SeekStart); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	job.setProgress(offset, info.Size())
 	if _, err := copyTransfer(ctx, target, source, job); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	if err := target.Sync(); err != nil {
-		target.Close()
+		_ = target.Close()
 		return err
 	}
 	if err := target.Close(); err != nil {

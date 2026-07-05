@@ -61,6 +61,7 @@ func (s *Store) Begin(finalPath string, expected int64) (string, error) {
 		return "", errors.New("ZMODEM destination directory does not exist")
 	}
 	tempPath := absolute + ".nyapart"
+	// #nosec G304 -- ZMODEM receive writes to a local path explicitly chosen by the desktop user.
 	file, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", err
@@ -169,7 +170,7 @@ func (s *Store) Finish(id string) error {
 		}
 	}()
 	if err := pending.file.Sync(); err != nil {
-		pending.file.Close()
+		_ = pending.file.Close()
 		return err
 	}
 	if err := pending.file.Close(); err != nil {

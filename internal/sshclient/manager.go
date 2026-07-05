@@ -193,7 +193,7 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 	}
 	sshSession, err := client.NewSession()
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return StartResult{}, err
 	}
 	columns, rows := request.Columns, request.Rows
@@ -206,21 +206,21 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (StartResult,
 	if err := sshSession.RequestPty("xterm-256color", rows, columns, ssh.TerminalModes{
 		ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400,
 	}); err != nil {
-		sshSession.Close()
-		client.Close()
+		_ = sshSession.Close()
+		_ = client.Close()
 		return StartResult{}, err
 	}
 	stdin, err := sshSession.StdinPipe()
 	if err != nil {
-		sshSession.Close()
-		client.Close()
+		_ = sshSession.Close()
+		_ = client.Close()
 		return StartResult{}, err
 	}
 	id := uuid.NewString()
 	token, err := randomToken(32)
 	if err != nil {
-		sshSession.Close()
-		client.Close()
+		_ = sshSession.Close()
+		_ = client.Close()
 		return StartResult{}, err
 	}
 	entry := &terminalSession{
@@ -400,7 +400,7 @@ func (m *Manager) dial(ctx context.Context, connection model.Connection, credent
 	}
 	sshConn, channels, requests, err := ssh.NewClientConn(netConn, address, config)
 	if err != nil {
-		netConn.Close()
+		_ = netConn.Close()
 		return nil, authPromptErrorForCredential(connection, err)
 	}
 	return ssh.NewClient(sshConn, channels, requests), nil

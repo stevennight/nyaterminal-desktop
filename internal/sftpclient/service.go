@@ -320,6 +320,7 @@ func (s *Service) Upload(ctx context.Context, connectionID, localPath, remotePat
 	if err != nil {
 		return err
 	}
+	// #nosec G304 -- Upload reads an explicit local file path selected by the desktop user.
 	source, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -361,6 +362,7 @@ func (s *Service) Download(ctx context.Context, connectionID, remotePath, localP
 	}
 	defer source.Close()
 	tempPath := localPath + ".nyapart"
+	// #nosec G304 -- Download writes to an explicit local destination selected by the desktop user.
 	target, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -389,7 +391,7 @@ func (s *Service) connect(ctx context.Context, connectionID string) (io.Closer, 
 	}
 	sftpClient, err := sftp.NewClient(client, sftp.MaxPacket(1<<15))
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, nil, err
 	}
 	return client, sftpClient, nil
