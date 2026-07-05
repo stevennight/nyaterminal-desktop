@@ -62,7 +62,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -LiteralPath build\bin\* -DestinationPath "dist\NyaTerminal-${{ steps.meta.outputs.version }}-windows-amd64.zip" -Force
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter NyaTerminal.exe | Select-Object -First 1
+          if (-not $exe) {
+            Get-ChildItem -Path build -Recurse -Force -ErrorAction SilentlyContinue | Format-Table FullName, Length
+            throw "NyaTerminal.exe was not produced by the Wails build."
+          }
+          $stage = Join-Path dist "windows-amd64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path (Join-Path $exe.DirectoryName "*") -Destination $stage -Recurse -Force
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath "dist\NyaTerminal-${{ steps.meta.outputs.version }}-windows-amd64.zip" -Force
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
