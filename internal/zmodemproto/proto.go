@@ -1103,12 +1103,6 @@ func newCRC16() crc16 {
 	return crc16{}
 }
 
-func (c *crc16) update(data []byte) {
-	for _, b := range data {
-		c.updateByte(b)
-	}
-}
-
 func (c *crc16) updateByte(b byte) {
 	c.value = crc16Update(c.value, b)
 }
