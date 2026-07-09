@@ -13,6 +13,11 @@ function portalTarget() {
   return document.querySelector('.app-shell') ?? document.body
 }
 
+export function shouldCloseContextMenuOnScroll(target: EventTarget | null) {
+  const closest = (target as { closest?: (selector: string) => Element | null } | null)?.closest
+  return !(typeof closest === 'function' && closest.call(target, '.xterm-viewport'))
+}
+
 export function ContextMenu({ x, y, items, onClose }: {
   x: number
   y: number
@@ -31,15 +36,18 @@ export function ContextMenu({ x, y, items, onClose }: {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
+    const closeOnScroll = (event: Event) => {
+      if (shouldCloseContextMenuOnScroll(event.target)) onClose()
+    }
     window.addEventListener('pointerdown', closeOnPointerDown, true)
     window.addEventListener('keydown', closeOnEscape)
     window.addEventListener('resize', onClose)
-    window.addEventListener('scroll', onClose, true)
+    window.addEventListener('scroll', closeOnScroll, true)
     return () => {
       window.removeEventListener('pointerdown', closeOnPointerDown, true)
       window.removeEventListener('keydown', closeOnEscape)
       window.removeEventListener('resize', onClose)
-      window.removeEventListener('scroll', onClose, true)
+      window.removeEventListener('scroll', closeOnScroll, true)
     }
   }, [onClose])
 
