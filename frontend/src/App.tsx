@@ -1263,8 +1263,8 @@ export function App() {
             </button>
           </div>
         )}
-        {!sessions.length && <Welcome onCreate={() => setConnectionEditor({ ...emptyConnection })} />}
         <div className="terminal-stack">
+          {!sessions.length && <Welcome onCreate={() => setConnectionEditor({ ...emptyConnection })} />}
           {sessions.map(tab => (
             <TerminalView key={tab.id} connection={tab.connection}
               settings={settings} active={tab.id === activeSession}
