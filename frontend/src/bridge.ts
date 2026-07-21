@@ -131,6 +131,9 @@ declare global {
     runtime?: {
       EventsOn?: (name: string, callback: (...args: unknown[]) => void) => () => void
       BrowserOpenURL?: (url: string) => void
+      WindowSetDarkTheme?: () => void
+      WindowSetLightTheme?: () => void
+      WindowSetBackgroundColour?: (red: number, green: number, blue: number, alpha: number) => void
     }
   }
 }

@@ -18,6 +18,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
+import { syncWindowTheme } from './windowTheme'
 import {
   TERMINAL_THEME_GROUPS, TERMINAL_THEME_PRESETS, cloneTerminalThemeColors,
   resolveTerminalThemeColors, terminalChromeVariables,
@@ -576,6 +577,10 @@ export function App() {
   const effectiveBuildInfo = useMemo(() => mergedBuildInfo(buildInfo), [buildInfo])
 
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    syncWindowTheme(theme)
+  }, [theme])
 
   useEffect(() => {
     let cancelled = false
