@@ -47,21 +47,22 @@ type ZmodemHandler interface {
 type backendZmodemDetector = zmodemproto.HeaderDetector
 
 type zmodemTransfer struct {
-	session       *terminalSession
-	handler       ZmodemHandler
-	mode          zmodemproto.Mode
-	receiver      *zmodemproto.Receiver
-	sender        *zmodemproto.Sender
-	receiveFile   ZmodemReceiveFile
-	receiveName   string
-	receiveSize   int64
-	received      int64
-	receiveInput  []byte
-	sendFiles     []ZmodemSendFile
-	sendIndex     int
-	sendFile      *os.File
-	sendBytesDone int64
-	lastStatusAt  time.Time
+	session         *terminalSession
+	handler         ZmodemHandler
+	mode            zmodemproto.Mode
+	receiver        *zmodemproto.Receiver
+	sender          *zmodemproto.Sender
+	receiveFile     ZmodemReceiveFile
+	receiveName     string
+	receiveSize     int64
+	received        int64
+	receiveInput    []byte
+	receiveWarnings []string
+	sendFiles       []ZmodemSendFile
+	sendIndex       int
+	sendFile        *os.File
+	sendBytesDone   int64
+	lastStatusAt    time.Time
 }
 
 const zmodemCancelDrainWindow = 1200 * time.Millisecond
@@ -251,11 +252,20 @@ func (z *zmodemTransfer) flushReceiver() (bool, error) {
 					}
 					z.receiveFile = nil
 				}
-				z.notifyTransfer("completed", fmt.Sprintf("已接收 %s", z.receiveName), true, z.receiveName, z.receiveSize, z.receiveSize)
-				z.notify(fmt.Sprintf("已接收 %s", z.receiveName), true)
+				warning := zmodemReceiveSizeWarning(z.receiveName, z.receiveSize, z.received)
+				if warning != "" {
+					z.receiveWarnings = append(z.receiveWarnings, warning)
+				}
+				message := zmodemReceiveCompleteMessage(z.receiveName, warning)
+				z.notifyTransfer("completed", message, true, z.receiveName, z.received, z.received)
+				z.notify(message, true)
 			case zmodemproto.ReceiverSessionComplete:
 				z.cancelLocal()
-				z.notify("ZMODEM 接收完成", false)
+				message := "ZMODEM 接收完成"
+				if len(z.receiveWarnings) > 0 {
+					message += "（警告：" + strings.Join(z.receiveWarnings, "；") + "）"
+				}
+				z.notify(message, false)
 				z.session.zmodem = nil
 				z.session.detector.Reset()
 				return true, nil
@@ -544,6 +554,21 @@ func formatZmodemProgress(done, total int64) string {
 		percent = 100
 	}
 	return fmt.Sprintf("%d%% · %s / %s", percent, formatZmodemSize(done), formatZmodemSize(total))
+}
+
+func zmodemReceiveSizeWarning(name string, announced, actual int64) string {
+	if announced > 0 && announced != actual {
+		return fmt.Sprintf("%s 大小与发送端声明不一致：声明 %s，实际 %s",
+			name, formatZmodemSize(announced), formatZmodemSize(actual))
+	}
+	return ""
+}
+
+func zmodemReceiveCompleteMessage(name, warning string) string {
+	if warning != "" {
+		return fmt.Sprintf("已接收 %s（警告：%s）", name, warning)
+	}
+	return fmt.Sprintf("已接收 %s", name)
 }
 
 func formatZmodemSize(value int64) string {

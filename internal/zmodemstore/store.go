@@ -23,7 +23,6 @@ type pendingFile struct {
 	file      *os.File
 	finalPath string
 	tempPath  string
-	expected  int64
 	written   int64
 }
 
@@ -69,7 +68,7 @@ func (s *Store) Begin(finalPath string, expected int64) (string, error) {
 	id := uuid.NewString()
 	s.mu.Lock()
 	s.files[id] = &pendingFile{
-		file: file, finalPath: absolute, tempPath: tempPath, expected: expected,
+		file: file, finalPath: absolute, tempPath: tempPath,
 	}
 	s.mu.Unlock()
 	return id, nil
@@ -121,7 +120,7 @@ func (s *Store) Record(update TransferUpdate) {
 	record.Direction = update.Direction
 	record.Status = update.Status
 	record.BytesDone = update.BytesDone
-	if update.TotalBytes > 0 || record.TotalBytes == 0 {
+	if update.TotalBytes > 0 || record.TotalBytes == 0 || update.Status == "completed" {
 		record.TotalBytes = update.TotalBytes
 	}
 	record.Error = update.Error
@@ -138,10 +137,9 @@ func (s *Store) Write(id string, data []byte) error {
 		s.mu.Unlock()
 		return errors.New("ZMODEM receive handle not found")
 	}
-	if pending.written+int64(len(data)) > maxReceiveSize ||
-		(pending.expected > 0 && pending.written+int64(len(data)) > pending.expected) {
+	if pending.written+int64(len(data)) > maxReceiveSize {
 		s.mu.Unlock()
-		return errors.New("ZMODEM sender exceeded announced file size")
+		return errors.New("ZMODEM file exceeds receive size limit")
 	}
 	written, err := pending.file.Write(data)
 	pending.written += int64(written)
@@ -175,9 +173,6 @@ func (s *Store) Finish(id string) error {
 	}
 	if err := pending.file.Close(); err != nil {
 		return err
-	}
-	if pending.expected > 0 && pending.written != pending.expected {
-		return errors.New("ZMODEM file size does not match sender metadata")
 	}
 	_ = os.Remove(pending.finalPath)
 	if err := os.Rename(pending.tempPath, pending.finalPath); err != nil {

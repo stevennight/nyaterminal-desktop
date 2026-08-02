@@ -35,6 +35,7 @@ export class ZmodemAdapter {
   private receiveBatch: Uint8Array[] = []
   private receiveBatchBytes = 0
   private receiveGeneration = 0
+  private receiveWarnings: string[] = []
   private receiverFlush = Promise.resolve()
   private receiverInput = new Uint8Array()
   private protocolDiscardUntil = 0
@@ -68,6 +69,7 @@ export class ZmodemAdapter {
     const protocolData = detection.protocol
     if (detection.mode === 'receive') {
       this.protocolDiscardUntil = 0
+      this.receiveWarnings = []
       this.setStatus('检测到远端 sz，正在接收文件')
       this.callbacks.onActive?.(true)
       this.receiver = new Receiver()
@@ -138,11 +140,19 @@ export class ZmodemAdapter {
           }
           if (this.receiveHandle) await api.FinishZmodemReceive(this.receiveHandle)
           this.receiveHandle = ''
-          this.setStatus(`已接收 ${this.receiveName}`)
+          const warning = zmodemReceiveSizeWarning(
+            this.receiveName, this.receiveSize, this.receivedBytes
+          )
+          if (warning) this.receiveWarnings.push(warning)
+          this.setStatus(zmodemReceiveCompleteMessage(this.receiveName, warning))
         } else if (event === ReceiverEvent.SessionComplete) {
           this.receiver = undefined
           this.callbacks.onActive?.(false)
-          this.setStatus('ZMODEM 接收完成')
+          const warning = this.receiveWarnings.length
+            ? `（警告：${this.receiveWarnings.join('；')}）`
+            : ''
+          this.setStatus(`ZMODEM 接收完成${warning}`)
+          this.receiveWarnings = []
         }
       }
       for (let fileData = receiver.drainFile(); fileData.length; fileData = receiver.drainFile()) {
@@ -203,6 +213,7 @@ export class ZmodemAdapter {
     this.receiveHandle = ''
     this.receiveBatch = []
     this.receiveBatchBytes = 0
+    this.receiveWarnings = []
     this.receiverInput = new Uint8Array()
     this.receiver = undefined
     this.callbacks.onActive?.(false)
@@ -343,6 +354,7 @@ export class ZmodemAdapter {
     this.receiveHandle = ''
     this.receiveBatch = []
     this.receiveBatchBytes = 0
+    this.receiveWarnings = []
     this.receiverInput = new Uint8Array()
     this.receiveQueue = this.receiveQueue.catch(() => undefined).then(() => undefined)
     this.sendFiles = []
@@ -524,6 +536,18 @@ function yieldToBrowser() {
 function formatProgress(done: number, total: number) {
   if (total <= 0) return `${formatSize(done)}`
   return `${Math.min(100, Math.floor(done * 100 / total))}% · ${formatSize(done)} / ${formatSize(total)}`
+}
+
+function zmodemReceiveSizeWarning(name: string, announced: number, actual: number) {
+  if (announced > 0 && announced !== actual) {
+    return `${name} 大小与发送端声明不一致：声明 ${formatSize(announced)}，实际 ${formatSize(actual)}`
+  }
+  return ''
+}
+
+function zmodemReceiveCompleteMessage(name: string, warning: string) {
+  if (warning) return `已接收 ${name}（警告：${warning}）`
+  return `已接收 ${name}`
 }
 
 function formatSize(value: number) {
