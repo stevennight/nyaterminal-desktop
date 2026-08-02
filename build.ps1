@@ -55,7 +55,25 @@ if ($Installer) {
   if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
     throw "The NSIS installer can only be built on Windows."
   }
-  Ensure-Command makensis "Install NSIS and add makensis.exe to PATH."
+  $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+  if (-not $makensis) {
+    $programFilesRoots = @(
+      [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"),
+      [Environment]::GetEnvironmentVariable("ProgramFiles")
+    ) | Where-Object { $_ }
+
+    foreach ($root in $programFilesRoots) {
+      $candidate = Join-Path $root "NSIS\makensis.exe"
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        $env:PATH = "$(Split-Path -Parent $candidate);$env:PATH"
+        $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+        break
+      }
+    }
+  }
+  if (-not $makensis) {
+    throw "makensis was not found. Install NSIS and add makensis.exe to PATH."
+  }
 }
 
 $productVersion = $Version.Trim()
