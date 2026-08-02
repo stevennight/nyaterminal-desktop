@@ -128,7 +128,10 @@ export type UpdateCheckResult = {
   updateAvailable: boolean
   releaseName?: string
   releaseUrl?: string
+  releaseNotes?: string
   publishedAt?: string
+  canAutoUpdate: boolean
+  autoUpdateReason?: 'development-build' | 'not-installed' | 'unsupported-platform' | 'installer-unavailable'
   checkedAt: string
 }
 

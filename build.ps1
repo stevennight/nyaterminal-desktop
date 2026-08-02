@@ -1,6 +1,7 @@
 param(
   [ValidateSet("dev", "build")]
   [string]$Mode = "build",
+  [switch]$Installer,
   [string]$Version = "0.1.0-dev",
   [string]$Commit = "",
   [string]$BuildDate = "",
@@ -20,22 +21,57 @@ function Ensure-Command {
 
 Ensure-Command go "Install Go and add it to PATH."
 Ensure-Command npm "Install Node.js and add it to PATH."
+$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npm) {
+  $npm = Get-Command npm -ErrorAction Stop
+}
 
+$requiredWailsVersion = "v2.12.0"
 $wails = Get-Command wails -ErrorAction SilentlyContinue
-if (-not $wails) {
+$installWails = -not $wails
+if ($wails) {
+  $installedWailsVersion = (& $wails.Source version 2>&1 | Out-String)
+  $installWails = $installedWailsVersion -notmatch [regex]::Escape($requiredWailsVersion)
+}
+if ($installWails) {
   $gobin = Join-Path (go env GOPATH) "bin"
   $env:PATH = "$gobin;$env:PATH"
-  $wails = Get-Command wails -ErrorAction SilentlyContinue
-}
-if (-not $wails) {
-  Write-Host "Wails CLI not found. Installing it with go install..." -ForegroundColor Yellow
-  go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+  Write-Host "Installing Wails CLI $requiredWailsVersion..." -ForegroundColor Yellow
+  go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install Wails CLI $requiredWailsVersion."
+  }
   $gobin = Join-Path (go env GOPATH) "bin"
   $env:PATH = "$gobin;$env:PATH"
   $wails = Get-Command wails -ErrorAction SilentlyContinue
 }
 if (-not $wails) {
   throw "Wails CLI is still unavailable after installation."
+}
+if ($Installer) {
+  if ($Mode -ne "build") {
+    throw "-Installer can only be used with -Mode build."
+  }
+  if (-not $IsWindows -and $env:OS -ne "Windows_NT") {
+    throw "The NSIS installer can only be built on Windows."
+  }
+  Ensure-Command makensis "Install NSIS and add makensis.exe to PATH."
+}
+
+$productVersion = $Version.Trim()
+if ($productVersion.StartsWith("v")) {
+  $productVersion = $productVersion.Substring(1)
+}
+$stableVersion = $productVersion -match '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+if ($Installer -and -not $stableVersion) {
+  throw "Installer versions must use stable MAJOR.MINOR.PATCH format."
+}
+if ($stableVersion) {
+  $versionParts = $productVersion.Split('.') | ForEach-Object { [int64]$_ }
+  if ($versionParts[0] -gt 255 -or $versionParts[1] -gt 255 -or $versionParts[2] -gt 65535) {
+    throw "Version $productVersion exceeds Windows installer version limits."
+  }
+  $Version = $productVersion
 }
 
 Push-Location frontend
@@ -48,16 +84,22 @@ try {
   $env:NYATERMINAL_DESKTOP_BUILD_DATE = $BuildDate
   $env:NYATERMINAL_UPDATE_REPOSITORY = $UpdateRepository
   if (-not (Test-Path node_modules)) {
-    npm install
+    & $npm.Source install
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm install failed with exit code $LASTEXITCODE."
+    }
   }
-  npm run build
+  & $npm.Source run build
+  if ($LASTEXITCODE -ne 0) {
+    throw "npm run build failed with exit code $LASTEXITCODE."
+  }
 }
 finally {
   Pop-Location
 }
 
 if ($Mode -eq "dev") {
-  & wails dev
+  & $wails.Source dev
   exit $LASTEXITCODE
 }
 
@@ -65,5 +107,35 @@ $ldflags = "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.Versi
   "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.Commit=$Commit " +
   "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.BuildDate=$BuildDate " +
   "-X github.com/nyaterminal/nyaterminal-desktop/internal/version.UpdateRepository=$UpdateRepository"
-& wails build -ldflags $ldflags
-exit $LASTEXITCODE
+
+$configPath = Join-Path $PSScriptRoot "wails.json"
+$originalConfig = $null
+if ($stableVersion) {
+  $originalConfig = [System.IO.File]::ReadAllText($configPath)
+  $config = $originalConfig | ConvertFrom-Json
+  $config.info.productVersion = $productVersion
+  $updatedConfig = $config | ConvertTo-Json -Depth 20
+  [System.IO.File]::WriteAllText($configPath, $updatedConfig, [System.Text.UTF8Encoding]::new($false))
+}
+
+try {
+  $buildArguments = @("build", "-clean", "-trimpath", "-ldflags", $ldflags)
+  if ($Installer) {
+    $buildArguments += @("-platform", "windows/amd64", "-nsis")
+  }
+  & $wails.Source @buildArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Wails build failed with exit code $LASTEXITCODE."
+  }
+  if ($Installer) {
+    $installerPath = Join-Path $PSScriptRoot "build\bin\NyaTerminal-amd64-installer.exe"
+    if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+      throw "Wails did not produce the expected NSIS installer at $installerPath."
+    }
+  }
+}
+finally {
+  if ($null -ne $originalConfig) {
+    [System.IO.File]::WriteAllText($configPath, $originalConfig, [System.Text.UTF8Encoding]::new($false))
+  }
+}

@@ -4,7 +4,7 @@
 
 - 64-bit Go 1.25+（推荐使用 Go 1.26）
 - Node.js 22+
-- Wails 2.10+
+- Wails 2.12
 - Windows WebView2, macOS WebKit, or Linux GTK/WebKit dependencies
 
 The current Windows development machine must use an AMD64 or ARM64 Go toolchain.
@@ -31,6 +31,12 @@ Release builds inject independent desktop version metadata:
 .\build.ps1 -Version v0.1.0 -Commit <git-sha> -BuildDate 2026-07-04T00:00:00Z -UpdateRepository owner/NyaTerminal
 ```
 
+Build the Windows NSIS installer with:
+
+```powershell
+.\build.ps1 -Installer -Version 1.0.0 -Commit <git-sha> -UpdateRepository owner/NyaTerminal
+```
+
 For a dev loop:
 
 ```powershell
@@ -51,10 +57,15 @@ before using xterm's default DOM renderer.
 
 The desktop client checks GitHub Releases from the configured update repository.
 It considers stable `v*` tags, reminds the user when a new desktop release is
-available, and does not download or install updates automatically.
+available, and lets installed Windows copies download and launch a compatible
+NSIS update. Portable copies continue to open the GitHub Release for a manual
+download. Every in-app installer download is verified against the release's
+`SHA256SUMS` before it is started.
 
 Release a desktop version by pushing a tag such as `v0.1.0`. The release
-workflow builds the Windows client and uploads it to the GitHub Release.
+workflow accepts stable `vMAJOR.MINOR.PATCH` tags, verifies the source, builds a
+Windows installer and portable ZIP, generates SHA-256 checksums, and publishes
+all files to the GitHub Release.
 
 SSH port forwarding/tunnels are intentionally not exposed in the first release.
 The Go SSH session layer contains a reserved port-forwarding interface so a

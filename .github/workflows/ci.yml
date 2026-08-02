@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   go:
     strategy:
@@ -84,6 +88,7 @@ jobs:
       - run: go test -fuzz=FuzzCleanRemote -fuzztime=20s ./internal/sftpclient
 
   package-windows:
+    name: Windows installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -98,7 +103,16 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
-      - run: .\build.ps1
+      - name: Install NSIS
+        run: choco install nsis --no-progress --yes
+      - name: Build NSIS installer
+        shell: pwsh
+        run: .\build.ps1 -Installer -Version 0.0.0 -Commit '${{ github.sha }}' -UpdateRepository '${{ github.repository }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NyaTerminal-Windows-CI
+          path: build/bin/NyaTerminal-amd64-installer.exe
+          if-no-files-found: error
 
   secrets:
     runs-on: ubuntu-latest

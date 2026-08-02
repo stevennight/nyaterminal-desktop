@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ArrowUpDown, ChevronDown, ChevronRight, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
+  ArrowUpDown, ChevronDown, ChevronRight, Download, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   RefreshCw, Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
 } from 'lucide-react'
@@ -109,6 +109,18 @@ function mergedBuildInfo(value?: BuildInfo): BuildInfo {
 function displayBuildValue(value: string | undefined, fallback = '-') {
   const trimmed = value?.trim()
   return trimmed ? trimmed : fallback
+}
+
+function automaticUpdateStatus(value: UpdateCheckResult | undefined) {
+  if (!value) return '-'
+  if (value.canAutoUpdate) return '应用内安装'
+  switch (value.autoUpdateReason) {
+    case 'development-build': return '开发版本'
+    case 'not-installed': return '便携版'
+    case 'unsupported-platform': return '当前平台不支持'
+    case 'installer-unavailable': return '无兼容安装包'
+    default: return '浏览器下载'
+  }
 }
 
 function openExternalURL(url: string | undefined) {
@@ -534,6 +546,7 @@ export function App() {
   const [buildInfo, setBuildInfo] = useState<BuildInfo>()
   const [updateCheck, setUpdateCheck] = useState<UpdateCheckResult>()
   const [updateCheckBusy, setUpdateCheckBusy] = useState(false)
+  const [updateInstallBusy, setUpdateInstallBusy] = useState(false)
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false)
   const activityTimer = useRef<number | undefined>(undefined)
   const sessionsRef = useRef<SessionTab[]>([])
@@ -574,6 +587,15 @@ export function App() {
       setUpdateCheckBusy(false)
     }
   }, [])
+  const downloadAndInstallUpdate = useCallback(async (requestedVersion: string) => {
+    if (updateInstallBusy) return
+    setUpdateInstallBusy(true)
+    try {
+      await api.DownloadAndInstallUpdate(requestedVersion)
+    } finally {
+      setUpdateInstallBusy(false)
+    }
+  }, [updateInstallBusy])
   const effectiveBuildInfo = useMemo(() => mergedBuildInfo(buildInfo), [buildInfo])
 
   useEffect(() => { void reload() }, [reload])
@@ -1257,11 +1279,19 @@ export function App() {
               <strong>发现 NyaTerminal {updateCheck.latestVersion}</strong>
               <small>当前版本 {effectiveBuildInfo.version}</small>
             </div>
-            <button className="secondary" type="button"
-              disabled={!updateCheck.releaseUrl}
-              onClick={() => openExternalURL(updateCheck.releaseUrl)}>
-              <ExternalLink size={14} />Release
-            </button>
+            {updateCheck.canAutoUpdate && updateCheck.latestVersion ? (
+              <button className="secondary" type="button" disabled={updateInstallBusy}
+                onClick={() => void downloadAndInstallUpdate(updateCheck.latestVersion as string)
+                  .catch(reason => setError(localizeError(reason)))}>
+                <Download size={14} />{updateInstallBusy ? '下载中…' : '下载并安装'}
+              </button>
+            ) : (
+              <button className="secondary" type="button"
+                disabled={!updateCheck.releaseUrl}
+                onClick={() => openExternalURL(updateCheck.releaseUrl)}>
+                <ExternalLink size={14} />打开 Release
+              </button>
+            )}
             <button className="icon-button" type="button" title="关闭更新提醒"
               onClick={() => setUpdateNoticeDismissed(true)}>
               <X size={14} />
@@ -1378,9 +1408,11 @@ export function App() {
         buildInfo={effectiveBuildInfo}
         updateCheck={updateCheck}
         updateCheckBusy={updateCheckBusy}
+        updateInstallBusy={updateInstallBusy}
         syncBusy={syncBusy}
         onSyncBusyChange={setSyncBusy}
         onCheckForUpdates={checkForUpdates}
+        onInstallUpdate={downloadAndInstallUpdate}
         onOpenRelease={openExternalURL}
         onClose={() => setSettingsOpen(false)}
         onReload={reload}
@@ -2126,12 +2158,15 @@ function TagEditor({ initial, onClose, onSaved }: {
 
 function SettingsDialog({
   value, vault, syncSummary, connections, buildInfo, updateCheck, updateCheckBusy,
-  syncBusy, onSyncBusyChange, onCheckForUpdates, onOpenRelease, onClose, onSaved, onReload
+  updateInstallBusy, syncBusy, onSyncBusyChange, onCheckForUpdates, onInstallUpdate,
+  onOpenRelease, onClose, onSaved, onReload
 }: {
   value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary; connections: Connection[]
   buildInfo: BuildInfo; updateCheck?: UpdateCheckResult; updateCheckBusy: boolean
+  updateInstallBusy: boolean
   syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
   onCheckForUpdates: () => Promise<UpdateCheckResult>; onOpenRelease: (url: string | undefined) => void
+  onInstallUpdate: (requestedVersion: string) => Promise<void>
   onClose: () => void; onSaved: () => Promise<void>; onReload: () => Promise<void>
 }) {
   const [next, setNext] = useState<Settings>(() => ({
@@ -2210,6 +2245,15 @@ function SettingsDialog({
       )
     } catch (error) {
       showNotice('检查更新失败', localizeError(error))
+    }
+  }
+  const installUpdate = async () => {
+    if (!updateCheck?.latestVersion) return
+    try {
+      await onInstallUpdate(updateCheck.latestVersion)
+      showNotice('更新已下载', '安装程序已经启动。')
+    } catch (error) {
+      showNotice('下载更新失败', localizeError(error))
     }
   }
   const connectionById = useMemo(() => new Map(connections.map(connection => [connection.id, connection])), [connections])
@@ -2930,12 +2974,22 @@ function SettingsDialog({
               <small>Release</small>
               <strong>{displayBuildValue(updateCheck?.releaseName ?? updateCheck?.releaseUrl)}</strong>
             </div>
+            <div>
+              <small>更新方式</small>
+              <strong>{automaticUpdateStatus(updateCheck)}</strong>
+            </div>
           </div>
           <div className="setting-about-actions">
             <button className="secondary" type="button" disabled={updateCheckBusy}
               onClick={() => void manualCheckForUpdates()}>
               <RefreshCw size={14} />{updateCheckBusy ? '检查中…' : '检查更新'}
             </button>
+            {updateCheck?.updateAvailable && updateCheck.canAutoUpdate && updateCheck.latestVersion && (
+              <button className="secondary" type="button" disabled={updateInstallBusy}
+                onClick={() => void installUpdate()}>
+                <Download size={14} />{updateInstallBusy ? '下载中…' : '下载并安装'}
+              </button>
+            )}
             <button className="secondary" type="button" disabled={!updateCheck?.releaseUrl}
               onClick={() => onOpenRelease(updateCheck?.releaseUrl)}>
               <ExternalLink size={14} />打开 Release

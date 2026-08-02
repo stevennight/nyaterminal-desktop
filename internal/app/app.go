@@ -79,6 +79,12 @@ func (a *App) CheckForUpdates() (updatecheck.Result, error) {
 	return updatecheck.DefaultChecker().Check(ctx)
 }
 
+func (a *App) DownloadAndInstallUpdate(requestedVersion string) error {
+	ctx, cancel := context.WithTimeout(a.context(), 15*time.Minute)
+	defer cancel()
+	return updatecheck.DefaultChecker().DownloadAndInstall(ctx, requestedVersion)
+}
+
 func New(dataDir string) *App {
 	return &App{
 		dataDir: dataDir, challenges: make(map[string]chan challengeResponse),
