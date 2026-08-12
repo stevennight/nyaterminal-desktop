@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="NyaTerminal">
+  <defs>
+    <linearGradient id="card" x1="0" y1="178" x2="0" y2="846" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3c424a" />
+      <stop offset="1" stop-color="#252b32" />
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="178" x2="0" y2="846" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#758291" />
+      <stop offset="1" stop-color="#596570" />
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feFlood flood-color="#62d9ca" flood-opacity="0.32" />
+      <feComposite in2="blur" operator="in" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="62" y="178" width="900" height="668" rx="91" fill="url(#card)" stroke="url(#edge)" stroke-width="6" />
+  <g fill="none" stroke="#72e8da" stroke-width="10" stroke-linecap="square" stroke-linejoin="miter" filter="url(#glow)">
+    <path d="M414 435 496 508 414 581" />
+    <path d="M512 611h108" />
+  </g>
+</svg>

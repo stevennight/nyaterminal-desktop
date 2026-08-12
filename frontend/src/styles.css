@@ -113,8 +113,8 @@ html, body, #root, .app-shell {
 .brand-row > div:nth-child(2) { display: flex; flex-direction: column; line-height: 1.2; }
 .brand-row small { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .brand-row .icon-button { margin-left: 0; }
-.brand-mark { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: var(--accent-contrast); font-weight: 800; box-shadow: 0 8px 30px #37c9b735; }
-.brand-mark.large { width: 48px; height: 48px; border-radius: 14px; font-size: 20px; }
+.brand-mark { width: 38px; height: 38px; flex: 0 0 auto; display: block; object-fit: contain; filter: drop-shadow(0 8px 15px #37c9b735); }
+.brand-mark.large { width: 54px; height: 54px; }
 .icon-button { margin-left: auto; background: transparent; border: 0; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--muted); }
 .icon-button:hover { background: var(--panel2); color: var(--text); }
 .search-box { flex: 0 0 auto; margin: 0 13px 16px; height: 38px; border: 1px solid var(--line); background: var(--bg); border-radius: 10px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); }

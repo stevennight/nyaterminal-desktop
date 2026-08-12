@@ -12,6 +12,18 @@ $ErrorActionPreference = "Stop"
 
 Set-Location $PSScriptRoot
 
+$iconSourcePath = Join-Path $PSScriptRoot "frontend\public\nyaterminal-icon-dark-gray.png"
+$wailsIconPath = Join-Path $PSScriptRoot "build\appicon.png"
+$wailsIcoPath = Join-Path $PSScriptRoot "build\windows\icon.ico"
+if (-not (Test-Path -LiteralPath $iconSourcePath -PathType Leaf)) {
+  throw "The application icon source is missing at $iconSourcePath."
+}
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $wailsIconPath), (Split-Path -Parent $wailsIcoPath) | Out-Null
+Copy-Item -LiteralPath $iconSourcePath -Destination $wailsIconPath -Force
+if (Test-Path -LiteralPath $wailsIcoPath -PathType Leaf) {
+  Remove-Item -LiteralPath $wailsIcoPath -Force
+}
+
 function Ensure-Command {
   param([string]$Name, [string]$InstallHint)
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {

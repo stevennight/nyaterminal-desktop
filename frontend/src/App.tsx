@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
+import { brandIconSrc } from './brandIcon'
 import { cloneConnectionDraft } from './connectionDraft'
 import {
   deleteCommandHistory,
@@ -1110,7 +1111,7 @@ export function App() {
     <div className={`app-shell theme-${settings.theme}`}>
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand-mark">N</div>
+          <img className="brand-mark" src={brandIconSrc(settings.theme)} alt="" aria-hidden="true" />
           <div><strong>NyaTerminal</strong><small>Secure workspace</small></div>
           <button className="icon-button" onClick={() => setAccountManagerOpen(true)} title="账号管理">
             <Shield size={17} />
@@ -1707,7 +1708,7 @@ function CenteredCard({ theme, title, subtitle, children }: {
   theme: ThemeName; title: string; subtitle: string; children: React.ReactNode
 }) {
   return <div className={`auth-screen theme-${theme}`}><div className="auth-card">
-    <div className="auth-brand"><div className="brand-mark large">N</div></div>
+    <div className="auth-brand"><img className="brand-mark large" src={brandIconSrc(theme)} alt="" aria-hidden="true" /></div>
     <h1>{title}</h1><p>{subtitle}</p>{children}
   </div></div>
 }
