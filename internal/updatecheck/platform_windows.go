@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -24,9 +24,13 @@ func launchInstaller(path string) error {
 	if !strings.EqualFold(filepath.Ext(path), ".exe") {
 		return errors.New("the downloaded update is not a supported Windows installer")
 	}
-	// #nosec G204 -- path is a private temp file populated from a trusted, checksum-verified release asset.
-	if err := exec.Command(path).Start(); err != nil {
-		return fmt.Errorf("start the update installer: %w", err)
+	verb := windows.StringToUTF16Ptr("runas")
+	file := windows.StringToUTF16Ptr(path)
+	if err := windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL); err != nil {
+		if errors.Is(err, windows.ERROR_CANCELLED) {
+			return errors.New("the update installer was not started because administrator approval was canceled")
+		}
+		return fmt.Errorf("start the update installer with administrator approval: %w", err)
 	}
 	return nil
 }
