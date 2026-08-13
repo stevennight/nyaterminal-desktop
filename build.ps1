@@ -86,6 +86,14 @@ if ($Installer) {
   if (-not $makensis) {
     throw "makensis was not found. Install NSIS and add makensis.exe to PATH."
   }
+
+  $installerTemplatePath = Join-Path $PSScriptRoot "installer\project.nsi"
+  if (-not (Test-Path -LiteralPath $installerTemplatePath -PathType Leaf)) {
+    throw "The NSIS installer template is missing at $installerTemplatePath."
+  }
+  $generatedInstallerPath = Join-Path $PSScriptRoot "build\windows\installer\project.nsi"
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $generatedInstallerPath) | Out-Null
+  Copy-Item -LiteralPath $installerTemplatePath -Destination $generatedInstallerPath -Force
 }
 
 $productVersion = $Version.Trim()
