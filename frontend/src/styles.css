@@ -293,7 +293,7 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .terminal-pane.active { visibility: visible; }
 .terminal-host { position: absolute; inset: 7px 7px 24px; }
 .terminal-status { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; border-top: 1px solid var(--terminal-line); color: var(--terminal-muted); font-size: 10px; padding: 3px 10px; background: var(--terminal-panel-strong); }
-.terminal-status button { float: right; padding: 1px 7px; border: 1px solid var(--terminal-danger-line); border-radius: 5px; color: var(--terminal-danger); }
+.terminal-status button { float: right; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border: 1px solid var(--terminal-danger-line); border-radius: 5px; color: var(--terminal-danger); cursor: pointer; }
 .terminal-search { position: absolute; top: 8px; right: 10px; z-index: 6; display: flex; gap: 4px; padding: 6px; border: 1px solid var(--terminal-line); border-radius: 8px; background: color-mix(in srgb, var(--terminal-panel) 92%, transparent); box-shadow: 0 12px 35px var(--terminal-shadow); }
 .terminal-search input { width: 220px; padding: 5px 7px; border: 1px solid var(--terminal-line); border-radius: 5px; background: var(--terminal-bg); color: var(--terminal-fg); font-size: 11px; }
 .terminal-search button { padding: 4px 7px; color: var(--terminal-fg); font-size: 10px; }

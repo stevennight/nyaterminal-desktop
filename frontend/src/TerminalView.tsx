@@ -5,10 +5,11 @@ import { SearchAddon } from '@xterm/addon-search'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { ClipboardCopy, ClipboardPaste, TextSelect, Trash2 } from 'lucide-react'
+import { ClipboardCopy, ClipboardPaste, RefreshCw, TextSelect, Trash2 } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 import { api } from './bridge'
 import { deleteCommandHistory, recordCommandHistory, suggestCommandHistory } from './commandHistorySuggestions'
+import { isVaultLockedError, VAULT_LOCKED_MESSAGE } from './connectionRecovery'
 import { ZmodemAdapter } from './zmodem'
 import { chunkTerminalInput, clampTerminalMenuPosition, getTerminalClipboardAction } from './terminalClipboard'
 import { TerminalEchoGuard } from './terminalEchoGuard'
@@ -29,6 +30,7 @@ type Props = {
   attempt: number
   privateSession: boolean
   reconnectMessage?: string
+  canRetry?: boolean
   credentialOverride?: {
     name?: string
     type?: Connection['authentication']
@@ -38,6 +40,7 @@ type Props = {
   }
   onReady: (sessionId: string) => void
   onRetryableDisconnect: (reason: { message: string; retryable: boolean }) => void
+  onRetry?: () => void
   onHostKey: (pending: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['hostKey']>) => void
   onAuthPrompt: (prompt: NonNullable<Awaited<ReturnType<typeof api.StartSSH>>['authPrompt']>) => void
   onActivity?: () => void
@@ -46,7 +49,7 @@ type Props = {
 }
 
 export function TerminalView({
-  connection, settings, active, attempt, privateSession, reconnectMessage, credentialOverride, onReady, onRetryableDisconnect, onHostKey, onAuthPrompt, onActivity, onZmodemActiveChange, onClose
+  connection, settings, active, attempt, privateSession, reconnectMessage, canRetry, credentialOverride, onReady, onRetryableDisconnect, onRetry, onHostKey, onAuthPrompt, onActivity, onZmodemActiveChange, onClose
 }: Props) {
   const paneRef = useRef<HTMLElement>(null)
   const host = useRef<HTMLDivElement>(null)
@@ -490,9 +493,10 @@ export function TerminalView({
         closeCurrentConnection(true)
         const message = error instanceof Error ? error.message : String(error)
         const retryable = !/host key|password is required|private key is required|rejected by the server|invalid|cancelled|timed out/i.test(message)
+        const displayMessage = isVaultLockedError(message) ? VAULT_LOCKED_MESSAGE : message
         wasDisconnectedRef.current = true
-        setStatus(message)
-        writeTerminalNotice(message, '31')
+        setStatus(displayMessage)
+        if (!isVaultLockedError(message)) writeTerminalNotice(displayMessage, '31')
         onRetryableDisconnectRef.current({ message, retryable })
       })
     }
@@ -754,6 +758,9 @@ export function TerminalView({
       <div className="terminal-status">
         {status}
         {privateSession ? ' · private session' : ''}
+        {canRetry && onRetry && !zmodemActive && <button type="button" onClick={onRetry}>
+          <RefreshCw size={12} />立即重连
+        </button>}
         {zmodemActive && <button onClick={() => {
           const sessionId = sessionIdRef.current
           if (backendZmodemActiveRef.current && sessionId) void api.CancelZmodem(sessionId)

@@ -16,6 +16,10 @@ import {
   refreshCommandHistorySuggestions,
 } from './commandHistorySuggestions'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import {
+  isVaultLockedError, MANUAL_RECONNECT_MESSAGE, RESUMING_RECONNECT_MESSAGE,
+  VAULT_LOCKED_MESSAGE, VAULT_LOCKED_RECONNECT_MESSAGE,
+} from './connectionRecovery'
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
@@ -38,6 +42,8 @@ type SessionTab = {
   reconnecting: boolean
   reconnectTimer?: number
   reconnectMessage?: string
+  waitingForUnlock: boolean
+  retryAvailable: boolean
   sshSessionId?: string
   sftp: boolean
   privateSession: boolean
@@ -280,6 +286,9 @@ function localizeError(value: unknown) {
   }
 
   const directMap: Array<[string, string]> = [
+    ['vault is locked', VAULT_LOCKED_MESSAGE],
+    ['connection closed', '连接已断开。'],
+    ['connection error', '连接发生错误。'],
     ['synchronization requires login', '同步需要先登录。'],
     ['synchronization is not configured', '同步尚未配置。'],
     ['group contains child groups', '当前分组下还有子分组，无法删除。'],
@@ -551,6 +560,7 @@ export function App() {
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false)
   const activityTimer = useRef<number | undefined>(undefined)
   const sessionsRef = useRef<SessionTab[]>([])
+  const vaultLockedRef = useRef(false)
   const closedTabsRef = useRef(new Set<string>())
   const zmodemActiveTabsRef = useRef(new Set<string>())
   const searchInput = useRef<HTMLInputElement>(null)
@@ -619,6 +629,28 @@ export function App() {
   useEffect(() => {
     sessionsRef.current = sessions
   }, [sessions])
+
+  useEffect(() => {
+    const locked = bootstrap?.vault.locked
+    if (locked === undefined) return
+    const wasLocked = vaultLockedRef.current
+    vaultLockedRef.current = locked
+    if (locked || !wasLocked) return
+    setSessions(current => current.map(item => {
+      if (!item.waitingForUnlock) return item
+      return {
+        ...item,
+        attempt: item.attempt + 1,
+        reconnectAttempts: 0,
+        reconnecting: false,
+        reconnectTimer: undefined,
+        reconnectMessage: RESUMING_RECONNECT_MESSAGE,
+        waitingForUnlock: false,
+        retryAvailable: false,
+        sshSessionId: undefined,
+      }
+    }))
+  }, [bootstrap?.vault.locked])
 
   useEffect(() => {
     const nextTheme = bootstrap?.settings?.theme
@@ -745,6 +777,7 @@ export function App() {
   const lock = async () => {
     const disconnect = bootstrap?.settings?.disconnectOnLock ?? true
     await api.Lock()
+    vaultLockedRef.current = true
     void navigator.clipboard?.writeText('').catch(() => undefined)
     if (disconnect) {
       sessionsRef.current.forEach(tab => closedTabsRef.current.add(tab.id))
@@ -753,6 +786,29 @@ export function App() {
       })
       setSessions([])
       setActiveSession('')
+    } else {
+      const settings = bootstrap?.settings
+      setSessions(current => current.map(item => {
+        if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
+        const hasPendingConnection = Boolean(
+          item.reconnectTimer || item.reconnecting || (!item.sshSessionId && !item.retryAvailable)
+        )
+        if (!hasPendingConnection) {
+          return { ...item, reconnectTimer: undefined }
+        }
+        const resumesAutomatically = Boolean(
+          settings && resolvesAutoReconnect(item.connection, settings)
+        )
+        return {
+          ...item,
+          reconnecting: false,
+          reconnectTimer: undefined,
+          reconnectMessage: resumesAutomatically ? VAULT_LOCKED_RECONNECT_MESSAGE : VAULT_LOCKED_MESSAGE,
+          waitingForUnlock: resumesAutomatically,
+          retryAvailable: !resumesAutomatically,
+          sshSessionId: undefined,
+        }
+      }))
     }
     setBootstrap(current => current ? {
       ...current,
@@ -807,6 +863,8 @@ export function App() {
       reconnecting: false,
       reconnectTimer: undefined,
       reconnectMessage: undefined,
+      waitingForUnlock: false,
+      retryAvailable: false,
       sftp: false,
       privateSession,
       credentialOverride: undefined
@@ -831,6 +889,22 @@ export function App() {
       if (item.id !== tabId) return item
       if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
       const reconnectTimer = window.setTimeout(() => {
+        if (vaultLockedRef.current) {
+          setSessions(inner => inner.map(tab =>
+            tab.id === tabId
+              ? {
+                ...tab,
+                reconnecting: false,
+                reconnectTimer: undefined,
+                reconnectMessage: VAULT_LOCKED_RECONNECT_MESSAGE,
+                waitingForUnlock: true,
+                retryAvailable: false,
+                sshSessionId: undefined,
+              }
+              : tab
+          ))
+          return
+        }
         setSessions(inner => inner.map(tab =>
           tab.id === tabId
             ? {
@@ -838,6 +912,8 @@ export function App() {
               reconnecting: false,
               reconnectTimer: undefined,
               reconnectMessage: undefined,
+              waitingForUnlock: false,
+              retryAvailable: false,
               sshSessionId: undefined,
               attempt: tab.attempt + 1,
             }
@@ -849,6 +925,37 @@ export function App() {
         reconnecting: true,
         reconnectTimer,
         reconnectMessage: message,
+        waitingForUnlock: false,
+        retryAvailable: false,
+        sshSessionId: undefined,
+      }
+    }))
+  }, [])
+
+  const retrySessionConnectionNow = useCallback((tabId: string) => {
+    setSessions(current => current.map(item => {
+      if (item.id !== tabId) return item
+      if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
+      if (vaultLockedRef.current) {
+        return {
+          ...item,
+          reconnecting: false,
+          reconnectTimer: undefined,
+          reconnectMessage: VAULT_LOCKED_MESSAGE,
+          waitingForUnlock: false,
+          retryAvailable: true,
+          sshSessionId: undefined,
+        }
+      }
+      return {
+        ...item,
+        attempt: item.attempt + 1,
+        reconnectAttempts: 0,
+        reconnecting: false,
+        reconnectTimer: undefined,
+        reconnectMessage: '正在重连…',
+        waitingForUnlock: false,
+        retryAvailable: false,
         sshSessionId: undefined,
       }
     }))
@@ -856,50 +963,72 @@ export function App() {
 
   const handleTerminalDisconnect = useCallback((tabId: string, reason: { message: string; retryable: boolean }) => {
     if (closedTabsRef.current.has(tabId)) return
+    const currentTab = sessionsRef.current.find(item => item.id === tabId)
+    if (!currentTab) return
+    const settings = bootstrap?.settings
+    const resumesAutomatically = Boolean(
+      settings && resolvesAutoReconnect(currentTab.connection, settings)
+    )
+    const vaultLocked = vaultLockedRef.current || isVaultLockedError(reason.message)
+
+    if (vaultLocked) {
+      setSessions(current => current.map(item => {
+        if (item.id !== tabId) return item
+        if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
+        return {
+          ...item,
+          reconnecting: false,
+          reconnectTimer: undefined,
+          reconnectMessage: resumesAutomatically ? VAULT_LOCKED_RECONNECT_MESSAGE : VAULT_LOCKED_MESSAGE,
+          waitingForUnlock: resumesAutomatically,
+          retryAvailable: !resumesAutomatically,
+          sshSessionId: undefined,
+        }
+      }))
+      return
+    }
+
+    const shouldAutoReconnect = Boolean(
+      settings && reason.retryable && resolvesAutoReconnect(currentTab.connection, settings)
+    )
     setSessions(current => {
-      const tab = current.find(item => item.id === tabId)
-      if (!tab) return current
-      const settings = bootstrap?.settings
-      if (!settings || !reason.retryable || !resolvesAutoReconnect(tab.connection, settings)) {
-        return current.map(item =>
-          item.id === tabId
-            ? {
-              ...item,
-              reconnecting: false,
-              reconnectTimer: undefined,
-              reconnectMessage: undefined,
-              sshSessionId: undefined,
-            }
-            : item
-        )
-      }
-      const nextAttempt = tab.reconnectAttempts + 1
-      if (nextAttempt > AUTO_RECONNECT_LIMIT) {
-        return current.map(item =>
-          item.id === tabId
-            ? {
-              ...item,
-              reconnecting: false,
-              reconnectTimer: undefined,
-              reconnectMessage: `重连失败，已达到最大重试次数。${reason.message ? ` ${reason.message}` : ''}`.trim(),
-              sshSessionId: undefined,
-            }
-            : item
-        )
-      }
-      return current.map(item =>
-        item.id === tabId
-          ? {
+      return current.map(item => {
+        if (item.id !== tabId) return item
+        if (!shouldAutoReconnect) {
+          if (item.reconnectTimer) window.clearTimeout(item.reconnectTimer)
+          return {
             ...item,
-            reconnectAttempts: nextAttempt,
+            reconnecting: false,
+            reconnectTimer: undefined,
+            reconnectMessage: reason.message ? localizeError(reason.message) : MANUAL_RECONNECT_MESSAGE,
+            waitingForUnlock: false,
+            retryAvailable: true,
             sshSessionId: undefined,
           }
-          : item
-      )
+        }
+        const nextAttempt = item.reconnectAttempts + 1
+        if (nextAttempt > AUTO_RECONNECT_LIMIT) {
+          const detail = reason.message ? ` ${localizeError(reason.message)}` : ''
+          return {
+            ...item,
+            reconnecting: false,
+            reconnectTimer: undefined,
+            reconnectMessage: `自动重连已停止（已达到最大次数）。${detail}`.trim(),
+            waitingForUnlock: false,
+            retryAvailable: true,
+            sshSessionId: undefined,
+          }
+        }
+        return {
+          ...item,
+          reconnectAttempts: nextAttempt,
+          waitingForUnlock: false,
+          retryAvailable: false,
+          sshSessionId: undefined,
+        }
+      })
     })
-    const currentTab = sessionsRef.current.find(item => item.id === tabId)
-    const settings = bootstrap?.settings
-    if (!currentTab || !settings || !reason.retryable || !resolvesAutoReconnect(currentTab.connection, settings)) {
+    if (!shouldAutoReconnect) {
       return
     }
     const nextAttempt = currentTab.reconnectAttempts + 1
@@ -1307,9 +1436,11 @@ export function App() {
               attempt={tab.attempt}
               privateSession={tab.privateSession}
               reconnectMessage={tab.reconnectMessage}
+              canRetry={tab.retryAvailable}
               credentialOverride={tab.credentialOverride}
               onActivity={resetActivity}
               onZmodemActiveChange={active => setZmodemTabActive(tab.id, active)}
+              onRetry={() => retrySessionConnectionNow(tab.id)}
               onReady={sessionId => setSessions(current => current.map(item =>
                 item.id === tab.id
                   ? {
@@ -1320,6 +1451,8 @@ export function App() {
                     reconnecting: false,
                     reconnectTimer: undefined,
                     reconnectMessage: undefined,
+                    waitingForUnlock: false,
+                    retryAvailable: false,
                   }
                   : item
               ))}
@@ -1332,6 +1465,8 @@ export function App() {
                       reconnecting: false,
                       reconnectTimer: undefined,
                       reconnectMessage: undefined,
+                      waitingForUnlock: false,
+                      retryAvailable: false,
                     }
                     : item
                 ))
@@ -1345,6 +1480,8 @@ export function App() {
                       reconnecting: false,
                       reconnectTimer: undefined,
                       reconnectMessage: undefined,
+                      waitingForUnlock: false,
+                      retryAvailable: false,
                     }
                     : item
                 ))
@@ -1433,6 +1570,8 @@ export function App() {
                 reconnecting: false,
                 reconnectTimer: undefined,
                 reconnectMessage: undefined,
+                waitingForUnlock: false,
+                retryAvailable: false,
               }
               : item
           ))
@@ -1489,6 +1628,8 @@ export function App() {
                   reconnecting: false,
                   reconnectTimer: undefined,
                   reconnectMessage: undefined,
+                  waitingForUnlock: false,
+                  retryAvailable: false,
                 }
                 : item
             ))
