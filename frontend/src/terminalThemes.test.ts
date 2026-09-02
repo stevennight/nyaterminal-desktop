@@ -7,6 +7,25 @@ import {
 } from './terminalThemes'
 
 describe('terminalThemes', () => {
+  it('includes the supported light presets with complete color palettes', () => {
+    const expectedLightPresets = {
+      white: '#FFFFFF',
+      'solarized-light': '#FDF6E3',
+      'one-light': '#FAFAFA',
+      'gruvbox-light': '#FBF1C7',
+      'catppuccin-latte': '#EFF1F5',
+      'rose-pine-dawn': '#FAF4ED',
+    }
+
+    for (const [id, background] of Object.entries(expectedLightPresets)) {
+      const preset = TERMINAL_THEME_PRESETS.find(item => item.id === id)
+      expect(preset, `missing ${id} preset`).toBeDefined()
+      expect(preset?.colors.background).toBe(background)
+      expect(Object.values(preset?.colors ?? {})).toHaveLength(22)
+      expect(Object.values(preset?.colors ?? {}).every(color => /^#[0-9A-F]{6}$/.test(color))).toBe(true)
+    }
+  })
+
   it('falls back to preset colors when custom values are invalid', () => {
     const dracula = TERMINAL_THEME_PRESETS.find(preset => preset.id === 'dracula')
     expect(dracula).toBeDefined()
