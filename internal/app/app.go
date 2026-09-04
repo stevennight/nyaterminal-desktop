@@ -82,7 +82,11 @@ func (a *App) CheckForUpdates() (updatecheck.Result, error) {
 func (a *App) DownloadAndInstallUpdate(requestedVersion string) error {
 	ctx, cancel := context.WithTimeout(a.context(), 15*time.Minute)
 	defer cancel()
-	return updatecheck.DefaultChecker().DownloadAndInstall(ctx, requestedVersion)
+	if err := updatecheck.DefaultChecker().DownloadAndInstall(ctx, requestedVersion); err != nil {
+		return err
+	}
+	runtime.Quit(a.context())
+	return nil
 }
 
 func New(dataDir string) *App {
