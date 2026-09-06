@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -477,6 +478,30 @@ func (a *App) StartSSH(request sshclient.StartRequest) (TerminalStart, error) {
 		return TerminalStart{AuthPrompt: &authPromptError}, nil
 	}
 	return TerminalStart{}, err
+}
+
+// LaunchRDP resolves an RDP connection plus its saved credential and opens it in
+// the operating system's Remote Desktop client.
+func (a *App) LaunchRDP(connectionID string) error {
+	if err := a.ready(); err != nil {
+		return err
+	}
+	ctx := a.context()
+	connection, err := a.store.GetConnection(ctx, connectionID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(connection.Protocol), model.ProtocolRDP) {
+		return errors.New("this connection is not a Remote Desktop connection")
+	}
+	var credential model.Credential
+	if connection.CredentialID != "" {
+		credential, err = a.store.GetCredential(ctx, connection.CredentialID)
+		if err != nil {
+			return err
+		}
+	}
+	return a.launchRDP(connection, credential)
 }
 
 func (a *App) AnswerSSHChallenge(id string, answers []string, cancelled bool) error {

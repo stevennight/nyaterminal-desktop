@@ -159,11 +159,16 @@ const TAB_SORT_OPTIONS: ReadonlyArray<{ mode: TabSortMode; label: string }> = [
 ]
 
 const emptyConnection: Connection = {
-  id: '', name: '', remark: '', host: '', port: 22, username: 'root',
+  id: '', name: '', remark: '', protocol: 'ssh', host: '', port: 22, username: 'root',
   authentication: 'password', tags: [], encoding: 'utf-8',
   sortOrder: 0,
   keepAliveSeconds: 30, connectTimeoutSeconds: 15,
   legacyAlgorithms: false, commandHistory: true
+}
+
+const emptyRdpConnection: Connection = {
+  ...emptyConnection, protocol: 'rdp', port: 3389, username: 'Administrator',
+  rdpScreenMode: 'fullscreen', rdpRedirectClipboard: true
 }
 
 function isThemeName(value: string | null | undefined): value is ThemeName {
@@ -852,6 +857,14 @@ export function App() {
   ])
 
   const openConnection = (connection: Connection, privateSession = false) => {
+    if (connection.protocol === 'rdp') {
+      if (!connection.id) {
+        setError('请先保存该远程桌面连接。')
+        return
+      }
+      void api.LaunchRDP(connection.id).catch(reason => setError(localizeError(reason)))
+      return
+    }
     const id = crypto.randomUUID()
     closedTabsRef.current.delete(id)
     setSessions(current => [...current, {
@@ -1096,6 +1109,10 @@ export function App() {
           onSelect: () => setConnectionEditor({ ...emptyConnection, groupId: group.id })
         },
         {
+          label: '新建 RDP',
+          onSelect: () => setConnectionEditor({ ...emptyRdpConnection, groupId: group.id })
+        },
+        {
           label: '编辑',
           onSelect: () => setGroupEditor({ initial: group })
         },
@@ -1110,18 +1127,19 @@ export function App() {
 
   const showConnectionContextMenu = (event: React.MouseEvent, connection: Connection) => {
     event.preventDefault()
+    const isRdp = connection.protocol === 'rdp'
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
         {
-          label: '连接',
+          label: isRdp ? '打开远程桌面' : '连接',
           onSelect: () => openConnection(connection)
         },
-        {
+        ...(isRdp ? [] : [{
           label: '隐私连接',
           onSelect: () => openConnection(connection, true)
-        },
+        }]),
         {
           label: '克隆',
           onSelect: () => setConnectionEditor(cloneConnectionDraft(connection))
@@ -1259,7 +1277,9 @@ export function App() {
               title={`排序方式：${CONNECTION_SORT_LABELS[connectionSortMode]}`}
               onClick={showConnectionSortMenu}><ArrowUpDown size={15} /></button>
             <button title="新建分组" onClick={() => setGroupEditor({})}><FolderPlus size={15} /></button>
-            <button title="新建连接" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
+            <button title="新建远程桌面连接"
+              onClick={() => setConnectionEditor({ ...emptyRdpConnection })}><Monitor size={15} /></button>
+            <button title="新建 SSH 连接" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
           </div>
         </div>
         <nav className="connection-tree">
@@ -1753,13 +1773,18 @@ function ConnectionRow({ value, onOpen, onContextMenu }: {
   onOpen: (value: Connection, privateSession?: boolean) => void
   onContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
+  const isRdp = value.protocol === 'rdp'
   return <button className="connection-row" draggable
     onDragStart={event => event.dataTransfer.setData('application/x-nya-connection', value.id)}
-    title="双击连接；右键查看更多操作"
+    title={isRdp ? '双击打开远程桌面；右键查看更多操作' : '双击连接；右键查看更多操作'}
     onDoubleClick={() => onOpen(value)}
     onContextMenu={event => onContextMenu(event, value)}>
     <span className="status-dot" /><span className="connection-copy">
-      <strong>{value.name}</strong><small>{value.username}@{value.host}:{value.port}</small>
+      <strong>
+        {isRdp && <span className="proto-badge">RDP</span>}
+        {value.name}
+      </strong>
+      <small>{value.username ? `${value.username}@` : ''}{value.host}:{value.port}</small>
     </span>
   </button>
 }
@@ -2024,16 +2049,29 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
   const [groupEditorParentId, setGroupEditorParentId] = useState<string>()
   const [secret, setSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
+  const [clearSecret, setClearSecret] = useState(false)
   const [error, setError] = useState('')
+  const isRdp = value.protocol === 'rdp'
   useEffect(() => { setAvailableGroups(groups) }, [groups])
   useEffect(() => {
     setValue(initial)
     setSecret('')
     setPassphrase('')
+    setClearSecret(false)
     setError('')
   }, [initial])
   const update = <K extends keyof Connection>(key: K, next: Connection[K]) =>
     setValue(current => ({ ...current, [key]: next }))
+  const changeProtocol = (protocol: Connection['protocol']) => setValue(current => {
+    const next: Connection = { ...current, protocol }
+    if (protocol === 'rdp') {
+      if (!current.port || current.port === 22) next.port = 3389
+      if (!next.rdpScreenMode) next.rdpScreenMode = 'fullscreen'
+    } else if (current.port === 3389) {
+      next.port = 22
+    }
+    return next
+  })
   const syncGroups = (nextGroups: Group[]) => {
     setAvailableGroups(nextGroups)
     onGroupsUpdated?.(nextGroups)
@@ -2041,7 +2079,19 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
   const save = async (connect: boolean) => {
     try {
       let credentialId = value.credentialId
-      if (value.authentication !== 'agent' && (secret || !credentialId)) {
+      if (isRdp) {
+        if (clearSecret) {
+          credentialId = undefined
+        } else if (secret) {
+          const credential: Credential = await api.SaveCredential({
+            id: credentialId ?? '',
+            name: `${value.name || value.host} credential`,
+            type: 'password',
+            password: secret
+          })
+          credentialId = credential.id
+        }
+      } else if (value.authentication !== 'agent' && (secret || !credentialId)) {
         const credential: Credential = await api.SaveCredential({
           id: credentialId ?? '',
           name: `${value.name || value.host} credential`,
@@ -2052,23 +2102,30 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
         })
         credentialId = credential.id
       }
-      await onSaved(await api.SaveConnection({ ...value, credentialId }), connect)
+      const payload: Connection = { ...value, credentialId }
+      if (isRdp) payload.authentication = 'password'
+      await onSaved(await api.SaveConnection(payload), connect)
     } catch (reason) { setError(localizeError(reason)) }
   }
   return <>
-    <Modal title={value.id ? '编辑 SSH 连接' : '新建 SSH 连接'} onClose={onClose} width="680px"
+    <Modal title={`${value.id ? '编辑' : '新建'} ${isRdp ? 'RDP' : 'SSH'} 连接`} onClose={onClose} width="680px"
       footer={<>
         {value.id && <button className="danger-button modal-action-leading" onClick={() => {
           if (window.confirm(`确定删除连接 ${value.name}？`)) void onDeleted(value.id)
         }}>删除</button>}
         <button onClick={onClose}>取消</button>
         <button onClick={() => void save(false)}>保存</button>
-        <button className="primary" onClick={() => void save(true)}>保存并连接</button>
+        <button className="primary" onClick={() => void save(true)}>{isRdp ? '保存并打开' : '保存并连接'}</button>
       </>}>
       <div className="form-grid">
       <label className="full">名称<input value={value.name} onChange={e => update('name', e.target.value)} /></label>
       <label className="full">备注<textarea rows={3} value={value.remark ?? ''}
         onChange={e => update('remark', e.target.value)} /></label>
+      <label className="full">协议<select value={value.protocol ?? 'ssh'}
+        onChange={e => changeProtocol(e.target.value as Connection['protocol'])}>
+        <option value="ssh">SSH</option>
+        <option value="rdp">RDP（Windows 远程桌面）</option>
+      </select></label>
       <label className="wide">主机<input value={value.host} onChange={e => update('host', e.target.value)} /></label>
       <label>端口<input type="number" value={value.port} onChange={e => update('port', Number(e.target.value))} /></label>
       <label className="full">分组<GroupCascader groups={availableGroups} value={value.groupId} rootLabel="未分组"
@@ -2084,7 +2141,9 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
         </button>)}
         {!tags.length && <small>可先在左侧创建标签</small>}
       </div></div>
-      <label className="full">用户名<input value={value.username} onChange={e => update('username', e.target.value)} /></label>
+      <label className="full">用户名<input value={value.username} onChange={e => update('username', e.target.value)}
+        placeholder={isRdp ? '可留空，连接时再输入' : ''} /></label>
+      {!isRdp && <>
       <label className="full">认证方式<select value={value.authentication}
         onChange={e => update('authentication', e.target.value as Connection['authentication'])}>
         <option value="password">密码</option><option value="private_key">私钥</option>
@@ -2126,6 +2185,35 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
       </select></label>
       <label className="check full"><input type="checkbox" checked={value.commandHistory}
         onChange={e => update('commandHistory', e.target.checked)} />记录并提示此连接的历史命令</label>
+      </>}
+      {isRdp && <>
+      <label className="full">密码<input type="password" value={secret} autoComplete="off"
+        disabled={clearSecret}
+        placeholder={value.credentialId ? '留空则保持不变' : '留空则每次连接时输入'}
+        onChange={e => setSecret(e.target.value)} /></label>
+      {value.credentialId && <label className="check full"><input type="checkbox" checked={clearSecret}
+        onChange={e => { setClearSecret(e.target.checked); if (e.target.checked) setSecret('') }} />
+        清除已保存的密码（改为每次连接时手动输入）</label>}
+      <label className="full">显示模式<select value={value.rdpScreenMode ?? 'fullscreen'}
+        onChange={e => update('rdpScreenMode', e.target.value as Connection['rdpScreenMode'])}>
+        <option value="fullscreen">全屏</option>
+        <option value="windowed">窗口</option>
+      </select></label>
+      <label>宽度（0=自动）<input type="number" min={0} value={value.rdpWidth ?? 0}
+        onChange={e => update('rdpWidth', Number(e.target.value) || undefined)} /></label>
+      <label>高度（0=自动）<input type="number" min={0} value={value.rdpHeight ?? 0}
+        onChange={e => update('rdpHeight', Number(e.target.value) || undefined)} /></label>
+      <label className="check full"><input type="checkbox" checked={value.rdpMultiMonitor ?? false}
+        onChange={e => update('rdpMultiMonitor', e.target.checked)} />使用所有显示器（多显示器）</label>
+      <label className="check full"><input type="checkbox" checked={value.rdpRedirectClipboard ?? true}
+        onChange={e => update('rdpRedirectClipboard', e.target.checked)} />重定向剪贴板</label>
+      <label className="check full"><input type="checkbox" checked={value.rdpRedirectDrives ?? false}
+        onChange={e => update('rdpRedirectDrives', e.target.checked)} />重定向本地磁盘驱动器</label>
+      <label className="check full"><input type="checkbox" checked={value.rdpAdminSession ?? false}
+        onChange={e => update('rdpAdminSession', e.target.checked)} />以管理会话连接（/admin）</label>
+      <label className="full">RD 网关（可选）<input value={value.rdpGateway ?? ''}
+        placeholder="gateway.example.com" onChange={e => update('rdpGateway', e.target.value || undefined)} /></label>
+      </>}
       <label className="full">密码/私钥同步策略<select
         value={value.syncSecrets === undefined ? 'default' : value.syncSecrets ? 'yes' : 'no'}
         onChange={event => setValue(current => {
@@ -2138,14 +2226,16 @@ function ConnectionEditor({ initial, groups, tags, onGroupsUpdated, onClose, onS
         <option value="yes">始终同步此连接的密码或私钥</option>
         <option value="no">永不同步此连接的密码或私钥</option>
       </select></label>
-      <label className="check full"><input type="checkbox" checked={value.legacyAlgorithms}
+      {!isRdp && <label className="check full"><input type="checkbox" checked={value.legacyAlgorithms}
         onChange={e => {
           const enabled = e.target.checked
           if (enabled && !window.confirm(
             '旧版兼容模式会允许已不推荐的 SSH 算法，仅应在无法升级的可信旧服务器上单独开启。确定启用吗？'
           )) return
           update('legacyAlgorithms', enabled)
-        }} />允许旧版弱算法（不推荐，仅当前连接生效）</label>
+        }} />允许旧版弱算法（不推荐，仅当前连接生效）</label>}
+      {isRdp && <p className="form-hint full">远程桌面会话将在系统自带的“远程桌面连接”窗口中打开。
+        保存的密码以当前 Windows 用户加密后写入临时 .rdp 文件，连接后随即删除。</p>}
     </div>
     {error && <div className="form-error">{error}</div>}
     </Modal>

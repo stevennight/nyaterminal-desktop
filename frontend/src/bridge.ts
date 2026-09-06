@@ -46,6 +46,7 @@ type Backend = {
       passphrase?: string
     }
   }): Promise<TerminalStart>
+  LaunchRDP(connectionId: string): Promise<void>
   AcceptHostKey(id: string): Promise<void>
   ResizeSSH(sessionId: string, columns: number, rows: number): Promise<void>
   CloseSSH(sessionId: string): Promise<void>

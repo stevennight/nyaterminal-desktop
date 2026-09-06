@@ -22,11 +22,14 @@ export type Tag = {
   updatedAt?: string
 }
 
+export type ConnectionProtocol = 'ssh' | 'rdp'
+
 export type Connection = {
   id: string
   groupId?: string
   name: string
   remark?: string
+  protocol?: ConnectionProtocol
   host: string
   port: number
   username: string
@@ -41,6 +44,14 @@ export type Connection = {
   legacyAlgorithms: boolean
   syncSecrets?: boolean
   commandHistory: boolean
+  rdpScreenMode?: 'fullscreen' | 'windowed'
+  rdpWidth?: number
+  rdpHeight?: number
+  rdpMultiMonitor?: boolean
+  rdpAdminSession?: boolean
+  rdpRedirectClipboard?: boolean
+  rdpRedirectDrives?: boolean
+  rdpGateway?: string
   createdAt?: string
   updatedAt?: string
 }

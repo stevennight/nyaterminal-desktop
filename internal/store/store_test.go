@@ -225,6 +225,44 @@ func TestPutConnectionTrimsRemark(t *testing.T) {
 	}
 }
 
+func TestPutConnectionRDPDefaultsAndOptionalUsername(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVaultOnCleanup(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	s := New(v)
+
+	connection, err := s.PutConnection(ctx, model.Connection{
+		Name: "workstation", Protocol: "RDP", Host: "10.0.0.5", Port: 3389,
+	})
+	if err != nil {
+		t.Fatalf("RDP connection without username should be valid: %v", err)
+	}
+	if connection.Protocol != model.ProtocolRDP {
+		t.Fatalf("protocol not normalized: %q", connection.Protocol)
+	}
+	if connection.RDPScreenMode != "fullscreen" {
+		t.Fatalf("RDP screen mode default not applied: %q", connection.RDPScreenMode)
+	}
+
+	if _, err := s.PutConnection(ctx, model.Connection{
+		Name: "bad", Protocol: "vnc", Host: "10.0.0.6", Port: 5900, Username: "root",
+	}); err == nil {
+		t.Fatal("expected unsupported protocol to be rejected")
+	}
+
+	if _, err := s.PutConnection(ctx, model.Connection{
+		Name: "ssh-no-user", Host: "10.0.0.7", Port: 22,
+	}); err == nil {
+		t.Fatal("expected SSH connection without username to be rejected")
+	}
+}
+
 func TestSettingsNormalizeTerminalThemeColors(t *testing.T) {
 	ctx := context.Background()
 	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))

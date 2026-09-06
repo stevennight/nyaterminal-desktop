@@ -36,27 +36,45 @@ type Credential struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
+// Connection protocols.
+const (
+	ProtocolSSH = "ssh"
+	ProtocolRDP = "rdp"
+)
+
 type Connection struct {
-	ID                string    `json:"id"`
-	GroupID           string    `json:"groupId,omitempty"`
-	Name              string    `json:"name"`
-	Remark            string    `json:"remark,omitempty"`
-	Host              string    `json:"host"`
-	Port              int       `json:"port"`
-	Username          string    `json:"username"`
-	CredentialID      string    `json:"credentialId,omitempty"`
-	Authentication    string    `json:"authentication"`
-	Tags              []string  `json:"tags"`
-	SortOrder         int       `json:"sortOrder"`
-	Encoding          string    `json:"encoding"`
-	KeepAliveSeconds  int       `json:"keepAliveSeconds"`
-	ConnectTimeoutSec int       `json:"connectTimeoutSeconds"`
-	AutoReconnect     *bool     `json:"autoReconnect,omitempty"`
-	LegacyAlgorithms  bool      `json:"legacyAlgorithms"`
-	SyncSecrets       *bool     `json:"syncSecrets,omitempty"`
-	CommandHistory    bool      `json:"commandHistory"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                string   `json:"id"`
+	GroupID           string   `json:"groupId,omitempty"`
+	Name              string   `json:"name"`
+	Remark            string   `json:"remark,omitempty"`
+	Protocol          string   `json:"protocol,omitempty"`
+	Host              string   `json:"host"`
+	Port              int      `json:"port"`
+	Username          string   `json:"username"`
+	CredentialID      string   `json:"credentialId,omitempty"`
+	Authentication    string   `json:"authentication"`
+	Tags              []string `json:"tags"`
+	SortOrder         int      `json:"sortOrder"`
+	Encoding          string   `json:"encoding"`
+	KeepAliveSeconds  int      `json:"keepAliveSeconds"`
+	ConnectTimeoutSec int      `json:"connectTimeoutSeconds"`
+	AutoReconnect     *bool    `json:"autoReconnect,omitempty"`
+	LegacyAlgorithms  bool     `json:"legacyAlgorithms"`
+	SyncSecrets       *bool    `json:"syncSecrets,omitempty"`
+	CommandHistory    bool     `json:"commandHistory"`
+
+	// RDP-specific options (used when Protocol == ProtocolRDP).
+	RDPScreenMode        string `json:"rdpScreenMode,omitempty"` // "fullscreen" (default) | "windowed"
+	RDPWidth             int    `json:"rdpWidth,omitempty"`
+	RDPHeight            int    `json:"rdpHeight,omitempty"`
+	RDPMultiMonitor      bool   `json:"rdpMultiMonitor,omitempty"`
+	RDPAdminSession      bool   `json:"rdpAdminSession,omitempty"`
+	RDPRedirectClipboard *bool  `json:"rdpRedirectClipboard,omitempty"` // nil => enabled
+	RDPRedirectDrives    bool   `json:"rdpRedirectDrives,omitempty"`
+	RDPGateway           string `json:"rdpGateway,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type CommandHistory struct {

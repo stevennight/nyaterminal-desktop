@@ -46,6 +46,13 @@ For a dev loop:
 The frontend never receives stored credentials directly. SSH and SFTP operations
 resolve encrypted credentials inside the Go process.
 
+A connection's protocol can be `ssh` (default) or `rdp`. RDP connections appear in
+the same managed list with groups, tags and an optional saved password. Opening one
+is Windows-only: the Go process writes a temporary `.rdp` file whose password field
+is encrypted with the current user's DPAPI key, launches the system Remote Desktop
+client (`mstsc.exe`), then deletes the file. Leaving the password blank makes
+`mstsc` prompt for credentials as usual.
+
 The Windows agent integration supports both the native OpenSSH agent and
 Pageant. Keyboard-interactive authentication is presented as a live challenge;
 one-time codes are never saved.

@@ -186,12 +186,32 @@ func (s *Store) PutConnection(ctx context.Context, value model.Connection) (mode
 	value.Remark = strings.TrimSpace(value.Remark)
 	value.Host = strings.TrimSpace(value.Host)
 	value.Username = strings.TrimSpace(value.Username)
-	if value.Name == "" || value.Host == "" || value.Username == "" ||
-		value.Port < 1 || value.Port > 65535 {
+	value.Protocol = strings.ToLower(strings.TrimSpace(value.Protocol))
+	if value.Protocol == "" {
+		value.Protocol = model.ProtocolSSH
+	}
+	if value.Protocol != model.ProtocolSSH && value.Protocol != model.ProtocolRDP {
+		return model.Connection{}, errors.New("unsupported connection protocol")
+	}
+	requireUsername := value.Protocol == model.ProtocolSSH
+	if value.Name == "" || value.Host == "" || value.Port < 1 || value.Port > 65535 ||
+		(requireUsername && value.Username == "") {
 		return model.Connection{}, errors.New("invalid connection")
 	}
 	if len(value.Remark) > 2000 {
 		return model.Connection{}, errors.New("remark is too long")
+	}
+	if value.Protocol == model.ProtocolRDP {
+		if value.RDPScreenMode != "windowed" {
+			value.RDPScreenMode = "fullscreen"
+		}
+		if value.RDPWidth < 0 || value.RDPWidth > 8192 {
+			value.RDPWidth = 0
+		}
+		if value.RDPHeight < 0 || value.RDPHeight > 8192 {
+			value.RDPHeight = 0
+		}
+		value.RDPGateway = strings.TrimSpace(value.RDPGateway)
 	}
 	if value.Encoding == "" {
 		value.Encoding = "utf-8"

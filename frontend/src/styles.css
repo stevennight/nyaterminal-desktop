@@ -141,8 +141,9 @@ kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #4bc48e; box-shadow: 0 0 9px #4bc48e66; }
 .connection-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .connection-copy strong, .connection-copy small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.connection-copy strong { font-size: 13px; font-weight: 500; }
+.connection-copy strong { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
 .connection-copy small { color: var(--muted); font-size: 10px; }
+.proto-badge { flex: none; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; line-height: 1; padding: 2px 4px; border-radius: 4px; background: #62d9ca1f; color: var(--accent); border: 1px solid var(--accent); }
 .empty-tree { color: var(--muted); text-align: center; font-size: 12px; padding: 30px; }
 .sidebar-footer { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 10px; }
 .sidebar-footer button { display: flex; gap: 8px; align-items: center; color: var(--muted); }
@@ -726,6 +727,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .form-grid { display: grid; grid-template-columns: 1fr 1fr 120px; column-gap: 10px; row-gap: 2px; }
 .form-grid .full { grid-column: 1 / -1; }
 .form-grid .wide { grid-column: span 2; }
+.form-hint { margin: 8px 0 2px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .connection-tags { margin-bottom: 10px; }
 .connection-tags > span { color: var(--muted); font-size: 11px; }
 .connection-tags > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
