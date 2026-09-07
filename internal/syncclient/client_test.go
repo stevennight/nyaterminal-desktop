@@ -443,11 +443,14 @@ func TestSummaryHidesLocalSyncWhenRemoteVaultIsNotInitialized(t *testing.T) {
 func TestAuthorizedRequestClearsSessionOnUnauthorized(t *testing.T) {
 	var unauthorizedCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/forbidden" {
+		switch r.URL.Path {
+		case "/forbidden", "/api/v1/auth/refresh":
+			// The data endpoint rejects the access token and the refresh token
+			// is no longer accepted either: the session is genuinely dead.
+			http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
 	}))
 	closeServer(t, server)
 
@@ -497,10 +500,80 @@ func TestAuthorizedRequestClearsSessionOnUnauthorized(t *testing.T) {
 	}
 }
 
+// TestAuthorizedRequestRetriesTransientUnauthorized covers the common case that
+// used to sign the device out: the access token is rejected once (it expired in
+// flight, or another device rotated the shared refresh token), but the refresh
+// token is still good. The client should refresh, retry, and keep the session.
+func TestAuthorizedRequestRetriesTransientUnauthorized(t *testing.T) {
+	var unauthorizedCalls, dataCalls, refreshCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/auth/refresh":
+			refreshCalls++
+			writeJSON(t, w, TokenPair{
+				AccessToken: "fresh-access", RefreshToken: "fresh-refresh",
+				AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+				RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+			})
+		case "/data":
+			dataCalls++
+			if r.Header.Get("Authorization") != "Bearer fresh-access" {
+				http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	closeServer(t, server)
+
+	ctx := context.Background()
+	v, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeVault(t, v)
+	if err := v.Initialize(ctx, "master password with enough entropy"); err != nil {
+		t.Fatal(err)
+	}
+	client := New(v)
+	client.SetUnauthorizedHandler(func() { unauthorizedCalls++ })
+	session := AccountSession{
+		ServerURL: server.URL, Username: "owner", DeviceID: "device-a",
+		AccessToken: "stale-access", RefreshToken: "good-refresh",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+	}
+	if err := client.saveAccountSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.authorizedRequest(ctx, &session, http.MethodGet, "/data", nil, nil); err != nil {
+		t.Fatalf("expected the retried request to succeed, got %v", err)
+	}
+	if unauthorizedCalls != 0 {
+		t.Fatalf("session should not have been cleared: handler ran %d times", unauthorizedCalls)
+	}
+	if refreshCalls != 1 || dataCalls != 2 {
+		t.Fatalf("expected one refresh and two data calls, got refresh=%d data=%d", refreshCalls, dataCalls)
+	}
+	if session.AccessToken != "fresh-access" || session.RefreshToken != "fresh-refresh" {
+		t.Fatalf("refreshed tokens were not adopted: %#v", session)
+	}
+	loaded, err := client.loadAccountSession(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AccessToken != "fresh-access" || loaded.RefreshToken != "fresh-refresh" {
+		t.Fatalf("refreshed tokens were not persisted: %#v", loaded)
+	}
+}
+
 func TestAccountSummaryReflectsUnauthorizedLogout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/account":
+		case "/api/v1/account", "/api/v1/auth/refresh":
 			http.Error(w, `{"error":"invalid_token"}`, http.StatusUnauthorized)
 		case "/api/v1/sync/status":
 			writeJSON(t, w, RemoteStatus{ServerInitialized: true, SyncInitialized: true})

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,10 +34,18 @@ const (
 	pairingID = "sync:pending-pairing"
 )
 
+// tokenRefreshLeeway is how long before the access token's expiry the client
+// proactively refreshes it.
+const tokenRefreshLeeway = time.Minute
+
 type Client struct {
 	vault               *vault.Vault
 	http                *http.Client
 	unauthorizedHandler func()
+	// refreshMu serialises access-token refreshes so concurrent requests never
+	// spend the same rotating refresh token twice (which the server rejects,
+	// logging the device out).
+	refreshMu sync.Mutex
 }
 
 type Profile struct {
@@ -1620,28 +1629,86 @@ func (c *Client) authorizedRequest(ctx context.Context, session *AccountSession,
 	if session.AccessToken == "" || session.RefreshToken == "" {
 		return errors.New("synchronization requires login")
 	}
-	if time.Until(session.AccessExpiresAt) < time.Minute {
-		var tokens TokenPair
-		if err := c.request(ctx, http.MethodPost, session.ServerURL+"/api/v1/auth/refresh", "",
-			map[string]string{"refreshToken": session.RefreshToken}, &tokens); err != nil {
-			if clearErr := c.clearSessionOnUnauthorized(ctx, session, err); clearErr != nil {
+	refreshed, err := c.ensureFreshToken(ctx, session, false)
+	if err != nil {
+		if clearErr := c.clearSessionOnUnauthorized(ctx, session, err); clearErr != nil {
+			return clearErr
+		}
+		return err
+	}
+	err = c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
+	if !isUnauthorized(err) {
+		return err
+	}
+	if !refreshed {
+		// A 401 without having just refreshed usually means the access token
+		// expired in flight, or another device rotated the shared refresh
+		// token. Refresh once more and retry before treating the session as
+		// lost, so a single transient rejection does not sign the device out.
+		if _, refreshErr := c.ensureFreshToken(ctx, session, true); refreshErr != nil {
+			if clearErr := c.clearSessionOnUnauthorized(ctx, session, refreshErr); clearErr != nil {
 				return clearErr
 			}
-			return err
+			return refreshErr
 		}
-		session.AccessToken = tokens.AccessToken
-		session.RefreshToken = tokens.RefreshToken
-		session.AccessExpiresAt = tokens.AccessExpiresAt
-		session.RefreshExpiresAt = tokens.RefreshExpiresAt
-		if err := c.saveAccountSession(ctx, *session); err != nil {
+		err = c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
+		if !isUnauthorized(err) {
 			return err
 		}
 	}
-	err := c.request(ctx, method, session.ServerURL+path, session.AccessToken, request, response)
 	if clearErr := c.clearSessionOnUnauthorized(ctx, session, err); clearErr != nil {
 		return clearErr
 	}
 	return err
+}
+
+// ensureFreshToken refreshes the access token when it is within
+// tokenRefreshLeeway of expiry, or unconditionally when force is set. Callers
+// are serialised on refreshMu and re-read the persisted session after taking
+// the lock, so when several requests race only the first spends the rotating
+// refresh token and the rest adopt its result. It reports whether it performed
+// a refresh request; a returned error from the refresh call is left for the
+// caller to translate into a session clear.
+func (c *Client) ensureFreshToken(ctx context.Context, session *AccountSession, force bool) (bool, error) {
+	if !force && time.Until(session.AccessExpiresAt) >= tokenRefreshLeeway {
+		return false, nil
+	}
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
+	if latest, err := c.loadAccountSession(ctx); err == nil &&
+		latest.AccessToken != "" && latest.RefreshToken != "" &&
+		latest.AccessExpiresAt.After(session.AccessExpiresAt) {
+		// Another goroutine refreshed while we waited for the lock; adopt its
+		// tokens and skip our own refresh.
+		session.AccessToken = latest.AccessToken
+		session.RefreshToken = latest.RefreshToken
+		session.AccessExpiresAt = latest.AccessExpiresAt
+		session.RefreshExpiresAt = latest.RefreshExpiresAt
+		return false, nil
+	}
+	if !force && time.Until(session.AccessExpiresAt) >= tokenRefreshLeeway {
+		return false, nil
+	}
+
+	var tokens TokenPair
+	if err := c.request(ctx, http.MethodPost, session.ServerURL+"/api/v1/auth/refresh", "",
+		map[string]string{"refreshToken": session.RefreshToken}, &tokens); err != nil {
+		return true, err
+	}
+	session.AccessToken = tokens.AccessToken
+	session.RefreshToken = tokens.RefreshToken
+	session.AccessExpiresAt = tokens.AccessExpiresAt
+	session.RefreshExpiresAt = tokens.RefreshExpiresAt
+	if err := c.saveAccountSession(ctx, *session); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func isUnauthorized(err error) bool {
+	var statusErr *statusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized
 }
 
 func (c *Client) request(ctx context.Context, method, endpoint, token string, request, response any) (err error) {
