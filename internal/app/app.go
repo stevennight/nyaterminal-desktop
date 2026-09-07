@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -68,6 +69,22 @@ type TerminalStart struct {
 	Session    *sshclient.StartResult     `json:"session,omitempty"`
 	HostKey    *sshclient.PendingHostKey  `json:"hostKey,omitempty"`
 	AuthPrompt *sshclient.AuthPromptError `json:"authPrompt,omitempty"`
+}
+
+// RDPAuthPrompt tells the UI to collect a Remote Desktop password because none
+// is stored for the connection on this device (for example the credential was
+// never synced here). The UI gathers it, optionally saves it to the vault, and
+// calls LaunchRDP again.
+type RDPAuthPrompt struct {
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// RDPLaunch reports the outcome of a LaunchRDP call: either the Remote Desktop
+// client was started, or a password is still needed.
+type RDPLaunch struct {
+	Launched   bool           `json:"launched"`
+	AuthPrompt *RDPAuthPrompt `json:"authPrompt,omitempty"`
 }
 
 func (a *App) BuildInfo() version.BuildInfo {
@@ -480,28 +497,46 @@ func (a *App) StartSSH(request sshclient.StartRequest) (TerminalStart, error) {
 	return TerminalStart{}, err
 }
 
-// LaunchRDP resolves an RDP connection plus its saved credential and opens it in
-// the operating system's Remote Desktop client.
-func (a *App) LaunchRDP(connectionID string) error {
+// LaunchRDP resolves an RDP connection plus its password and opens it in the
+// operating system's Remote Desktop client.
+//
+// When oneTimePassword is non-empty it is used for this launch only and never
+// persisted. Otherwise the password stored for the connection is used; if that
+// is missing on this device (for example the credential was never synced here),
+// LaunchRDP returns an RDPAuthPrompt instead of launching so the UI can collect
+// a password and save it to the vault rather than deferring to the mstsc prompt.
+func (a *App) LaunchRDP(connectionID, oneTimePassword string) (RDPLaunch, error) {
 	if err := a.ready(); err != nil {
-		return err
+		return RDPLaunch{}, err
 	}
 	ctx := a.context()
 	connection, err := a.store.GetConnection(ctx, connectionID)
 	if err != nil {
-		return err
+		return RDPLaunch{}, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(connection.Protocol), model.ProtocolRDP) {
-		return errors.New("this connection is not a Remote Desktop connection")
+		return RDPLaunch{}, errors.New("this connection is not a Remote Desktop connection")
 	}
 	var credential model.Credential
-	if connection.CredentialID != "" {
+	switch {
+	case strings.TrimSpace(oneTimePassword) != "":
+		credential.Password = oneTimePassword
+	case connection.CredentialID != "":
 		credential, err = a.store.GetCredential(ctx, connection.CredentialID)
-		if err != nil {
-			return err
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return RDPLaunch{}, err
 		}
 	}
-	return a.launchRDP(connection, credential)
+	if strings.TrimSpace(credential.Password) == "" {
+		return RDPLaunch{AuthPrompt: &RDPAuthPrompt{
+			Reason:  "missing",
+			Message: "Remote Desktop password is required for this connection.",
+		}}, nil
+	}
+	if err := a.launchRDP(connection, credential); err != nil {
+		return RDPLaunch{}, err
+	}
+	return RDPLaunch{Launched: true}, nil
 }
 
 func (a *App) AnswerSSHChallenge(id string, answers []string, cancelled bool) error {

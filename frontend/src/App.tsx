@@ -553,6 +553,7 @@ export function App() {
   const [renamingTab, setRenamingTab] = useState<RenameTabState>()
   const [hostKey, setHostKey] = useState<{ tabId: string; value: PendingHostKey }>()
   const [sshAuthPrompt, setSSHAuthPrompt] = useState<SSHAuthPrompt>()
+  const [rdpAuthPrompt, setRDPAuthPrompt] = useState<{ connection: Connection }>()
   const [interactiveChallenge, setInteractiveChallenge] = useState<InteractiveChallenge>()
   const [query, setQuery] = useState('')
   const [activeTag, setActiveTag] = useState('')
@@ -856,13 +857,24 @@ export function App() {
     bootstrap?.settings?.lockAfterMinutes,
   ])
 
+  const launchRDP = async (connection: Connection, oneTimePassword = '') => {
+    try {
+      const result = await api.LaunchRDP(connection.id, oneTimePassword)
+      if (result.authPrompt) {
+        setRDPAuthPrompt({ connection })
+      }
+    } catch (reason) {
+      setError(localizeError(reason))
+    }
+  }
+
   const openConnection = (connection: Connection, privateSession = false) => {
     if (connection.protocol === 'rdp') {
       if (!connection.id) {
         setError('请先保存该远程桌面连接。')
         return
       }
-      void api.LaunchRDP(connection.id).catch(reason => setError(localizeError(reason)))
+      void launchRDP(connection)
       return
     }
     const id = crypto.randomUUID()
@@ -1657,6 +1669,35 @@ export function App() {
             await reload()
           }}
         />
+      )}
+      {rdpAuthPrompt && (
+        <RDPAuthPromptDialog
+          connection={rdpAuthPrompt.connection}
+          onCancel={() => setRDPAuthPrompt(undefined)}
+          onSubmit={async ({ password, save }) => {
+            const connection = rdpAuthPrompt.connection
+            try {
+              if (save) {
+                const credential: Credential = await api.SaveCredential({
+                  id: connection.credentialId ?? '',
+                  name: `${connection.name || connection.host} credential`,
+                  type: 'password',
+                  password
+                })
+                const nextConnection = await api.SaveConnection({
+                  ...connection, credentialId: credential.id, authentication: 'password'
+                })
+                setRDPAuthPrompt(undefined)
+                await reload()
+                await launchRDP(nextConnection)
+              } else {
+                setRDPAuthPrompt(undefined)
+                await launchRDP(connection, password)
+              }
+            } catch (reason) {
+              setError(localizeError(reason))
+            }
+          }} />
       )}
       {interactiveChallenge && (
         <InteractiveChallengeDialog value={interactiveChallenge}
@@ -3898,6 +3939,38 @@ function SSHAuthPromptDialog({ connection, value, onCancel, onSubmit }: {
         })}>
         继续连接
       </button>
+    </footer>
+  </Modal>
+}
+
+function RDPAuthPromptDialog({ connection, onCancel, onSubmit }: {
+  connection: Connection
+  onCancel: () => void
+  onSubmit: (payload: { password: string; save: boolean }) => Promise<void>
+}) {
+  const [password, setPassword] = useState('')
+  const [save, setSave] = useState(true)
+  return <Modal title="补充远程桌面密码" onClose={onCancel} width="480px">
+    <div className="security-notice">
+      <LockKeyhole size={26} /><div>
+        <strong>{connection.name || connection.host}</strong>
+        <p>此设备上没有保存该连接的密码，请输入后继续。</p>
+      </div>
+    </div>
+    <div className="form-grid">
+      <label className="full">密码
+        <input autoFocus type="password" value={password} autoComplete="off"
+          onChange={e => setPassword(e.target.value)} />
+      </label>
+      <label className="check full">
+        <input type="checkbox" checked={save} onChange={e => setSave(e.target.checked)} />
+        保存到保险库供后续连接复用
+      </label>
+    </div>
+    <footer className="modal-actions">
+      <button onClick={onCancel}>取消</button>
+      <button className="primary" disabled={!password}
+        onClick={() => void onSubmit({ password, save })}>继续</button>
     </footer>
   </Modal>
 }

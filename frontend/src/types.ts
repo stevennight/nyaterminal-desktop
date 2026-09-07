@@ -189,6 +189,14 @@ export type TerminalStart = {
   }
 }
 
+export type RDPLaunch = {
+  launched: boolean
+  authPrompt?: {
+    reason: string
+    message: string
+  }
+}
+
 export type RemoteEntry = {
   name: string
   path: string

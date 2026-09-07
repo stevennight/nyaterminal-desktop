@@ -1,6 +1,6 @@
 import type {
   Bootstrap, BuildInfo, CommandHistory, Connection, Credential, Group,
-  RemoteEntry, Settings, SFTPTransfer, Tag, TerminalStart, UpdateCheckResult
+  RDPLaunch, RemoteEntry, Settings, SFTPTransfer, Tag, TerminalStart, UpdateCheckResult
 } from './types'
 
 type Backend = {
@@ -46,7 +46,7 @@ type Backend = {
       passphrase?: string
     }
   }): Promise<TerminalStart>
-  LaunchRDP(connectionId: string): Promise<void>
+  LaunchRDP(connectionId: string, oneTimePassword: string): Promise<RDPLaunch>
   AcceptHostKey(id: string): Promise<void>
   ResizeSSH(sessionId: string, columns: number, rows: number): Promise<void>
   CloseSSH(sessionId: string): Promise<void>
