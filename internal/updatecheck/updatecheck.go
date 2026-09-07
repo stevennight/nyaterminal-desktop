@@ -463,7 +463,7 @@ func releaseInstallerAssets(release githubRelease) (githubReleaseAsset, githubRe
 }
 
 func selectInstaller(assets []githubReleaseAsset, architecture string) (githubReleaseAsset, bool) {
-	markers := []string{}
+	var markers []string
 	switch architecture {
 	case "amd64":
 		markers = []string{"_x64-", "_amd64-", "-amd64-"}
