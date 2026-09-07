@@ -368,26 +368,6 @@ function localizeError(value: unknown) {
   return codeMap[message] ?? message
 }
 
-function syncHeadline(syncSummary?: SyncSummary) {
-  if (!syncSummary?.loggedIn) return '未登录'
-  if (!syncSummary.syncInitialized) return '等待初始化'
-  if (!syncSummary.configured) return '等待加入'
-  return '已加入同步'
-}
-
-function syncSummaryLabel(syncSummary?: SyncSummary) {
-  if (!syncSummary?.serverUrl) return '请先登录服务端账号'
-  if (!syncSummary.syncInitialized) {
-    return `${syncSummary.serverUrl} · ${syncSummary.username || '未填写账号'}`
-  }
-  const deviceLabel = displayDeviceLabel(syncSummary.deviceName, syncSummary.deviceId)
-  return `${syncSummary.serverUrl} · ${syncSummary.username}${deviceLabel ? ` · ${deviceLabel}` : ''}`
-}
-
-function displayDeviceLabel(deviceName?: string, deviceId?: string) {
-  return deviceName || deviceId || ''
-}
-
 function connectionLabel(connection: Connection) {
   return connection.name || connection.host || '未命名终端'
 }
@@ -544,7 +524,7 @@ export function App() {
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
   const [tagEditor, setTagEditor] = useState<TagEditorState>()
-  const [accountManagerOpen, setAccountManagerOpen] = useState(false)
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSectionId>()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sftpWorkspace, setSftpWorkspace] = useState<Connection>()
   const [sessions, setSessions] = useState<SessionTab[]>([])
@@ -1272,7 +1252,8 @@ export function App() {
         <div className="brand-row">
           <img className="brand-mark" src={brandIconSrc(settings.theme)} alt="" aria-hidden="true" />
           <div><strong>NyaTerminal</strong><small>Secure workspace</small></div>
-          <button className="icon-button" onClick={() => setAccountManagerOpen(true)} title="账号管理">
+          <button className="icon-button"
+            onClick={() => { setSettingsInitialSection('sync'); setSettingsOpen(true) }} title="账号与同步">
             <Shield size={17} />
           </button>
           <button className="icon-button" onClick={() => void lock()} title="锁屏"><LockKeyhole size={17} /></button>
@@ -1315,7 +1296,8 @@ export function App() {
           </div>
         </div>
         <div className="sidebar-footer">
-          <button className="settings-entry" onClick={() => setSettingsOpen(true)}>
+          <button className="settings-entry"
+            onClick={() => { setSettingsInitialSection(undefined); setSettingsOpen(true) }}>
             <SettingsIcon size={17} />设置
           </button>
         </div>
@@ -1567,13 +1549,10 @@ export function App() {
         onClose={() => setRenamingTab(undefined)}
         onSave={value => saveTabTitle(renamingTab.id, value)}
       />}
-      {accountManagerOpen && <AccountManagerDialog
-        account={bootstrap.account}
-        onClose={() => setAccountManagerOpen(false)}
-        onReload={reload}
-      />}
       {settingsOpen && <SettingsDialog value={settings} vault={bootstrap.vault}
         syncSummary={bootstrap.syncSummary}
+        account={bootstrap.account}
+        initialSection={settingsInitialSection}
         connections={bootstrap.connections ?? []}
         buildInfo={effectiveBuildInfo}
         updateCheck={updateCheck}
@@ -1584,9 +1563,9 @@ export function App() {
         onCheckForUpdates={checkForUpdates}
         onInstallUpdate={downloadAndInstallUpdate}
         onOpenRelease={openExternalURL}
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => { setSettingsOpen(false); setSettingsInitialSection(undefined) }}
         onReload={reload}
-        onSaved={async () => { setSettingsOpen(false); await reload() }} />}
+        onSaved={async () => { setSettingsOpen(false); setSettingsInitialSection(undefined); await reload() }} />}
       {hostKey && (
         <HostKeyDialog value={hostKey.value} onCancel={() => {
           closeSession(hostKey.tabId)
@@ -2430,11 +2409,12 @@ function TagEditor({ initial, onClose, onSaved }: {
 }
 
 function SettingsDialog({
-  value, vault, syncSummary, connections, buildInfo, updateCheck, updateCheckBusy,
+  value, vault, syncSummary, account, initialSection, connections, buildInfo, updateCheck, updateCheckBusy,
   updateInstallBusy, syncBusy, onSyncBusyChange, onCheckForUpdates, onInstallUpdate,
   onOpenRelease, onClose, onSaved, onReload
 }: {
-  value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary; connections: Connection[]
+  value: Settings; vault: Bootstrap['vault']; syncSummary?: SyncSummary; account?: AccountSummary
+  initialSection?: SettingsSectionId; connections: Connection[]
   buildInfo: BuildInfo; updateCheck?: UpdateCheckResult; updateCheckBusy: boolean
   updateInstallBusy: boolean
   syncBusy: boolean; onSyncBusyChange: (value: boolean) => void
@@ -2450,7 +2430,7 @@ function SettingsDialog({
   const [quickUnlock, setQuickUnlock] = useState(vault.quickUnlock)
   const [notice, setNotice] = useState<{ title: string; message: string }>()
   const [sensitiveRules, setSensitiveRules] = useState(value.sensitiveCommandRules.join('\n'))
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('appearance')
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(initialSection ?? 'appearance')
   const [historyEntries, setHistoryEntries] = useState<CommandHistory[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyFilter, setHistoryFilter] = useState('')
@@ -2479,10 +2459,27 @@ function SettingsDialog({
   const [resetTotpCode, setResetTotpCode] = useState('')
   const [resetConfirmText, setResetConfirmText] = useState('')
   const [showResetForm, setShowResetForm] = useState(false)
+  const [accountServerUrl, setAccountServerUrl] = useState(syncSummary?.serverUrl ?? account?.serverUrl ?? 'https://')
+  const [accountUsername, setAccountUsername] = useState(syncSummary?.username ?? account?.username ?? '')
+  const [accountPassword, setAccountPassword] = useState('')
+  const [accountTotpCode, setAccountTotpCode] = useState('')
+  const [deviceNameDraft, setDeviceNameDraft] = useState(syncSummary?.deviceName ?? account?.deviceName ?? '')
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
+  const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
+  const [showDevicesModal, setShowDevicesModal] = useState(false)
 
   useEffect(() => {
     setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
   }, [syncSummary?.autoSyncEnabled])
+
+  useEffect(() => {
+    const url = syncSummary?.serverUrl ?? account?.serverUrl
+    const name = syncSummary?.username ?? account?.username
+    if (url) setAccountServerUrl(url)
+    if (name) setAccountUsername(name)
+    setDeviceNameDraft(syncSummary?.deviceName ?? account?.deviceName ?? '')
+  }, [syncSummary?.serverUrl, syncSummary?.username, syncSummary?.deviceName,
+    account?.serverUrl, account?.username, account?.deviceName])
 
   useEffect(() => {
     setNext({
@@ -2654,6 +2651,82 @@ function SettingsDialog({
     } catch (error) {
       showNotice('自动同步', localizeError(error))
       setAutoSyncEnabled(syncSummary?.autoSyncEnabled ?? true)
+    }
+  }
+
+  const loginAccount = async () => {
+    onSyncBusyChange(true)
+    try {
+      const resolvedDeviceId = (syncSummary?.deviceId ?? account?.deviceId) || crypto.randomUUID()
+      await api.LoginAccount(
+        accountServerUrl, accountUsername, accountPassword, resolvedDeviceId, accountTotpCode.trim()
+      )
+      setAccountPassword('')
+      setAccountTotpCode('')
+      showNotice('账号', '已登录服务器。')
+      await onReload()
+    } catch (error) {
+      showNotice('账号', localizeError(error))
+    } finally {
+      onSyncBusyChange(false)
+    }
+  }
+
+  const logoutAccount = async () => {
+    try {
+      await api.LogoutAccount()
+      setTotpSetup(undefined)
+      setAccountRecoveryCodes([])
+      showNotice('账号', '已登出。')
+      await onReload()
+    } catch (error) {
+      showNotice('账号', localizeError(error))
+    }
+  }
+
+  const saveDeviceName = async () => {
+    try {
+      await api.SetDeviceName(deviceNameDraft.trim())
+      showNotice('设备名称', '当前设备名称已更新。')
+      await onReload()
+    } catch (error) {
+      showNotice('设备名称', localizeError(error))
+    }
+  }
+
+  const beginTOTP = async () => {
+    try {
+      setTotpSetup(await api.BeginSyncTOTPSetup())
+      showNotice('两步验证', '把密钥添加到验证器，再输入六位验证码确认。')
+    } catch (error) {
+      showNotice('两步验证', localizeError(error))
+    }
+  }
+
+  const confirmTOTP = async () => {
+    if (!totpSetup) return
+    try {
+      setAccountRecoveryCodes(await api.ConfirmSyncTOTPSetup(totpSetup.setupToken, accountTotpCode))
+      setTotpSetup(undefined)
+      setAccountTotpCode('')
+      showNotice('两步验证', '已启用。请离线保存账号恢复码。')
+      await onReload()
+    } catch (error) {
+      showNotice('两步验证', localizeError(error))
+    }
+  }
+
+  const disableTOTP = async () => {
+    try {
+      await api.DisableSyncTOTP(accountPassword, accountTotpCode.trim())
+      setTotpSetup(undefined)
+      setAccountRecoveryCodes([])
+      setAccountPassword('')
+      setAccountTotpCode('')
+      showNotice('两步验证', '已关闭。')
+      await onReload()
+    } catch (error) {
+      showNotice('两步验证', localizeError(error))
     }
   }
 
@@ -2837,8 +2910,26 @@ function SettingsDialog({
   const loggedIn = !!syncSummary?.loggedIn
   const syncInitialized = !!syncSummary?.syncInitialized
   const syncConfigured = !!syncSummary?.configured
-  const autoSyncDisabled = syncConfigured ? syncSummary?.autoSyncEnabled === false : false
-  const showSyncHistory = syncInitialized && syncConfigured
+  const deviceId = syncSummary?.deviceId ?? account?.deviceId ?? ''
+  const totpEnabled = !!account?.totpEnabled
+  const accessExpiresAt = account?.accessExpiresAt ?? ''
+  const syncServer = syncSummary?.serverUrl ?? account?.serverUrl ?? ''
+  const syncUser = syncSummary?.username ?? account?.username ?? ''
+  const syncDeviceLabel = syncSummary?.deviceName || deviceId || '本机'
+  const syncStripState = !loggedIn ? 'out' : syncConfigured ? 'joined' : 'mid'
+  const syncStripText = !loggedIn
+    ? '未登录'
+    : !syncInitialized
+      ? `已登录 · ${syncServer} · ${syncUser} · 服务器上无同步库`
+      : !syncConfigured
+        ? `已登录 · ${syncServer} · ${syncUser} · 有同步库，本机未加入`
+        : `已加入 · ${syncServer} · ${syncUser} · 本设备「${syncDeviceLabel}」${
+            syncSummary?.running
+              ? ' · 同步中'
+              : syncSummary?.lastSyncedAt
+                ? ` · 上次同步 ${formatDateTime(syncSummary.lastSyncedAt)}`
+                : ''
+          }`
   const normalizedHistoryFilter = historyFilter.trim().toLowerCase()
   const filteredHistory = historyEntries.filter(entry => {
     if (historyScope === 'global' && entry.connectionId) return false
@@ -3111,73 +3202,162 @@ function SettingsDialog({
       </div>
     </div>
   } else if (activeSection === 'sync') {
-    content = <div className="settings-page">
+    content = <div className="settings-page sync-settings">
       <h3>同步</h3>
-      <div className="sync-summary">
-        <div>
-          <strong>{syncHeadline(syncSummary)}</strong>
-          <span>{syncSummaryLabel(syncSummary)}</span>
-        </div>
-        <div>
-          <strong>{syncSummary?.running ? '同步中' : autoSyncDisabled ? '自动同步已关闭' : '同步待命'}</strong>
-          <span>{showSyncHistory && syncSummary?.lastSyncedAt ? `上次同步：${formatDateTime(syncSummary.lastSyncedAt)}` : '还没有同步记录'}</span>
-        </div>
-        <div>
-          <strong>{syncSummary?.lastError ? '最近失败' : '最近结果'}</strong>
-          <span>{showSyncHistory
-            ? syncSummary?.lastError ?? (syncSummary?.lastAttemptAt ? `上次尝试：${formatDateTime(syncSummary.lastAttemptAt)}` : '暂无')
-            : '暂无'}</span>
-        </div>
+
+      <div className={`sync-status-strip state-${syncStripState}`}>
+        <span className="led" aria-hidden="true" />
+        <span>{syncStripText}</span>
       </div>
-      {!loggedIn && <div className="pairing-approval">
-        <small className="hint full">登录后才能查看远端同步状态、初始化同步保险库或加入现有同步。</small>
-      </div>}
-      {loggedIn && !syncInitialized && <div className="pairing-approval">
-        <small className="hint full">当前账号在服务端还没有同步保险库。初始化后会生成恢复码，并将本机加入同步。</small>
-        <div className="sync-action-grid single">
-          <button className="secondary" type="button" disabled={syncBusy}
-            onClick={() => void initializeSync()}>{syncBusy ? '处理中…' : '初始化同步保险库'}</button>
+      {syncSummary?.lastError && <div className="sync-error-banner">{syncSummary.lastError}</div>}
+
+      <section className="sync-section">
+        <div className="sync-section-head">
+          <h4>服务器账号</h4>
+          {loggedIn && <button className="secondary" type="button" onClick={() => void logoutAccount()}>登出</button>}
         </div>
-      </div>}
-      {loggedIn && syncInitialized && !syncConfigured && <div className="pairing-approval">
-        <small className="hint full">服务端已有同步保险库，但本机还没加入。可以使用恢复码直接加入，或请求一台已加入的设备批准。</small>
-        <div className="sync-action-grid">
-          <button className="secondary" type="button" disabled={syncBusy}
-            onClick={() => setShowJoinModal(true)}>用恢复码加入</button>
-          <button className="secondary" type="button" disabled={syncBusy}
-            onClick={() => void beginPairing()}>{syncBusy ? '处理中…' : '请求已有设备批准'}</button>
-        </div>
-      </div>}
-      {syncConfigured && <div className="form-grid">
-        <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
-          onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />允许同步命令历史</label>
-        <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
-          onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
-        <label className="check full"><input type="checkbox" checked={autoSyncEnabled}
-          onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
-        <div className="sync-action-grid sync-action-grid-configured full">
-          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
-            onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
-          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
-            onClick={() => setShowRotateRecoveryModal(true)}>刷新同步恢复码</button>
-          <button className="secondary sync-action-button" type="button" disabled={syncBusy}
-            onClick={() => setShowApproveModal(true)}>批准新设备加入</button>
-          <button className="danger-button sync-action-button" type="button" disabled={syncBusy}
-            onClick={() => setShowLeaveSyncModal(true)}>退出同步保险库</button>
-        </div>
-      </div>}
-      {syncInitialized && <details className="pairing-approval" open={showResetForm}>
-        <summary onClick={() => setShowResetForm(value => !value)}>重置同步保险库</summary>
-        <small className="hint full">这会清空服务端同步保险库、设备列表、同步记录和待批准加入请求。</small>
-        <label>确认短语<input value={resetConfirmText} onChange={e => setResetConfirmText(e.target.value)}
-          placeholder="输入 RESET SYNC" /></label>
-        <label>账号密码<input type="password" value={resetPassword} onChange={e => setResetPassword(e.target.value)} /></label>
-        <label>TOTP（如已开启）<input value={resetTotpCode}
-          onChange={e => setResetTotpCode(e.target.value.trim())} /></label>
-        <button className="danger-button wide" type="button"
-          disabled={syncBusy || !resetPassword || resetConfirmText.trim() !== 'RESET SYNC'}
-          onClick={() => void resetSync()}>{syncBusy ? '处理中…' : '重置同步保险库'}</button>
-      </details>}
+        {loggedIn
+          ? <p className="sync-account-line">{syncServer} · {syncUser}</p>
+          : <>
+            <div className="form-grid">
+              <label className="full">服务器地址<input value={accountServerUrl}
+                onChange={e => setAccountServerUrl(e.target.value)} placeholder="https://" /></label>
+              <label className="full">账号<input value={accountUsername}
+                onChange={e => setAccountUsername(e.target.value)} /></label>
+              <label className="full">密码<input type="password" value={accountPassword}
+                onChange={e => setAccountPassword(e.target.value)} /></label>
+              <label className="full">TOTP / 账号恢复码（如已开启）<input value={accountTotpCode}
+                onChange={e => setAccountTotpCode(e.target.value.trim())} /></label>
+            </div>
+            <div className="sync-section-actions">
+              <button className="primary" type="button"
+                disabled={syncBusy || !accountServerUrl || !accountUsername || !accountPassword}
+                onClick={() => void loginAccount()}>{syncBusy ? '处理中…' : '登录'}</button>
+            </div>
+          </>}
+      </section>
+
+      {loggedIn && <>
+        <section className="sync-section">
+          <div className="sync-section-head"><h4>本设备</h4></div>
+          <div className="form-grid">
+            <label className="wide">设备名称<input value={deviceNameDraft}
+              placeholder={deviceId || '未设置时显示设备 ID'}
+              onChange={e => setDeviceNameDraft(e.target.value)} /></label>
+            <div className="field-actions">
+              <button className="secondary" type="button" onClick={() => void saveDeviceName()}>保存名称</button>
+            </div>
+          </div>
+          <small className="hint full">
+            设备 ID {deviceId || '将在首次登录时生成'}
+            {accessExpiresAt ? ` · 访问令牌 ${formatDateTime(accessExpiresAt)} 到期` : ''}
+          </small>
+        </section>
+
+        <section className="sync-section">
+          <div className="sync-section-head"><h4>同步库</h4></div>
+          {!syncInitialized && <>
+            <small className="hint full">此账号在服务器上还没有同步库。创建后会把本机加入，并生成同步恢复码。</small>
+            <div className="sync-section-actions">
+              <button className="primary" type="button" disabled={syncBusy}
+                onClick={() => void initializeSync()}>{syncBusy ? '处理中…' : '创建同步库'}</button>
+            </div>
+          </>}
+          {syncInitialized && !syncConfigured && <>
+            <small className="hint full">服务器已有同步库，本机尚未加入。</small>
+            <div className="sync-section-actions">
+              <button className="secondary" type="button" disabled={syncBusy}
+                onClick={() => setShowJoinModal(true)}>用同步恢复码加入</button>
+              <button className="secondary" type="button" disabled={syncBusy}
+                onClick={() => void beginPairing()}>{syncBusy ? '处理中…' : '请求已加入设备批准'}</button>
+            </div>
+          </>}
+          {syncConfigured && <>
+            <div className="form-grid">
+              <label className="check full"><input type="checkbox" checked={autoSyncEnabled}
+                onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
+              <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
+                onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />同步命令历史</label>
+              <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
+                onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
+            </div>
+            <div className="sync-section-actions">
+              <button className="primary" type="button" disabled={syncBusy}
+                onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
+              <button className="secondary" type="button" disabled={syncBusy}
+                onClick={() => setShowRotateRecoveryModal(true)}>重新生成同步恢复码</button>
+            </div>
+          </>}
+        </section>
+
+        {syncConfigured && <section className="sync-section">
+          <div className="sync-section-head"><h4>同步设备</h4></div>
+          <div className="sync-summary-row">
+            <span>管理已加入此同步库的设备。</span>
+            <button className="secondary" type="button" onClick={() => setShowDevicesModal(true)}>管理设备…</button>
+          </div>
+        </section>}
+
+        <section className="sync-section">
+          <div className="sync-section-head"><h4>账号安全</h4></div>
+          <div className="sync-summary-row">
+            <span>两步验证 (TOTP)：{totpEnabled ? '已启用' : '未启用'}</span>
+            {!totpEnabled && !totpSetup && <button className="secondary" type="button"
+              onClick={() => void beginTOTP()}>启用 TOTP</button>}
+          </div>
+          {totpSetup && <>
+            <div className="form-grid">
+              <label className="full">验证器密钥<input readOnly value={totpSetup.secret} /></label>
+              <label className="full">六位验证码<input inputMode="numeric" value={accountTotpCode}
+                onChange={e => setAccountTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
+            </div>
+            <div className="sync-section-actions">
+              <button className="secondary" type="button" disabled={accountTotpCode.trim().length < 6}
+                onClick={() => void confirmTOTP()}>验证并启用</button>
+            </div>
+          </>}
+          {totpEnabled && !totpSetup && <>
+            <div className="form-grid">
+              <label className="full">账号密码<input type="password" value={accountPassword}
+                onChange={e => setAccountPassword(e.target.value)} /></label>
+              <label className="full">TOTP 验证码<input inputMode="numeric" value={accountTotpCode}
+                onChange={e => setAccountTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
+            </div>
+            <div className="sync-section-actions">
+              <button className="secondary" type="button"
+                disabled={!accountPassword || !accountTotpCode.trim()}
+                onClick={() => void disableTOTP()}>关闭 TOTP</button>
+            </div>
+          </>}
+          {!!accountRecoveryCodes.length && <>
+            <label className="full">账号恢复码<textarea readOnly rows={6}
+              value={accountRecoveryCodes.join('\n')} /></label>
+            <small className="hint full">每条恢复码只能使用一次，可在登录时填到「TOTP / 账号恢复码」代替 6 位验证码。</small>
+          </>}
+        </section>
+
+        {syncInitialized && <section className="sync-section sync-danger-zone">
+          <div className="sync-section-head"><h4>危险区</h4></div>
+          {syncConfigured && <div className="sync-summary-row">
+            <span>退出同步库（仅本机）——本机离开，库和其他设备保留。</span>
+            <button className="danger-button" type="button" disabled={syncBusy}
+              onClick={() => setShowLeaveSyncModal(true)}>退出同步库</button>
+          </div>}
+          <details open={showResetForm}>
+            <summary onClick={() => setShowResetForm(value => !value)}>重置同步库（清空服务器）</summary>
+            <small className="hint full">清空服务器同步库、全部设备、同步记录和待批准请求，不可恢复。</small>
+            <label>确认短语<input value={resetConfirmText} onChange={e => setResetConfirmText(e.target.value)}
+              placeholder="输入 RESET SYNC" /></label>
+            <label>账号密码<input type="password" value={resetPassword}
+              onChange={e => setResetPassword(e.target.value)} /></label>
+            <label>TOTP（如已开启）<input value={resetTotpCode}
+              onChange={e => setResetTotpCode(e.target.value.trim())} /></label>
+            <button className="danger-button wide" type="button"
+              disabled={syncBusy || !resetPassword || resetConfirmText.trim() !== 'RESET SYNC'}
+              onClick={() => void resetSync()}>{syncBusy ? '处理中…' : '重置同步库'}</button>
+          </details>
+        </section>}
+      </>}
     </div>
   } else {
     content = <div className="settings-page">
@@ -3356,6 +3536,10 @@ function SettingsDialog({
       onClose={() => setShowLeaveSyncModal(false)}
       onLeave={() => void leaveSync()}
     />}
+    {showDevicesModal && <SyncDevicesDialog
+      onClose={() => setShowDevicesModal(false)}
+      onApproveNewDevice={() => { setShowDevicesModal(false); setShowApproveModal(true) }}
+    />}
     {showChangePasswordModal && <ChangePasswordDialog
       onClose={() => setShowChangePasswordModal(false)}
       onSubmit={async (oldPassword, newPassword) => {
@@ -3389,207 +3573,46 @@ function sameManagedHistoryCommand(row: CommandHistory, target: CommandHistory) 
   return row.connectionId === target.connectionId || row.connectionId === ''
 }
 
-function AccountManagerDialog({ account, onClose, onReload }: {
-  account?: AccountSummary; onClose: () => void; onReload: () => Promise<void>
+function SyncDevicesDialog({ onClose, onApproveNewDevice }: {
+  onClose: () => void; onApproveNewDevice: () => void
 }) {
-  const [serverUrl, setServerUrl] = useState(account?.serverUrl ?? 'https://')
-  const [username, setUsername] = useState(account?.username ?? '')
-  const [password, setPassword] = useState('')
-  const [totpCode, setTotpCode] = useState('')
-  const [notice, setNotice] = useState<{ title: string; message: string }>()
-  const [loggedIn, setLoggedIn] = useState(account?.loggedIn ?? false)
-  const [deviceId, setDeviceId] = useState(account?.deviceId ?? '')
-  const [deviceName, setDeviceName] = useState(account?.deviceName ?? '')
-  const [accessExpiresAt, setAccessExpiresAt] = useState(account?.accessExpiresAt ?? '')
   const [devices, setDevices] = useState<Array<{
     id: string; name: string; approved: boolean; revoked: boolean
     createdAt: string; lastSeenAt: string
   }>>([])
-  const [totpSetup, setTotpSetup] = useState<{ secret: string; setupToken: string; uri: string }>()
-  const [accountRecoveryCodes, setAccountRecoveryCodes] = useState<string[]>([])
-  const [totpEnabled, setTotpEnabled] = useState(account?.totpEnabled ?? false)
-  const syncInitialized = !!account?.syncInitialized
-  useEffect(() => {
-    if (account?.serverUrl) setServerUrl(account.serverUrl)
-    if (account?.username) setUsername(account.username)
-    setLoggedIn(account?.loggedIn ?? false)
-    setDeviceId(account?.deviceId ?? '')
-    setDeviceName(account?.deviceName ?? '')
-    setAccessExpiresAt(account?.accessExpiresAt ?? '')
-    setTotpEnabled(account?.totpEnabled ?? false)
-  }, [account?.serverUrl, account?.username, account?.loggedIn, account?.deviceId, account?.deviceName, account?.accessExpiresAt, account?.totpEnabled])
-  useEffect(() => {
-    if (!loggedIn || !syncInitialized) {
-      setDevices([])
-      return
-    }
-    void loadDevices()
-  }, [loggedIn, syncInitialized])
-  const showNotice = (title: string, message: string) => setNotice({ title, message })
-  const login = async () => {
-    try {
-      const resolvedDeviceId = deviceId || crypto.randomUUID()
-      await api.LoginAccount(
-        serverUrl, username, password, resolvedDeviceId, totpCode.trim()
-      )
-      showNotice('账号管理', '已登录服务端。')
-      setLoggedIn(true)
-      setDeviceId(resolvedDeviceId)
-      setDeviceName(account?.deviceName ?? '')
-      await onReload()
-    } catch (error) { showNotice('账号管理', localizeError(error)) }
-  }
-  const logout = async () => {
-    try {
-      await api.LogoutAccount()
-      showNotice('账号管理', '已退出登录。')
-      setLoggedIn(false)
-      setTotpSetup(undefined)
-      setAccountRecoveryCodes([])
-      await onReload()
-    } catch (error) { showNotice('账号管理', localizeError(error)) }
-  }
-  const loadDevices = async () => {
+  const [loading, setLoading] = useState(true)
+  const [notice, setNotice] = useState<{ title: string; message: string }>()
+  const load = async () => {
+    setLoading(true)
     try {
       const values = await api.ListSyncDevices()
       setDevices(Array.isArray(values) ? values : [])
-    } catch (error) { showNotice('设备管理', localizeError(error)) }
+    } catch (error) {
+      setNotice({ title: '设备管理', message: localizeError(error) })
+    } finally {
+      setLoading(false)
+    }
   }
-  const beginTOTP = async () => {
-    try {
-      setTotpSetup(await api.BeginSyncTOTPSetup())
-      showNotice('TOTP 设置', '请把密钥添加到验证器，再输入六位验证码确认。')
-    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
+  useEffect(() => { void load() }, [])
+  const revoke = (device: { id: string; name: string }) => {
+    if (!window.confirm(`确定撤销设备「${device.name || device.id}」？`)) return
+    void api.RevokeSyncDevice(device.id)
+      .then(load)
+      .catch(error => setNotice({ title: '设备管理', message: localizeError(error) }))
   }
-  const confirmTOTP = async () => {
-    if (!totpSetup) return
-    try {
-      setAccountRecoveryCodes(await api.ConfirmSyncTOTPSetup(totpSetup.setupToken, totpCode))
-      setTotpEnabled(true)
-      setTotpSetup(undefined)
-      setTotpCode('')
-      showNotice('TOTP 设置', 'TOTP 已启用。请离线保存账号恢复码。')
-    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
-  }
-  const disableTOTP = async () => {
-    try {
-      await api.DisableSyncTOTP(password, totpCode.trim())
-      setTotpEnabled(false)
-      setTotpSetup(undefined)
-      setAccountRecoveryCodes([])
-      setTotpCode('')
-      showNotice('TOTP 设置', 'TOTP 已关闭。')
-      await onReload()
-    } catch (error) { showNotice('TOTP 设置', localizeError(error)) }
-  }
-  const saveDeviceName = async () => {
-    try {
-      await api.SetDeviceName(deviceName.trim())
-      showNotice('设备名称', '当前设备名称已更新。')
-      await onReload()
-    } catch (error) { showNotice('设备名称', localizeError(error)) }
-  }
-  if (!loggedIn) {
-    return <Modal title="账号管理" onClose={onClose} width="720px">
-      <div className="sync-summary">
-        <div>
-          <strong>未登录</strong>
-          <span>{serverUrl ? `${serverUrl} · ${username || '未填写账号'}` : '同步信息尚未初始化'}</span>
-        </div>
-      </div>
-      <div className="form-grid">
-        <label className="wide">服务端地址<input value={serverUrl} onChange={e => setServerUrl(e.target.value)} /></label>
-        <label className="wide">账号<input value={username} onChange={e => setUsername(e.target.value)} /></label>
-        <label className="wide">密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-        <label className="wide">TOTP / 恢复码<input value={totpCode}
-          onChange={e => setTotpCode(e.target.value.trim())} /></label>
-      </div>
-      <small className="hint full">启用 TOTP 后，这里填写 6 位验证码；没有验证器时，可改填一条恢复码。</small>
-      <footer className="modal-actions">
-        <button onClick={onClose}>关闭</button>
-        <button className="secondary" onClick={() => void login()}>登录</button>
-      </footer>
-      {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
-    </Modal>
-  }
-  return <Modal title="账号管理" onClose={onClose} width="920px">
-    <section className="account-panel">
-    <header className="account-panel-header">
-      <div>
-        <strong>账号管理</strong>
-        <span>{serverUrl ? `${serverUrl} · ${username}` : '同步信息尚未初始化'}</span>
-      </div>
-      <div className="account-panel-actions">
-        {syncInitialized && <button className="secondary" onClick={() => void loadDevices()}>刷新设备</button>}
-        <button className="danger-button" onClick={() => void logout()}>退出登录</button>
-      </div>
-    </header>
-    <div className="account-panel-body">
-      <div className="sync-summary">
-        <div>
-          <strong>{syncInitialized && deviceId ? '当前同步设备' : '当前设备'}</strong>
-          <span>{syncInitialized ? (deviceName || deviceId || '设备编号会在首次登录时生成并保存。') : '服务端同步保险库未初始化时，本机不会显示旧的同步设备信息。'}</span>
-        </div>
-        <div>
-          <strong>{account?.syncInitialized ? '远端同步已初始化' : '远端同步未初始化'}</strong>
-          <span>{account?.syncInitialized ? '服务端已经存在同步保险库。' : '服务端还没有同步保险库。'}</span>
-        </div>
-        <div>
-          <strong>{accessExpiresAt ? '访问令牌已存' : '访问令牌未显示'}</strong>
-          <span>{accessExpiresAt ? `访问令牌到期：${new Date(accessExpiresAt).toLocaleString()}` : '密码不会保存在本地。'}</span>
-        </div>
-      </div>
-      {syncInitialized && <div className="pairing-approval">
-        <div className="form-grid">
-          <label className="wide">当前设备名称<input
-            value={deviceName}
-            placeholder={deviceId || '未设置时显示设备 ID'}
-            onChange={e => setDeviceName(e.target.value)} /></label>
-          <div className="field-actions">
-            <button className="secondary" onClick={() => void saveDeviceName()}>保存名称</button>
-          </div>
-        </div>
-        <small className="hint full">未设置时，设备列表和同步状态会默认显示设备 ID。</small>
-      </div>}
-      {syncInitialized && <div className="pairing-approval">
-        <div className="device-list">
-          {devices.map(device => <div key={device.id}>
-            <span><strong>{device.name || device.id}</strong><small>{device.id}</small></span>
-            <button onClick={() => {
-              if (!window.confirm(`确定撤销设备「${device.name || device.id}」？`)) return
-              void api.RevokeSyncDevice(device.id)
-                .then(loadDevices).catch(error => showNotice('设备管理', localizeError(error)))
-            }}>撤销</button>
-          </div>)}
-          {!devices.length && <small>暂无设备，或尚未刷新。</small>}
-        </div>
-      </div>}
-      <details className="pairing-approval">
-        <summary>账号二次验证</summary>
-        {!totpEnabled && !totpSetup && <button className="secondary wide" onClick={() => void beginTOTP()}>启用 TOTP</button>}
-        {totpSetup && <>
-          <label>验证器密钥<input readOnly value={totpSetup.secret} /></label>
-          <label>六位验证码<input inputMode="numeric" value={totpCode}
-            onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
-          <button className="secondary wide" onClick={() => void confirmTOTP()}>验证并启用</button>
-        </>}
-        {totpEnabled && !totpSetup && <>
-          <label>账号密码<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
-          <label>TOTP 验证码<input inputMode="numeric" value={totpCode}
-            onChange={e => setTotpCode(e.target.value.replace(/\D/g, ''))} /></label>
-          <button className="secondary wide" disabled={!password || !totpCode.trim()} onClick={() => void disableTOTP()}>
-            关闭 TOTP
-          </button>
-        </>}
-        {!!accountRecoveryCodes.length && <label>账号恢复码<textarea readOnly rows={6}
-          value={accountRecoveryCodes.join('\n')} /></label>}
-        {!!accountRecoveryCodes.length && <small className="hint full">
-          每条恢复码只能使用一次，可在登录时填到 “TOTP / 恢复码” 输入框里代替 6 位验证码。
-        </small>}
-      </details>
+  return <Modal title="同步设备" onClose={onClose} width="560px" footer={<>
+    <button onClick={onClose}>关闭</button>
+    <button className="secondary" type="button" onClick={onApproveNewDevice}>批准新设备…</button>
+  </>}>
+    <div className="device-list">
+      {devices.map(device => <div key={device.id}>
+        <span><strong>{device.name || device.id}</strong><small>{device.id}</small></span>
+        <button type="button" onClick={() => revoke(device)}>撤销</button>
+      </div>)}
+      {loading && <small>加载中…</small>}
+      {!loading && !devices.length && <small>暂无设备。</small>}
     </div>
     {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(undefined)} />}
-    </section>
   </Modal>
 }
 
