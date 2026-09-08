@@ -770,8 +770,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .tag-preview-card strong { color: var(--text); font-size: 12px; }
 .tag-preview-card small { color: var(--muted); font-size: 10px; }
 .tag-preview-note { margin-top: -2px; color: var(--muted); line-height: 1.5; }
-.check { flex-direction: row; align-items: center; }
+.check { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
 .check input { width: auto; }
+.check > input[type="checkbox"] { order: 2; }
 .modal-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 18px 20px 18px; background-color: var(--panel); }
 .modal-actions {
   display: flex;
@@ -970,12 +971,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 .setting-toggle-main {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 14px;
 }
 .setting-toggle-main > input {
   width: auto;
-  margin-top: 2px;
   flex: 0 0 auto;
+}
+.setting-toggle-main > input[type="checkbox"] {
+  order: 2;
+  margin-top: 1px;
 }
 .setting-toggle-copy {
   display: grid;
@@ -1269,7 +1274,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 }
 .sync-section {
   border: 1px solid var(--line);
-  border-radius: 11px;
+  border-radius: 12px;
+  background: var(--bg);
   padding: 13px 14px 14px;
   display: flex;
   flex-direction: column;
@@ -1307,7 +1313,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
 }
 .sync-toggle-row:first-child { border-top: 0; padding-top: 2px; }
 .sync-toggle-row > span { font-size: 12px; color: var(--text); }
-.sync-switch {
+.sync-switch,
+.setting-toggle-main > input[type="checkbox"],
+.check > input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
   flex: none;
@@ -1323,7 +1331,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
   cursor: pointer;
   transition: background .15s ease;
 }
-.sync-switch::after {
+.sync-switch::after,
+.setting-toggle-main > input[type="checkbox"]::after,
+.check > input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -1335,10 +1345,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent, #62d9ca)
   box-shadow: 0 1px 2px rgba(0, 0, 0, .28);
   transition: left .15s ease;
 }
-.sync-switch:checked { background: var(--accent); }
-.sync-switch:checked::after { left: 16px; }
-.sync-switch:focus { box-shadow: none; }
-.sync-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sync-switch:checked,
+.setting-toggle-main > input[type="checkbox"]:checked,
+.check > input[type="checkbox"]:checked { background: var(--accent); }
+.sync-switch:checked::after,
+.setting-toggle-main > input[type="checkbox"]:checked::after,
+.check > input[type="checkbox"]:checked::after { left: 16px; }
+.sync-switch:focus,
+.setting-toggle-main > input[type="checkbox"]:focus,
+.check > input[type="checkbox"]:focus { box-shadow: none; }
+.sync-switch:focus-visible,
+.setting-toggle-main > input[type="checkbox"]:focus-visible,
+.check > input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* trim the heavy global button chrome to the mock's proportions on this page */
 .sync-settings .sync-section-actions .primary,
