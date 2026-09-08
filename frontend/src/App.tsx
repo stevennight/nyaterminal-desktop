@@ -3213,7 +3213,7 @@ function SettingsDialog({
 
       <section className="sync-section">
         <div className="sync-section-head">
-          <h4>服务器账号</h4>
+          <div className="sync-section-title"><h4>服务器账号</h4><span className="sync-layer">Account</span></div>
           {loggedIn && <button className="secondary" type="button" onClick={() => void logoutAccount()}>登出</button>}
         </div>
         {loggedIn
@@ -3239,7 +3239,9 @@ function SettingsDialog({
 
       {loggedIn && <>
         <section className="sync-section">
-          <div className="sync-section-head"><h4>本设备</h4></div>
+          <div className="sync-section-head">
+            <div className="sync-section-title"><h4>本设备</h4><span className="sync-layer">This device</span></div>
+          </div>
           <div className="form-grid">
             <label className="wide">设备名称<input value={deviceNameDraft}
               placeholder={deviceId || '未设置时显示设备 ID'}
@@ -3255,7 +3257,9 @@ function SettingsDialog({
         </section>
 
         <section className="sync-section">
-          <div className="sync-section-head"><h4>同步库</h4></div>
+          <div className="sync-section-head">
+            <div className="sync-section-title"><h4>同步库</h4><span className="sync-layer">Sync vault</span></div>
+          </div>
           {!syncInitialized && <>
             <small className="hint full">此账号在服务器上还没有同步库。创建后会把本机加入，并生成同步恢复码。</small>
             <div className="sync-section-actions">
@@ -3273,25 +3277,33 @@ function SettingsDialog({
             </div>
           </>}
           {syncConfigured && <>
-            <div className="form-grid">
-              <label className="check full"><input type="checkbox" checked={autoSyncEnabled}
-                onChange={e => void setAutoSync(e.target.checked)} />自动同步</label>
-              <label className="check full"><input type="checkbox" checked={next.syncCommandHistory}
-                onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} />同步命令历史</label>
-              <label className="check full"><input type="checkbox" checked={next.syncSecretsByDefault}
-                onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} />默认同步密码和私钥</label>
+            <div className="sync-toggle-list">
+              <label className="sync-toggle-row"><span>自动同步</span>
+                <input className="sync-switch" type="checkbox" checked={autoSyncEnabled}
+                  onChange={e => void setAutoSync(e.target.checked)} /></label>
+              <label className="sync-toggle-row"><span>同步命令历史</span>
+                <input className="sync-switch" type="checkbox" checked={next.syncCommandHistory}
+                  onChange={e => setNext({ ...next, syncCommandHistory: e.target.checked })} /></label>
+              <label className="sync-toggle-row"><span>默认同步密码和私钥</span>
+                <input className="sync-switch" type="checkbox" checked={next.syncSecretsByDefault}
+                  onChange={e => setNext({ ...next, syncSecretsByDefault: e.target.checked })} /></label>
             </div>
             <div className="sync-section-actions">
               <button className="primary" type="button" disabled={syncBusy}
                 onClick={() => void syncNow()}>{syncBusy ? '同步中…' : '立即同步'}</button>
               <button className="secondary" type="button" disabled={syncBusy}
                 onClick={() => setShowRotateRecoveryModal(true)}>重新生成同步恢复码</button>
+              {syncSummary?.lastSyncedAt && <span className="sync-last-sync">
+                上次：上传 {syncSummary.lastPushed ?? 0} · 下载 {syncSummary.lastPulled ?? 0} · 冲突 {syncSummary.lastConflicts ?? 0}
+              </span>}
             </div>
           </>}
         </section>
 
         {syncConfigured && <section className="sync-section">
-          <div className="sync-section-head"><h4>同步设备</h4></div>
+          <div className="sync-section-head">
+            <div className="sync-section-title"><h4>同步设备</h4><span className="sync-layer">Devices</span></div>
+          </div>
           <div className="sync-summary-row">
             <span>管理已加入此同步库的设备。</span>
             <button className="secondary" type="button" onClick={() => setShowDevicesModal(true)}>管理设备…</button>
@@ -3299,7 +3311,9 @@ function SettingsDialog({
         </section>}
 
         <section className="sync-section">
-          <div className="sync-section-head"><h4>账号安全</h4></div>
+          <div className="sync-section-head">
+            <div className="sync-section-title"><h4>账号安全</h4><span className="sync-layer">Account</span></div>
+          </div>
           <div className="sync-summary-row">
             <span>两步验证 (TOTP)：{totpEnabled ? '已启用' : '未启用'}</span>
             {!totpEnabled && !totpSetup && <button className="secondary" type="button"
@@ -3337,7 +3351,9 @@ function SettingsDialog({
         </section>
 
         {syncInitialized && <section className="sync-section sync-danger-zone">
-          <div className="sync-section-head"><h4>危险区</h4></div>
+          <div className="sync-section-head">
+            <div className="sync-section-title"><h4>危险区</h4></div>
+          </div>
           {syncConfigured && <div className="sync-summary-row">
             <span>退出同步库（仅本机）——本机离开，库和其他设备保留。</span>
             <button className="danger-button" type="button" disabled={syncBusy}
