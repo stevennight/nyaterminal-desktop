@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -105,6 +106,34 @@ func (a *App) DownloadAndInstallUpdate(requestedVersion string) error {
 	}
 	runtime.Quit(a.context())
 	return nil
+}
+
+// OpenNewWindow starts an explicitly requested secondary application window.
+// Normal launches are single-instance; the flag is intentionally only added
+// here so a user can opt into more than one window when needed.
+func (a *App) OpenNewWindow() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	command := exec.Command(executable, "--new-window")
+	if err := command.Start(); err != nil {
+		return err
+	}
+	_ = command.Process.Release()
+	return nil
+}
+
+// ShowMainWindow brings the existing window to the foreground after a second
+// normal launch is redirected to this process.
+func (a *App) ShowMainWindow() {
+	a.mu.RLock()
+	ctx := a.ctx
+	a.mu.RUnlock()
+	if ctx == nil {
+		return
+	}
+	runtime.WindowShow(ctx)
 }
 
 func New(dataDir string) *App {

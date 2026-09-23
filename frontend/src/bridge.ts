@@ -5,6 +5,7 @@ import type {
 
 type Backend = {
   BuildInfo(): Promise<BuildInfo>
+  OpenNewWindow(): Promise<void>
   CheckForUpdates(): Promise<UpdateCheckResult>
   DownloadAndInstallUpdate(requestedVersion: string): Promise<void>
   Bootstrap(): Promise<Bootstrap>

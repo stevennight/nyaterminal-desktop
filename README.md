@@ -93,6 +93,17 @@ contracts.
   destination instead of accumulating the complete file in WebView memory.
 - Terminal links only open explicit HTTP/HTTPS URLs through the system browser.
 
+## Windows and multiple windows
+
+Normal launches use a single-instance lock. If NyaTerminal is already running,
+starting it again brings the existing window to the foreground instead of
+opening another copy.
+
+When two windows are needed, use **打开新窗口** in the application header or
+press `Ctrl+Shift+N` (`⌘+Shift+N` on macOS). This starts an explicitly requested
+secondary window; ordinary accidental launches remain redirected to the first
+window.
+
 ## Verification
 
 ```powershell

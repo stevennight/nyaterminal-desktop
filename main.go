@@ -18,12 +18,13 @@ import (
 var assets embed.FS
 
 func main() {
-	if version.IsVersionCommand(os.Args[1:]) {
+	args := os.Args[1:]
+	if version.IsVersionCommand(args) {
 		fmt.Println(version.Print("NyaTerminal"))
 		return
 	}
 
-	if handled, exitCode, err := runHelloHelperIfRequested(os.Args[1:]); handled {
+	if handled, exitCode, err := runHelloHelperIfRequested(args); handled {
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 		}
@@ -40,7 +41,7 @@ func main() {
 		_ = application.Close()
 	}()
 
-	err = wails.Run(&options.App{
+	appOptions := &options.App{
 		Title:     "NyaTerminal",
 		Width:     1280,
 		Height:    800,
@@ -70,9 +71,28 @@ func main() {
 		OnStartup:  application.Startup,
 		OnShutdown: application.Shutdown,
 		Bind:       []interface{}{application},
-	})
+	}
+	if !newWindowRequested(args) {
+		appOptions.SingleInstanceLock = &options.SingleInstanceLock{
+			UniqueId: "nyaterminal",
+			OnSecondInstanceLaunch: func(_ options.SecondInstanceData) {
+				application.ShowMainWindow()
+			},
+		}
+	}
+
+	err = wails.Run(appOptions)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "application error:", err)
 		os.Exit(1)
 	}
+}
+
+func newWindowRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--new-window" {
+			return true
+		}
+	}
+	return false
 }

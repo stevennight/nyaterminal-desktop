@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
-  ArrowUpDown, ChevronDown, ChevronRight, Download, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
+  AppWindow, ArrowUpDown, ChevronDown, ChevronRight, Download, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
   Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
   RefreshCw, Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
 } from 'lucide-react'
@@ -573,6 +573,13 @@ export function App() {
       setError(localizeError(value))
     }
   }, [])
+  const openNewWindow = useCallback(async () => {
+    try {
+      await api.OpenNewWindow()
+    } catch (value) {
+      setError(localizeError(value))
+    }
+  }, [])
   const checkForUpdates = useCallback(async () => {
     setUpdateCheckBusy(true)
     try {
@@ -751,6 +758,9 @@ export function App() {
       } else if (key === 'l') {
         event.preventDefault()
         void lock()
+      } else if (key === 'n' && event.shiftKey) {
+        event.preventDefault()
+        void openNewWindow()
       } else if (key === 'n') {
         event.preventDefault()
         setConnectionEditor({ ...emptyConnection })
@@ -758,7 +768,7 @@ export function App() {
     }
     window.addEventListener('keydown', shortcut)
     return () => window.removeEventListener('keydown', shortcut)
-  }, [bootstrap?.settings?.disconnectOnLock])
+  }, [bootstrap?.settings?.disconnectOnLock, openNewWindow])
 
   const lock = async () => {
     const disconnect = bootstrap?.settings?.disconnectOnLock ?? true
@@ -1252,6 +1262,9 @@ export function App() {
         <div className="brand-row">
           <img className="brand-mark" src={brandIconSrc(settings.theme)} alt="" aria-hidden="true" />
           <div><strong>NyaTerminal</strong><small>Secure workspace</small></div>
+          <button className="icon-button" onClick={() => void openNewWindow()} title="打开新窗口">
+            <AppWindow size={17} />
+          </button>
           <button className="icon-button"
             onClick={() => { setSettingsInitialSection('sync'); setSettingsOpen(true) }} title="账号与同步">
             <Shield size={17} />
