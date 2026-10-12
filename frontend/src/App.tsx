@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   AppWindow, ArrowUpDown, ChevronDown, ChevronRight, Download, ExternalLink, Eye, EyeOff, Folder, FolderPlus, Info, LockKeyhole, Monitor,
-  Moon, Paintbrush, Pencil, Plus, Search, Settings as SettingsIcon,
-  RefreshCw, Shield, SlidersHorizontal, Sun, TerminalSquare, Trash2, X
+  Moon, Paintbrush, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings as SettingsIcon,
+  RefreshCw, Shield, SlidersHorizontal, Sun, Tag as TagIcon, TerminalSquare, Trash2, X
 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from './bridge'
@@ -98,10 +98,15 @@ type ContextMenuState = {
 const THEME_STORAGE_KEY = 'nyaterminal.theme'
 const CONNECTION_SORT_STORAGE_KEY = 'nyaterminal.connectionSortMode'
 const TAB_SORT_STORAGE_KEY = 'nyaterminal.tabSortMode'
+const SIDEBAR_WIDTH_STORAGE_KEY = 'nyaterminal.sidebarWidth'
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'nyaterminal.sidebarCollapsed'
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 480
 const DEFAULT_TAG_COLOR = '#62D9CA'
 const AUTO_RECONNECT_LIMIT = 5
 const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
 const NATURAL_SORTER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+const MOD_KEY_LABEL = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘' : 'Ctrl+'
 declare const __APP_INFO__: AppBuildInfo
 const APP_INFO = __APP_INFO__
 function mergedBuildInfo(value?: BuildInfo): BuildInfo {
@@ -214,6 +219,24 @@ function getPreferredTabSortMode(): TabSortMode {
     // Ignore storage failures and fall back to the manual order.
   }
   return 'manual'
+}
+
+function getPreferredSidebarWidth(): number | undefined {
+  try {
+    const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+    if (stored >= SIDEBAR_MIN_WIDTH && stored <= SIDEBAR_MAX_WIDTH) return stored
+  } catch {
+    // Ignore storage failures and fall back to the stylesheet width.
+  }
+  return undefined
+}
+
+function getPreferredSidebarCollapsed() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 function formatDateTime(value?: string) {
@@ -521,6 +544,8 @@ export function App() {
   const [connectionSortMode, setConnectionSortMode] =
     useState<ConnectionSortMode>(() => getPreferredConnectionSortMode())
   const [tabSortMode, setTabSortMode] = useState<TabSortMode>(() => getPreferredTabSortMode())
+  const [sidebarWidth, setSidebarWidth] = useState(() => getPreferredSidebarWidth())
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => getPreferredSidebarCollapsed())
   const [connectionEditor, setConnectionEditor] = useState<Connection>()
   const [groupEditor, setGroupEditor] = useState<GroupEditorState>()
   const [tagEditor, setTagEditor] = useState<TagEditorState>()
@@ -676,6 +701,38 @@ export function App() {
       // Ignore storage failures; the in-memory tab order still updates.
     }
   }, [tabSortMode])
+
+  useEffect(() => {
+    try {
+      if (sidebarWidth) window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth))
+      else window.localStorage.removeItem(SIDEBAR_WIDTH_STORAGE_KEY)
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed ? '1' : '0')
+    } catch {
+      // Ignore storage failures; the in-memory layout still updates.
+    }
+  }, [sidebarWidth, sidebarCollapsed])
+
+  const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const handle = event.currentTarget
+    const left = handle.parentElement?.getBoundingClientRect().left ?? 0
+    handle.setPointerCapture(event.pointerId)
+    document.body.classList.add('resizing-sidebar')
+    const move = (moveEvent: PointerEvent) => {
+      const next = Math.round(moveEvent.clientX - left)
+      setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)))
+    }
+    const stop = () => {
+      document.body.classList.remove('resizing-sidebar')
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', stop)
+      handle.removeEventListener('pointercancel', stop)
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', stop)
+    handle.addEventListener('pointercancel', stop)
+  }
 
   useEffect(() => {
     return window.runtime?.EventsOn?.('ssh:interactive-challenge', value => {
@@ -1257,24 +1314,19 @@ export function App() {
   const showUpdateNotice = updateCheck?.updateAvailable && !updateNoticeDismissed
 
   return (
-    <div className={`app-shell theme-${settings.theme}`}>
-      <aside className="sidebar">
+    <div className={`app-shell theme-${settings.theme}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+      style={sidebarWidth ? { '--sidebar-width': `${sidebarWidth}px` } as CSSProperties : undefined}>
+      <aside className="sidebar" aria-hidden={sidebarCollapsed || undefined}>
+        <div className="sidebar-resizer" title="拖动调整宽度，双击恢复默认"
+          onPointerDown={startSidebarResize} onDoubleClick={() => setSidebarWidth(undefined)} />
         <div className="brand-row">
           <img className="brand-mark" src={brandIconSrc(settings.theme)} alt="" aria-hidden="true" />
           <div><strong>NyaTerminal</strong><small>Secure workspace</small></div>
-          <button className="icon-button" onClick={() => void openNewWindow()} title="打开新窗口">
-            <AppWindow size={17} />
-          </button>
-          <button className="icon-button"
-            onClick={() => { setSettingsInitialSection('sync'); setSettingsOpen(true) }} title="账号与同步">
-            <Shield size={17} />
-          </button>
-          <button className="icon-button" onClick={() => void lock()} title="锁屏"><LockKeyhole size={17} /></button>
         </div>
         <div className="search-box"><Search size={16} />
           <input ref={searchInput} placeholder="搜索连接" value={query}
             onChange={event => setQuery(event.target.value)} />
-          <kbd>⌘K</kbd>
+          <kbd>{MOD_KEY_LABEL}K</kbd>
         </div>
         <div className="section-heading">
           <span>连接</span>
@@ -1285,6 +1337,7 @@ export function App() {
             <button title="新建分组" onClick={() => setGroupEditor({})}><FolderPlus size={15} /></button>
             <button title="新建远程桌面连接"
               onClick={() => setConnectionEditor({ ...emptyRdpConnection })}><Monitor size={15} /></button>
+            <button title="新建标签" onClick={() => setTagEditor({})}><TagIcon size={15} /></button>
             <button title="新建 SSH 连接" onClick={() => setConnectionEditor({ ...emptyConnection })}><Plus size={16} /></button>
           </div>
         </div>
@@ -1295,9 +1348,8 @@ export function App() {
             onConnectionContextMenu={showConnectionContextMenu} />
           {!filteredConnections.length && <div className="empty-tree">还没有连接</div>}
         </nav>
-        <div className="tag-section">
-          <div className="section-heading"><span>标签</span>
-            <button title="新建标签" onClick={() => setTagEditor({})}><Plus size={14} /></button></div>
+        {(bootstrap.tags ?? []).length > 0 && <div className="tag-section">
+          <div className="section-heading"><span>标签</span></div>
           <div className="tag-list">
             {(bootstrap.tags ?? []).map(tag => <button key={tag.id}
               className={activeTag === tag.id ? 'active' : ''}
@@ -1307,17 +1359,31 @@ export function App() {
               <i style={{ background: tagColor(tag.color) }} /><span>{tag.name}</span>
             </button>)}
           </div>
-        </div>
+        </div>}
         <div className="sidebar-footer">
           <button className="settings-entry"
             onClick={() => { setSettingsInitialSection(undefined); setSettingsOpen(true) }}>
             <SettingsIcon size={17} />设置
+          </button>
+          <button className="footer-icon" onClick={() => void openNewWindow()} title="打开新窗口">
+            <AppWindow size={17} />
+          </button>
+          <button className="footer-icon"
+            onClick={() => { setSettingsInitialSection('sync'); setSettingsOpen(true) }} title="账号与同步">
+            <Shield size={17} />
+          </button>
+          <button className="footer-icon" onClick={() => void lock()} title={`锁屏 (${MOD_KEY_LABEL}L)`}>
+            <LockKeyhole size={17} />
           </button>
         </div>
       </aside>
 
       <main className="workspace">
         <div className="tabbar">
+          <button className="sidebar-toggle" onClick={() => setSidebarCollapsed(value => !value)}
+            title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}>
+            {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          </button>
           <div className="tab-scroll" ref={tabScroll} onWheel={handleTabListWheel}>
             <div className="tab-strip">
               {sessionDisplayOrder.map(tab => (
@@ -1788,7 +1854,7 @@ function GroupNode({
       onContextMenu={event => onGroupContextMenu(event, group)}>
       {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       <Folder size={15} /><span>{group.name}</span>
-      <small>{items.length}</small>
+      <small>{countGroupConnections(group.id, groups, connections)}</small>
     </button>
     {open && <div className="group-children">
       {children.map(child => <GroupNode key={child.id} group={child} groups={groups}
@@ -1801,15 +1867,23 @@ function GroupNode({
   </div>
 }
 
+function countGroupConnections(groupId: string, groups: Group[], connections: Connection[]): number {
+  return connections.filter(connection => connection.groupId === groupId).length +
+    groups.filter(group => group.parentId === groupId)
+      .reduce((total, child) => total + countGroupConnections(child.id, groups, connections), 0)
+}
+
 function ConnectionRow({ value, onOpen, onContextMenu }: {
   value: Connection
   onOpen: (value: Connection, privateSession?: boolean) => void
   onContextMenu: (event: React.MouseEvent, connection: Connection) => void
 }) {
   const isRdp = value.protocol === 'rdp'
+  const address = `${value.username ? `${value.username}@` : ''}${value.host}:${value.port}`
   return <button className="connection-row" draggable
     onDragStart={event => event.dataTransfer.setData('application/x-nya-connection', value.id)}
-    title={isRdp ? '双击打开远程桌面；右键查看更多操作' : '双击连接；右键查看更多操作'}
+    title={`${address}
+${isRdp ? '双击打开远程桌面；右键查看更多操作' : '双击连接；右键查看更多操作'}`}
     onDoubleClick={() => onOpen(value)}
     onContextMenu={event => onContextMenu(event, value)}>
     <span className="status-dot" /><span className="connection-copy">
@@ -1817,7 +1891,6 @@ function ConnectionRow({ value, onOpen, onContextMenu }: {
         {isRdp && <span className="proto-badge">RDP</span>}
         {value.name}
       </strong>
-      <small>{value.username ? `${value.username}@` : ''}{value.host}:{value.port}</small>
     </span>
   </button>
 }
