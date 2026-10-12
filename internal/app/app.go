@@ -116,6 +116,7 @@ func (a *App) OpenNewWindow() error {
 	if err != nil {
 		return err
 	}
+	// #nosec G204 -- Relaunches this application's own executable with a fixed flag.
 	command := exec.Command(executable, "--new-window")
 	if err := command.Start(); err != nil {
 		return err
