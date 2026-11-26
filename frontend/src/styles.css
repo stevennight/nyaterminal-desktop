@@ -59,6 +59,10 @@
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
+input[type="password"] {
+  font-family: -apple-system, BlinkMacSystemFont, var(--ui-font-family);
+  font-variant-emoji: text;
+}
 button { color: inherit; }
 button:not(:disabled) { cursor: pointer; }
 

@@ -14,6 +14,16 @@ describe('terminalClipboard', () => {
     expect(getTerminalClipboardAction(key('c', true, false))).toBeUndefined()
   })
 
+  it('maps Cmd+C and Cmd+V on macOS without requiring shift', () => {
+    expect(getTerminalClipboardAction(key('c', false, false, true))).toBe('copy')
+    expect(getTerminalClipboardAction(key('v', false, false, true))).toBe('paste')
+  })
+
+  it('maps Cmd+Shift+C and Cmd+Shift+V on macOS', () => {
+    expect(getTerminalClipboardAction(key('C', false, true, true))).toBe('copy')
+    expect(getTerminalClipboardAction(key('V', false, true, true))).toBe('paste')
+  })
+
   it('clamps the terminal menu inside the viewport', () => {
     expect(clampTerminalMenuPosition(999, 999, 320, 240)).toEqual({ left: 132, top: 897 })
   })
@@ -30,11 +40,12 @@ describe('terminalClipboard', () => {
   })
 })
 
-function key(key: string, ctrlKey: boolean, shiftKey: boolean) {
+function key(key: string, ctrlKey: boolean, shiftKey: boolean, metaKey = false) {
   return {
     key,
     ctrlKey,
     shiftKey,
-    metaKey: false
+    metaKey,
+    altKey: false
   } as KeyboardEvent
 }

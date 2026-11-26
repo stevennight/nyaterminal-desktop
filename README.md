@@ -43,6 +43,21 @@ For a dev loop:
 .\build.ps1 -Mode dev
 ```
 
+### macOS builds
+
+On macOS (Apple Silicon or Intel), use `./build-macos.sh`:
+
+```bash
+# Development mode (with CGO enabled for Touch ID / LocalAuthentication)
+./build-macos.sh --mode dev
+
+# Build local .app bundle
+./build-macos.sh
+
+# Build universal (arm64 + amd64) .dmg and .zip
+./build-macos.sh --dmg --zip --platform darwin/universal --version v0.1.0
+```
+
 The frontend never receives stored credentials directly. SSH and SFTP operations
 resolve encrypted credentials inside the Go process.
 

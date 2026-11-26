@@ -86,6 +86,31 @@ func TestPasswordSSHRequiresHostTrustAndDetectsChangedKey(t *testing.T) {
 	}
 }
 
+func TestAllowedWebSocketOrigin(t *testing.T) {
+	tests := []struct {
+		origin string
+		want   bool
+	}{
+		{origin: "", want: true},
+		{origin: "null", want: true},
+		{origin: "wails://wails", want: true},
+		{origin: "wails://wails.localhost", want: true},
+		{origin: "http://wails.localhost", want: true},
+		{origin: "https://wails.localhost", want: true},
+		{origin: "http://localhost:34115", want: true},
+		{origin: "http://127.0.0.1:5173", want: true},
+		{origin: "https://evil.example.com", want: false},
+		{origin: "wails://evil.example.com", want: false},
+		{origin: "javascript:alert(1)", want: false},
+	}
+
+	for _, test := range tests {
+		if got := allowedWebSocketOrigin(test.origin); got != test.want {
+			t.Fatalf("allowedWebSocketOrigin(%q) = %v, want %v", test.origin, got, test.want)
+		}
+	}
+}
+
 func TestPortForwardingIsReserved(t *testing.T) {
 	manager := &Manager{}
 	_, err := manager.StartPortForward(context.Background(), PortForwardRequest{

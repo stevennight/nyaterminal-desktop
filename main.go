@@ -5,17 +5,24 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/nyaterminal/nyaterminal-desktop/internal/app"
 	"github.com/nyaterminal/nyaterminal-desktop/internal/version"
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	macoptions "github.com/wailsapp/wails/v2/pkg/options/mac"
 	windowsoptions "github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed frontend/public/nyaterminal-icon-dark-gray.png
+var appIcon []byte
 
 func main() {
 	args := os.Args[1:]
@@ -51,6 +58,18 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 10, G: 14, B: 22, A: 255},
+		Menu:             buildApplicationMenu(application),
+		Mac: &macoptions.Options{
+			TitleBar:             macoptions.TitleBarDefault(),
+			Appearance:           macoptions.NSAppearanceNameDarkAqua,
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
+			About: &macoptions.AboutInfo{
+				Title:   "NyaTerminal",
+				Message: version.Print("NyaTerminal"),
+				Icon:    appIcon,
+			},
+		},
 		Windows: &windowsoptions.Options{
 			Theme: windowsoptions.Dark,
 			CustomTheme: &windowsoptions.ThemeSettings{
@@ -86,6 +105,21 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "application error:", err)
 		os.Exit(1)
 	}
+}
+
+func buildApplicationMenu(application *app.App) *menu.Menu {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	appMenu := menu.NewMenu()
+	appMenu.Append(menu.AppMenu())
+	fileMenu := appMenu.AddSubmenu("File")
+	fileMenu.AddText("New Window", keys.Combo("n", keys.CmdOrCtrlKey, keys.ShiftKey), func(_ *menu.CallbackData) {
+		_ = application.OpenNewWindow()
+	})
+	appMenu.Append(menu.EditMenu())
+	appMenu.Append(menu.WindowMenu())
+	return appMenu
 }
 
 func newWindowRequested(args []string) bool {

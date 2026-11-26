@@ -3,10 +3,17 @@ export type TerminalClipboardAction = 'copy' | 'paste' | undefined
 const encoder = new TextEncoder()
 
 export function getTerminalClipboardAction(event: KeyboardEvent): TerminalClipboardAction {
-  if (!(event.ctrlKey || event.metaKey)) return undefined
+  if (event.altKey) return undefined
   const key = event.key.toLowerCase()
-  if (key === 'c' && event.shiftKey) return 'copy'
-  if (key === 'v' && event.shiftKey) return 'paste'
+  if (event.metaKey && !event.ctrlKey) {
+    if (key === 'c') return 'copy'
+    if (key === 'v') return 'paste'
+    return undefined
+  }
+  if (event.ctrlKey && event.shiftKey && !event.metaKey) {
+    if (key === 'c') return 'copy'
+    if (key === 'v') return 'paste'
+  }
   return undefined
 }
 

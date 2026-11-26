@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -586,6 +587,10 @@ func (m *Manager) keepAlive(connection model.Connection, session *terminalSessio
 }
 
 func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !allowedWebSocketOrigin(r.Header.Get("Origin")) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/session/")
 	m.mu.Lock()
 	session := m.sessions[id]
@@ -599,7 +604,9 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"wails.localhost", "localhost", "127.0.0.1"},
+		// Origin is validated above to support macOS WKWebView's custom wails://
+		// scheme (which sends Origin: wails://wails or opaque Origin: null).
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		session.close()
@@ -687,6 +694,26 @@ func (s *terminalSession) close() {
 		_ = s.session.Close()
 		_ = s.client.Close()
 	})
+}
+
+func allowedWebSocketOrigin(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" || origin == "null" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	switch strings.ToLower(parsed.Scheme) {
+	case "wails":
+		return host == "wails" || host == "wails.localhost"
+	case "http", "https":
+		return host == "wails.localhost" || host == "localhost" || host == "127.0.0.1"
+	default:
+		return false
+	}
 }
 
 func randomToken(size int) (string, error) {

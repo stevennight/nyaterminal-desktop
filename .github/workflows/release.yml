@@ -120,9 +120,50 @@ jobs:
           path: release-artifacts/*
           if-no-files-found: error
 
+  macos:
+    name: Build macOS app
+    needs: [metadata, verify]
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.9"
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - name: Build macOS universal DMG and ZIP
+        run: |
+          ./build-macos.sh \
+            --dmg \
+            --zip \
+            --platform darwin/universal \
+            --version '${{ needs.metadata.outputs.version }}' \
+            --commit '${{ github.sha }}' \
+            --build-date '${{ needs.metadata.outputs.build_date }}' \
+            --update-repository '${{ github.repository }}'
+      - name: Collect release files
+        run: |
+          version='${{ needs.metadata.outputs.version }}'
+          output='release-artifacts'
+          mkdir -p "${output}"
+          cp "build/bin/NyaTerminal_${version}_macos_universal.dmg" "${output}/"
+          cp "build/bin/NyaTerminal_${version}_macos_universal.zip" "${output}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NyaTerminal-macOS-${{ github.ref_name }}
+          path: release-artifacts/*
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
-    needs: [metadata, windows]
+    needs: [metadata, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -140,7 +181,7 @@ jobs:
             filename="$(basename "${source}")"
             test ! -e "release-files/${filename}" || { echo "Duplicate release asset: ${filename}" >&2; exit 1; }
             cp "${source}" "release-files/${filename}"
-          done < <(find downloaded-artifacts -type f \( -name '*.exe' -o -name '*.zip' \) -print0)
+          done < <(find downloaded-artifacts -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' \) -print0)
           test -n "$(find release-files -maxdepth 1 -type f -print -quit)" || { echo "No release files were downloaded." >&2; exit 1; }
           (
             cd release-files
