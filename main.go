@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/nyaterminal/nyaterminal-desktop/internal/app"
+	"github.com/nyaterminal/nyaterminal-desktop/internal/updatecheck"
 	"github.com/nyaterminal/nyaterminal-desktop/internal/version"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
@@ -32,6 +33,13 @@ func main() {
 	}
 
 	if handled, exitCode, err := runHelloHelperIfRequested(args); handled {
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(exitCode)
+	}
+
+	if handled, exitCode, err := updatecheck.RunHelperIfRequested(args); handled {
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 		}

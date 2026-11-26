@@ -15,6 +15,7 @@ import {
   resolveRemotePath,
 } from './sftpPaths'
 import type { Connection, RemoteEntry, SFTPTransfer } from './types'
+import { isPrimaryModifier } from './platformShortcuts'
 import { useVerticalSplit } from './useVerticalSplit'
 
 const WORKSPACE_QUEUE_STORAGE_KEY = 'nyaterminal.sftpWorkspaceQueueHeight'
@@ -590,7 +591,7 @@ function FileColumn({ title, root, path, items, selected, side, onChooseRoot, on
           )
           event.dataTransfer.effectAllowed = 'copyMove'
         }}
-        onClick={event => onSelect(entry, event.ctrlKey || event.metaKey)}
+        onClick={event => onSelect(entry, isPrimaryModifier(event))}
         onDoubleClick={() => onOpen(entry)}
       >
         {entry.isDir ? <Folder size={16} /> : <i className="file-dot" />}

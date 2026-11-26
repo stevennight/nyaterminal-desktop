@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,52 @@ func TestSelectInstallerMatchesArchitectureAndSetupNaming(t *testing.T) {
 	}
 	if _, ok := selectInstaller(assets, "386"); ok {
 		t.Fatal("unexpected installer for unsupported architecture")
+	}
+}
+
+func TestSelectInstallerForMacOSPrefersArchThenUniversal(t *testing.T) {
+	universalOnly := []githubReleaseAsset{
+		{Name: "NyaTerminal_1.2.3_x64-setup.exe"},
+		{Name: "NyaTerminal_1.2.3_macos_universal.zip"},
+		{Name: "NyaTerminal_1.2.3_macos_universal.dmg"},
+	}
+	asset, ok := selectInstallerForPlatform(universalOnly, "darwin", "arm64")
+	if !ok || asset.Name != "NyaTerminal_1.2.3_macos_universal.dmg" {
+		t.Fatalf("selected universal macOS installer = %q, %v", asset.Name, ok)
+	}
+
+	withArchSpecific := append(append([]githubReleaseAsset(nil), universalOnly...), githubReleaseAsset{
+		Name: "NyaTerminal_1.2.3_macos_arm64.dmg",
+	})
+	asset, ok = selectInstallerForPlatform(withArchSpecific, "darwin", "arm64")
+	if !ok || asset.Name != "NyaTerminal_1.2.3_macos_arm64.dmg" {
+		t.Fatalf("selected arm64 macOS installer = %q, %v", asset.Name, ok)
+	}
+	asset, ok = selectInstallerForPlatform(withArchSpecific, "darwin", "amd64")
+	if !ok || asset.Name != "NyaTerminal_1.2.3_macos_universal.dmg" {
+		t.Fatalf("selected amd64 fallback macOS installer = %q, %v", asset.Name, ok)
+	}
+}
+
+func TestParseVersionOutputAndHelperArgs(t *testing.T) {
+	if got, ok := parseVersionOutput("NyaTerminal 1.0.21 built=2026-11-26T00:00:00Z"); !ok || got != "1.0.21" {
+		t.Fatalf("parseVersionOutput = (%q, %v), want (1.0.21, true)", got, ok)
+	}
+	if got, ok := parseVersionOutput("NyaTerminal v1.0.21"); !ok || got != "1.0.21" {
+		t.Fatalf("parseVersionOutput(v-prefixed) = (%q, %v), want (1.0.21, true)", got, ok)
+	}
+	if _, ok := parseVersionOutput("NyaTerminal 0.1.0-dev"); ok {
+		t.Fatal("accepted unstable dev version output")
+	}
+	if handled, _, _ := RunHelperIfRequested([]string{"--version"}); handled {
+		t.Fatal("RunHelperIfRequested should ignore non-update flags")
+	}
+	if handled, code, err := RunHelperIfRequested([]string{applyUpdateFlag}); !handled || code == 0 || err == nil {
+		t.Fatalf("RunHelperIfRequested missing flags = (%v, %d, %v)", handled, code, err)
+	}
+	bundle, ok := macOSAppBundlePath(filepath.FromSlash("/Applications/NyaTerminal.app/Contents/MacOS/NyaTerminal"))
+	if !ok || bundle != filepath.FromSlash("/Applications/NyaTerminal.app") {
+		t.Fatalf("macOSAppBundlePath = (%q, %v)", bundle, ok)
 	}
 }
 

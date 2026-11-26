@@ -173,7 +173,7 @@ func (c Checker) DownloadAndInstall(ctx context.Context, requestedVersion string
 	if err != nil {
 		return err
 	}
-	if err := launchInstaller(installerPath); err != nil {
+	if err := launchInstaller(installerPath, requested); err != nil {
 		return err
 	}
 	return nil
@@ -333,7 +333,11 @@ func (c Checker) downloadInstaller(
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("prepare the update download folder: %w", err)
 	}
-	file, err := os.CreateTemp(directory, "NyaTerminal-"+requestedVersion+"-*.exe")
+	extension := strings.ToLower(filepath.Ext(asset.Name))
+	if extension != ".exe" && extension != ".dmg" {
+		extension = ".bin"
+	}
+	file, err := os.CreateTemp(directory, "NyaTerminal-"+requestedVersion+"-*"+extension)
 	if err != nil {
 		return "", fmt.Errorf("create the update installer file: %w", err)
 	}
@@ -450,9 +454,9 @@ func releaseFromWebURL(repository string, releaseURL *url.URL) (githubRelease, e
 }
 
 func releaseInstallerAssets(release githubRelease) (githubReleaseAsset, githubReleaseAsset, error) {
-	installer, ok := selectInstaller(release.Assets, runtime.GOARCH)
+	installer, ok := selectInstallerForPlatform(release.Assets, runtime.GOOS, runtime.GOARCH)
 	if !ok {
-		return githubReleaseAsset{}, githubReleaseAsset{}, errors.New("the latest release has no compatible Windows installer")
+		return githubReleaseAsset{}, githubReleaseAsset{}, errors.New("the latest release has no compatible installer for this platform")
 	}
 	for _, asset := range release.Assets {
 		if asset.Name == "SHA256SUMS" {
@@ -463,27 +467,55 @@ func releaseInstallerAssets(release githubRelease) (githubReleaseAsset, githubRe
 }
 
 func selectInstaller(assets []githubReleaseAsset, architecture string) (githubReleaseAsset, bool) {
-	var markers []string
-	switch architecture {
-	case "amd64":
-		markers = []string{"_x64-", "_amd64-", "-amd64-"}
-	case "arm64":
-		markers = []string{"_arm64-", "_aarch64-", "-arm64-"}
+	return selectInstallerForPlatform(assets, "windows", architecture)
+}
+
+func selectInstallerForPlatform(assets []githubReleaseAsset, goos, architecture string) (githubReleaseAsset, bool) {
+	switch goos {
+	case "windows":
+		var markers []string
+		switch architecture {
+		case "amd64":
+			markers = []string{"_x64-", "_amd64-", "-amd64-"}
+		case "arm64":
+			markers = []string{"_arm64-", "_aarch64-", "-arm64-"}
+		default:
+			return githubReleaseAsset{}, false
+		}
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if !strings.HasPrefix(name, "nyaterminal_") || !strings.HasSuffix(name, "-setup.exe") {
+				continue
+			}
+			for _, marker := range markers {
+				if strings.Contains(name, marker) {
+					return asset, true
+				}
+			}
+		}
+		return githubReleaseAsset{}, false
+	case "darwin":
+		var preferred []string
+		switch architecture {
+		case "arm64":
+			preferred = []string{"_macos_arm64.dmg", "_macos_aarch64.dmg", "_macos_universal.dmg"}
+		case "amd64":
+			preferred = []string{"_macos_x64.dmg", "_macos_amd64.dmg", "_macos_universal.dmg"}
+		default:
+			return githubReleaseAsset{}, false
+		}
+		for _, suffix := range preferred {
+			for _, asset := range assets {
+				name := strings.ToLower(asset.Name)
+				if strings.HasPrefix(name, "nyaterminal_") && strings.HasSuffix(name, suffix) {
+					return asset, true
+				}
+			}
+		}
+		return githubReleaseAsset{}, false
 	default:
 		return githubReleaseAsset{}, false
 	}
-	for _, asset := range assets {
-		name := strings.ToLower(asset.Name)
-		if !strings.HasPrefix(name, "nyaterminal_") || !strings.HasSuffix(name, "-setup.exe") {
-			continue
-		}
-		for _, marker := range markers {
-			if strings.Contains(name, marker) {
-				return asset, true
-			}
-		}
-	}
-	return githubReleaseAsset{}, false
 }
 
 func validateRepository(repository string) error {

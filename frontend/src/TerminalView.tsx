@@ -20,8 +20,11 @@ import {
   nextSuggestionIndex,
 } from './terminalSuggestions'
 import { resolveTerminalThemeColors, terminalChromeVariables, terminalXtermTheme } from './terminalThemes'
+import { altModifierPrefix, isPrimaryModifier } from './platformShortcuts'
 import type { Connection, Settings } from './types'
 import type { CommandHistory } from './types'
+
+const ALT_KEY_PREFIX = altModifierPrefix()
 
 type Props = {
   connection: Connection
@@ -641,7 +644,7 @@ export function TerminalView({
       if (event.key === 'Escape') {
         setSearchOpen(false)
         closeTerminalMenu()
-      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      } else if (isPrimaryModifier(event) && event.key.toLowerCase() === 'f') {
         event.preventDefault()
         setSearchOpen(true)
       }
@@ -740,7 +743,7 @@ export function TerminalView({
               suggestionIndexRef.current = index
               applySuggestionRef.current(suggestion.command)
             }}>
-            <kbd>{index === suggestionIndex ? 'Tab' : `Alt+${index + 1}`}</kbd><span>{suggestion.command}</span>
+            <kbd>{index === suggestionIndex ? 'Tab' : `${ALT_KEY_PREFIX}${index + 1}`}</kbd><span>{suggestion.command}</span>
             <small>{suggestion.useCount}x</small>
           </button>
           <button type="button" className="command-suggestion-delete" title="删除历史"

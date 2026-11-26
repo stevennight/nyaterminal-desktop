@@ -1,13 +1,21 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package updatecheck
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"log/slog"
+)
 
 func platformAutomaticUpdateSupportReason() string {
 	return "unsupported-platform"
 }
 
-func launchInstaller(string) error {
+func launchInstaller(string, string) error {
+	return errors.New("automatic updates are unavailable on this platform")
+}
+
+func applyUpdate(context.Context, ApplyOptions, *slog.Logger) error {
 	return errors.New("automatic updates are unavailable on this platform")
 }

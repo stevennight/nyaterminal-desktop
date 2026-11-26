@@ -23,6 +23,7 @@ import {
 import { SftpPanel } from './SftpPanel'
 import { SftpWorkspace } from './SftpWorkspace'
 import { TerminalView } from './TerminalView'
+import { isPrimaryModifier, primaryModifierKeyLabel, primaryModifierPrefix } from './platformShortcuts'
 import { syncWindowTheme } from './windowTheme'
 import {
   TERMINAL_THEME_GROUPS, TERMINAL_THEME_PRESETS, cloneTerminalThemeColors,
@@ -106,7 +107,8 @@ const DEFAULT_TAG_COLOR = '#62D9CA'
 const AUTO_RECONNECT_LIMIT = 5
 const AUTO_RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 15000]
 const NATURAL_SORTER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
-const MOD_KEY_LABEL = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘' : 'Ctrl+'
+const MOD_KEY_LABEL = primaryModifierPrefix()
+const PRIMARY_MOD_KEY = primaryModifierKeyLabel()
 declare const __APP_INFO__: AppBuildInfo
 const APP_INFO = __APP_INFO__
 function mergedBuildInfo(value?: BuildInfo): BuildInfo {
@@ -812,7 +814,7 @@ export function App() {
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey)) return
+      if (!isPrimaryModifier(event)) return
       const key = event.key.toLowerCase()
       if (key === 'k') {
         event.preventDefault()
@@ -1907,8 +1909,8 @@ function Welcome({ onCreate }: { onCreate: () => void }) {
     <p>安全地管理 SSH 会话、SFTP 文件和多端加密同步。</p>
     <button className="primary" onClick={onCreate}><Plus size={17} />新建 SSH 连接</button>
     <div className="shortcut-grid">
-      <span><kbd>Ctrl</kbd><kbd>K</kbd>搜索连接</span>
-      <span><kbd>Ctrl</kbd><kbd>L</kbd>锁定保险库</span>
+      <span><kbd>{PRIMARY_MOD_KEY}</kbd><kbd>K</kbd>搜索连接</span>
+      <span><kbd>{PRIMARY_MOD_KEY}</kbd><kbd>L</kbd>锁定保险库</span>
     </div>
   </div>
 }
