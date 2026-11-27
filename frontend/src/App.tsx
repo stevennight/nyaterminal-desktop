@@ -788,7 +788,10 @@ export function App() {
     })
   }, [])
 
+  const lastActivityAt = useRef(Date.now())
+
   const resetActivity = useCallback(() => {
+    lastActivityAt.current = Date.now()
     if (activityTimer.current) window.clearTimeout(activityTimer.current)
     const minutes = bootstrap?.settings?.lockAfterMinutes ?? 0
     if (minutes > 0 && !bootstrap?.vault.locked) {
@@ -879,30 +882,29 @@ export function App() {
   useEffect(() => {
     const lockAfterMinutes = bootstrap?.settings?.lockAfterMinutes ?? 0
     if (bootstrap?.vault.locked || lockAfterMinutes <= 0) return
+    const idleLimitMs = lockAfterMinutes * 60_000
     let lastTick = Date.now()
-    const timer = window.setInterval(() => {
+    const checkIdleOrSleep = () => {
       const now = Date.now()
-      if (now - lastTick > 30_000) {
-        if (zmodemActiveTabsRef.current.size > 0) lastTick = now
-        else void lock()
-      }
+      const slept = now - lastTick > 30_000
+      const idleExpired = now - lastActivityAt.current >= idleLimitMs
       lastTick = now
-    }, 5_000)
-    let hiddenTimer = 0
+      if (!slept && !idleExpired) return
+      if (zmodemActiveTabsRef.current.size > 0) {
+        lastActivityAt.current = now
+        return
+      }
+      void lock()
+    }
+    const timer = window.setInterval(checkIdleOrSleep, 5_000)
     const visibility = () => {
-      if (document.visibilityState === 'hidden') {
-        hiddenTimer = window.setTimeout(() => {
-          if (zmodemActiveTabsRef.current.size > 0) return
-          void lock()
-        }, 30_000)
-      } else if (hiddenTimer) {
-        window.clearTimeout(hiddenTimer)
+      if (document.visibilityState === 'visible') {
+        checkIdleOrSleep()
       }
     }
     document.addEventListener('visibilitychange', visibility)
     return () => {
       window.clearInterval(timer)
-      if (hiddenTimer) window.clearTimeout(hiddenTimer)
       document.removeEventListener('visibilitychange', visibility)
     }
   }, [

@@ -21,6 +21,8 @@
         <string>12.0</string>
         <key>NSHighResolutionCapable</key>
         <string>true</string>
+        <key>NSAppSleepDisabled</key>
+        <true/>
         <key>NSHumanReadableCopyright</key>
         <string>{{.Info.Copyright}}</string>
         <key>NSAppTransportSecurity</key>
